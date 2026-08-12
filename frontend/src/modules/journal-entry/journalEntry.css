@@ -1,0 +1,359 @@
+.je-page {
+  min-height: 100vh;
+  min-width: 0;
+}
+
+.je-page .sap-document-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.je-page .sap-banking-layout {
+  padding: 0 12px 12px;
+}
+
+.je-page .sap-banking-layout__main {
+  min-width: 0;
+}
+
+.je-header {
+  display: grid;
+  gap: 8px;
+}
+
+.je-header-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(245px, 1fr));
+  gap: 5px 18px;
+  min-width: 0;
+  align-items: center;
+}
+
+.je-field {
+  display: grid;
+  grid-template-columns: minmax(105px, 128px) minmax(0, 1fr);
+  min-height: 26px;
+  gap: 8px;
+  align-items: center;
+}
+
+.je-field--wide {
+  grid-column: span 2;
+}
+
+.je-field .po-field__label {
+  flex: none;
+  min-width: 0;
+  width: auto;
+  color: #444;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.2;
+  overflow: visible;
+  text-align: right;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.je-field input,
+.je-field select {
+  width: 100%;
+  height: 22px;
+  min-width: 0;
+  padding: 0 5px;
+  border: 1px solid #a0aab4;
+  border-radius: 2px;
+  background: #fff;
+  color: #1a1a1a;
+  font: inherit;
+  font-size: 12px;
+  box-sizing: border-box;
+}
+
+.je-field select {
+  padding-right: 20px;
+}
+
+.je-field input:focus,
+.je-field select:focus {
+  outline: none;
+  border-color: #0070c0;
+  box-shadow: 0 0 0 2px rgba(0, 112, 192, 0.15);
+}
+
+.je-field input:read-only {
+  background: #f0f2f5;
+  color: #555;
+}
+
+.je-header-checks,
+.je-header-bottom {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  align-items: center;
+  min-width: 0;
+}
+
+.je-header-bottom {
+  padding-top: 7px;
+  border-top: 1px solid #e8ecf0;
+}
+
+.je-header-bottom .je-field {
+  width: min(100%, 420px);
+}
+
+.je-checkbox {
+  min-height: 22px;
+  min-width: 0;
+  margin: 0;
+  color: #1a1a1a;
+}
+
+.je-checkbox input {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  margin: 0;
+}
+
+.je-checkbox span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.je-tabs {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.je-tab-panel {
+  gap: 8px;
+  padding: 10px 12px 12px;
+}
+
+.je-expand {
+  align-self: flex-start;
+  min-height: 24px;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: #003366;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.je-expand::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 5px;
+  color: #63758a;
+}
+
+.je-table-wrap {
+  width: 100%;
+  min-height: 260px;
+  max-height: clamp(300px, calc(100vh - 390px), 520px);
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+.je-lines-table {
+  width: max-content;
+  min-width: 100%;
+  table-layout: fixed;
+}
+
+.je-lines-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: 24px;
+}
+
+.je-lines-table th,
+.je-lines-table td {
+  height: 24px;
+  padding: 2px 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.je-lines-table tfoot td {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background: #eef3f8;
+  border-top: 2px solid #a0aab4;
+  color: #003366;
+  font-weight: 700;
+  text-align: right;
+}
+
+.je-row-number {
+  background: #edf1f5;
+  color: #44515f;
+  text-align: center;
+  font-weight: 700;
+}
+
+.je-lines-table input {
+  width: 100%;
+  height: 20px;
+  min-width: 0;
+  padding: 0 3px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: transparent;
+  color: #1a1a1a;
+  font: inherit;
+  font-size: 11px;
+  box-sizing: border-box;
+}
+
+.je-lines-table input:focus {
+  outline: none;
+  border-color: #0070c0;
+  background: #fff;
+}
+
+.je-lines-table input:disabled {
+  color: #777;
+  background: #edf1f5;
+}
+
+.je-amount {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.je-account-cell {
+  padding: 0 !important;
+}
+
+.je-account-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 24px;
+  width: 100%;
+  height: 22px;
+}
+
+.je-account-picker button {
+  width: 24px;
+  height: 22px;
+  border: 0;
+  border-left: 1px solid #c8d0da;
+  background: linear-gradient(180deg, #ffffff 0%, #e8ecf0 100%);
+  color: #003366;
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.je-account-picker button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.je-context-menu {
+  position: fixed;
+  z-index: 2600;
+  min-width: 205px;
+  padding: 3px 0;
+  border: 1px solid #9cbad1;
+  border-radius: 3px;
+  background: #fff;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
+}
+
+.je-context-menu button {
+  display: block;
+  width: 100%;
+  min-height: 26px;
+  padding: 5px 12px;
+  border: 0;
+  background: transparent;
+  color: #1a1a1a;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.je-context-menu button:hover,
+.je-context-menu button:focus {
+  outline: 0;
+  background: #f5f8fc;
+}
+
+.je-attachments {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  min-width: 0;
+}
+
+.je-attach-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.je-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 18px;
+  margin: 0 12px 12px;
+  padding: 8px 10px;
+  border: 1px solid #c8d0da;
+  border-radius: 3px;
+  background: #fff;
+}
+
+.je-footer-right {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+
+@media (max-width: 1100px) {
+  .je-field--wide {
+    grid-column: span 1;
+  }
+
+  .je-attachments {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .je-attach-actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .je-footer-right {
+    margin-left: 0;
+  }
+}
+
+@media (max-width: 720px) {
+  .je-header-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .je-field {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+
+  .je-field .po-field__label {
+    text-align: left;
+  }
+}

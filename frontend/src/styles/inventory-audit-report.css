@@ -1,0 +1,611 @@
+.ia-page {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 10px 12px 20px;
+  overflow: auto;
+  box-sizing: border-box;
+  color: var(--sap-text, #223548);
+}
+
+.ia-criteria-columns {
+  display: grid;
+  grid-template-columns: 365px minmax(250px, 1fr);
+  gap: 6px 12px;
+  align-items: start;
+}
+
+.ia-criteria-left-col {
+  display: grid;
+  gap: 7px;
+  align-content: start;
+}
+
+.ia-criteria-right-col {
+  display: grid;
+  gap: 16px;
+  align-content: start;
+  padding-top: 2px;
+}
+
+.ia-account-modal__titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px 4px 10px;
+  cursor: move;
+  font-size: 14px;
+}
+
+.ia-account-modal__controls {
+  display: flex;
+  gap: 4px;
+  cursor: default;
+}
+
+.ia-account-modal__controls button {
+  min-width: 24px;
+  height: 23px;
+  padding: 0;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-xs, 4px);
+  background: linear-gradient(180deg, #ffffff 0%, #edf3f9 100%);
+  color: var(--sap-text, #223548);
+  font-size: 12px;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.ia-account-modal__controls button:hover {
+  background: linear-gradient(180deg, #ffffff 0%, #dfe8f1 100%);
+}
+
+.ia-account-modal__accent {
+  height: 3px;
+  background: linear-gradient(90deg, #e0a316 0%, #f3c94f 30%, transparent 30%);
+}
+
+.ia-date-row {
+  display: grid;
+  grid-template-columns: 100px 31px 88px 20px 96px;
+  gap: 5px;
+  align-items: center;
+}
+
+.ia-page input,
+.ia-page select,
+.ia-account-modal input {
+  min-width: 0;
+  height: 21px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  background: var(--sap-surface, #ffffff);
+  color: var(--sap-text, #223548);
+  font-size: 12px;
+  box-sizing: border-box;
+}
+
+.ia-page input[type="checkbox"],
+.ia-page input[type="radio"],
+.ia-account-modal input[type="checkbox"] {
+  width: auto;
+  height: auto;
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.ia-page input:disabled,
+.ia-account-modal input:disabled {
+  background: var(--sap-surface-muted, #edf1f5);
+  color: var(--sap-text-muted, #64748b);
+}
+
+.ia-section {
+  margin-top: 7px;
+}
+
+.ia-section__title {
+  display: inline-block;
+  margin-left: 2px;
+  color: var(--sap-heading, #0a4a85);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ia-items-box,
+.ia-warehouse-box {
+  border: 1px solid var(--sap-border, #d5dce3);
+  border-radius: var(--sap-radius-sm, 6px);
+  background: var(--sap-surface, #ffffff);
+}
+
+.ia-items-box {
+  padding: 5px 4px;
+}
+
+.ia-range-row {
+  display: grid;
+  grid-template-columns: 98px 35px 86px 22px 96px;
+  gap: 5px;
+  align-items: center;
+}
+
+.ia-lookup {
+  display: grid;
+  grid-template-columns: 1fr 20px;
+  gap: 2px;
+}
+
+.ia-lookup button,
+.ia-small-btn {
+  height: 21px;
+  padding: 0;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  background: linear-gradient(180deg, #ffffff 0%, var(--sap-toolbar-bg, #eef2f7) 100%);
+  color: var(--sap-text, #223548);
+  font-size: 12px;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.ia-lookup button:hover:not(:disabled),
+.ia-small-btn:hover:not(:disabled) {
+  background: linear-gradient(180deg, #ffffff 0%, #dfe8f1 100%);
+  border-color: var(--sap-primary, #0a6ed1);
+}
+
+.ia-group-row,
+.ia-property-row {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 5px;
+  align-items: center;
+  margin-top: 4px;
+}
+
+.ia-property-row {
+  grid-template-columns: 90px 1fr;
+}
+
+.ia-gl-row {
+  display: grid;
+  grid-template-columns: 101px 27px 1fr;
+  gap: 5px;
+  align-items: center;
+  margin: 3px 0 0;
+}
+
+.ia-gl-row label,
+.ia-display label,
+.ia-options label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.ia-warehouse-box {
+  padding: 8px;
+}
+
+.ia-warehouse-grid {
+  height: 108px;
+  overflow: auto;
+  border: 1px solid var(--sap-border, #d5dce3);
+  border-radius: var(--sap-radius-sm, 6px);
+  background: var(--sap-surface, #ffffff);
+}
+
+.ia-warehouse-grid__header,
+.ia-warehouse-grid__row {
+  display: grid;
+  grid-template-columns: 28px 96px 94px 1fr;
+  min-height: 17px;
+  align-items: center;
+}
+
+.ia-warehouse-grid__header {
+  background: var(--sap-toolbar-bg, #eef2f7);
+  color: var(--sap-heading, #0a4a85);
+}
+
+.ia-warehouse-grid__row:hover {
+  background: var(--sap-row-hover, #f0f6fd);
+}
+
+.ia-warehouse-grid__header span,
+.ia-warehouse-grid__row > span,
+.ia-warehouse-grid__location {
+  height: 100%;
+  padding: 2px 5px;
+  border-right: 1px solid var(--sap-border-soft, #e3e8ee);
+  border-bottom: 1px solid var(--sap-border-soft, #e3e8ee);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  box-sizing: border-box;
+}
+
+.ia-warehouse-grid__check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  border-right: 1px solid var(--sap-border-soft, #e3e8ee);
+  border-bottom: 1px solid var(--sap-border-soft, #e3e8ee);
+}
+
+.ia-warehouse-grid__row.is-location {
+  color: var(--sap-primary-dark, #0854a0);
+  font-weight: 600;
+}
+
+.ia-warehouse-grid__location {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-top: 0;
+  border-left: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.ia-link-arrow {
+  color: var(--sap-primary, #0a6ed1);
+  font-weight: 700;
+  margin-right: 4px;
+}
+
+.ia-warehouse-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 7px;
+}
+
+.ia-display {
+  display: grid;
+  gap: 2px;
+  margin-top: 0;
+}
+
+.ia-display__title {
+  margin-bottom: 1px;
+  color: var(--sap-heading, #0a4a85);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ia-options {
+  display: grid;
+  gap: 3px;
+  margin-top: 16px;
+}
+
+.ia-options label {
+  line-height: 1.22;
+}
+
+.ia-options .is-disabled {
+  color: var(--sap-text-muted, #64748b);
+}
+
+.ia-btn,
+.ia-account-modal__footer button,
+.ia-account-modal__actions button,
+.ia-account-modal__toolbar button {
+  min-width: 70px;
+  height: 21px;
+  padding: 1px 12px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-sm, 6px);
+  background: linear-gradient(180deg, #ffffff 0%, #eef2f7 100%);
+  color: var(--sap-text, #223548);
+  font-size: 12px;
+  font-weight: 600;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.ia-btn:hover:not(:disabled),
+.ia-account-modal__footer button:hover:not(:disabled),
+.ia-account-modal__actions button:hover:not(:disabled),
+.ia-account-modal__toolbar button:hover:not(:disabled) {
+  background: linear-gradient(180deg, #ffffff 0%, #e2ecf5 100%);
+  border-color: var(--sap-primary, #0a6ed1);
+}
+
+.ia-account-modal__footer button.sap-report-btn--primary,
+.ia-account-modal__actions button.sap-report-btn--primary,
+.ia-account-modal__toolbar button.sap-report-btn--primary {
+  border-color: var(--sap-primary-dark, #0854a0);
+  background: linear-gradient(180deg, var(--sap-primary, #0a6ed1) 0%, var(--sap-primary-dark, #0854a0) 100%);
+  color: #ffffff;
+}
+
+.ia-account-modal__footer button.sap-report-btn--primary:hover:not(:disabled),
+.ia-account-modal__actions button.sap-report-btn--primary:hover:not(:disabled),
+.ia-account-modal__toolbar button.sap-report-btn--primary:hover:not(:disabled) {
+  background: linear-gradient(180deg, #1b7ddb 0%, #0a5fac 100%);
+}
+
+.ia-btn--field {
+  min-width: 90px;
+}
+
+.ia-btn--secondary {
+  min-width: 64px;
+}
+
+.ia-btn:disabled,
+.ia-small-btn:disabled {
+  border-color: var(--sap-border, #d5dce3);
+  background: var(--sap-surface-muted, #edf1f5);
+  color: var(--sap-text-muted, #64748b);
+  opacity: 0.65;
+}
+
+.ia-status {
+  margin-top: 8px;
+  color: var(--sap-danger, #b42318);
+  font-size: 12px;
+}
+
+
+.ia-report-toolbar {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.ia-report-toolbar label {
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  align-items: center;
+}
+
+.ia-report-toolbar input {
+  height: 26px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-xs, 4px);
+  background: var(--sap-surface, #ffffff);
+}
+
+.ia-report-toolbar span {
+  justify-self: end;
+  color: var(--sap-text-muted, #64748b);
+}
+
+.ia-report-grid-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--sap-border, #d5dce3);
+  border-radius: var(--sap-radius-sm, 6px);
+  background: var(--sap-surface, #ffffff);
+}
+
+.ia-report-grid {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.ia-report-grid th,
+.ia-report-grid td {
+  min-width: 110px;
+  height: 22px;
+  padding: 4px 8px;
+  border: 1px solid var(--sap-border-soft, #e3e8ee);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.ia-report-grid th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--sap-toolbar-bg, #eef2f7);
+  color: var(--sap-heading, #0a4a85);
+  font-weight: 700;
+}
+
+.ia-report-grid td {
+  background: var(--sap-surface, #ffffff);
+  color: var(--sap-text, #223548);
+}
+
+.ia-report-grid tbody tr:hover td {
+  background: var(--sap-row-hover, #f0f6fd);
+}
+
+.ia-report-grid tr.is-opening td {
+  background: #fff8e5;
+}
+
+.ia-report-grid .is-row-number,
+.ia-report-grid th:first-child {
+  min-width: 32px;
+  width: 32px;
+  text-align: right;
+}
+
+.ia-report-grid .is-number {
+  text-align: right;
+}
+
+.ia-report-grid th:nth-child(2),
+.ia-report-grid td:nth-child(2) {
+  min-width: 135px;
+}
+
+.ia-report-grid th:nth-child(3),
+.ia-report-grid td:nth-child(3) {
+  min-width: 240px;
+}
+
+.ia-report-grid--accounts th:nth-child(2),
+.ia-report-grid--accounts td:nth-child(2) {
+  min-width: 160px;
+}
+
+.ia-report-grid--accounts th:nth-child(3),
+.ia-report-grid--accounts td:nth-child(3) {
+  min-width: 260px;
+}
+
+.ia-item-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--sap-primary, #0a6ed1);
+  cursor: pointer;
+}
+
+.ia-item-link:hover {
+  text-decoration: underline;
+}
+
+.ia-account-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 1800;
+  background: transparent;
+}
+
+body > .ia-account-modal__backdrop {
+  position: fixed;
+}
+
+.ia-account-modal {
+  width: min(760px, 100%);
+  max-height: calc(100vh - var(--sap-topbar-height, 64px) - 36px);
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-md, 10px);
+  background: var(--sap-surface, #ffffff);
+  box-shadow: var(--sap-shadow-modal, 0 20px 48px rgba(15, 35, 65, 0.18));
+  overflow: hidden;
+}
+
+.ia-account-modal__body {
+  padding: 10px;
+}
+
+.ia-account-modal__toolbar {
+  display: grid;
+  grid-template-columns: 42px minmax(150px, 1fr) 80px;
+  gap: 7px;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.ia-account-modal__toolbar input {
+  height: 28px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-xs, 4px);
+  background: var(--sap-surface, #ffffff);
+}
+
+.ia-account-modal__grid-wrap {
+  height: 340px;
+  overflow: auto;
+  border: 1px solid var(--sap-border, #d5dce3);
+  border-radius: var(--sap-radius-sm, 6px);
+  background: var(--sap-surface, #ffffff);
+}
+
+.ia-account-modal__grid {
+  width: 100%;
+  min-width: 640px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.ia-account-modal__grid th,
+.ia-account-modal__grid td {
+  height: 22px;
+  padding: 4px 8px;
+  border: 1px solid var(--sap-border-soft, #e3e8ee);
+  background: var(--sap-surface, #ffffff);
+  color: var(--sap-text, #223548);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.ia-account-modal__grid th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--sap-toolbar-bg, #eef2f7);
+  color: var(--sap-heading, #0a4a85);
+  font-weight: 700;
+}
+
+.ia-account-modal__grid tbody tr:nth-child(even) td {
+  background: var(--sap-row-even, #fafbfd);
+}
+
+.ia-account-modal__grid tbody tr:hover td {
+  background: var(--sap-row-hover, #f0f6fd);
+}
+
+.ia-account-modal__grid tr.is-selected td {
+  background: #e7f2fb;
+}
+
+.ia-account-modal__grid tr.is-selected td:first-child {
+  box-shadow: inset 3px 0 0 var(--sap-primary, #0a6ed1);
+}
+
+.ia-account-modal__grid .is-check {
+  width: 28px;
+  text-align: center;
+}
+
+.ia-account-modal__grid .is-index {
+  width: 38px;
+}
+
+.ia-account-modal__state {
+  text-align: center;
+  color: var(--sap-text-muted, #64748b);
+}
+
+.ia-account-modal__actions {
+  display: flex;
+  gap: 7px;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.ia-account-modal__footer {
+  display: flex;
+  gap: 7px;
+  padding: 0 10px 10px;
+}
+
+@media (max-width: 680px) {
+  .ia-criteria-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .ia-date-row,
+  .ia-range-row,
+  .ia-group-row,
+  .ia-property-row,
+  .ia-gl-row,
+  .ia-report-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .ia-warehouse-grid__header,
+  .ia-warehouse-grid__row {
+    grid-template-columns: 28px minmax(90px, 1fr) 78px minmax(120px, 1fr);
+  }
+}

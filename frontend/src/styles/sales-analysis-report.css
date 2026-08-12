@@ -1,0 +1,1832 @@
+.sales-analysis-page {
+  position: relative;
+  padding: 12px 18px 24px;
+  min-height: calc(100vh - 140px);
+  overflow: auto;
+}
+
+.sales-analysis-window {
+  max-width: 920px;
+  width: min(920px, 100%);
+  max-height: calc(100vh - 170px);
+  overflow: hidden;
+}
+
+.sales-analysis-window.is-minimized {
+  display: none;
+}
+
+.sales-analysis-window.is-maximized {
+  max-width: none;
+  width: 100%;
+  height: calc(100vh - 16px);
+  max-height: calc(100vh - 16px);
+  display: flex;
+  flex-direction: column;
+}
+
+.sales-analysis-window--report {
+  width: min(1160px, 100%);
+  max-width: none;
+  height: calc(100vh - 170px);
+  display: flex;
+  flex-direction: column;
+}
+
+.sales-analysis-window__titlebar {
+  padding: 6px 8px 4px 10px;
+  cursor: move;
+}
+
+.sales-analysis-window__controls {
+  display: flex;
+  gap: 4px;
+  cursor: default;
+}
+
+.sales-analysis-window__controls button {
+  font-size: 0;
+  line-height: 1;
+}
+
+.sales-analysis-window__controls button::before,
+.sales-analysis-detail-modal__controls button::before,
+.bp-lookup-modal__controls button::before,
+.item-lookup-modal__controls button::before,
+.sales-employee-lookup-modal__controls button::before,
+.sap-properties-modal__controls button::before {
+  display: block;
+  font-size: 13px;
+  line-height: 22px;
+}
+
+.sales-analysis-window__controls button[aria-label="Minimize"]::before,
+.sales-analysis-detail-modal__controls button[aria-label="Minimize"]::before,
+.bp-lookup-modal__controls button[aria-label="Minimize"]::before,
+.item-lookup-modal__controls button[aria-label="Minimize"]::before,
+.sales-employee-lookup-modal__controls button[aria-label="Minimize"]::before,
+.sap-properties-modal__controls button[aria-label="Minimize"]::before {
+  content: "-";
+}
+
+.sales-analysis-window__controls button[aria-label="Restore"]::before,
+.sales-analysis-window__controls button[aria-label="Restore Down"]::before,
+.sales-analysis-detail-modal__controls button[aria-label="Restore"]::before,
+.bp-lookup-modal__controls button[aria-label="Restore"]::before,
+.item-lookup-modal__controls button[aria-label="Restore"]::before,
+.sales-employee-lookup-modal__controls button[aria-label="Restore"]::before,
+.sap-properties-modal__controls button[aria-label="Restore"]::before {
+  content: "[]";
+}
+
+.sales-analysis-window__controls button[aria-label="Close"]::before,
+.sales-analysis-detail-modal__controls button[aria-label="Close"]::before,
+.bp-lookup-modal__controls button[aria-label="Close"]::before,
+.item-lookup-modal__controls button[aria-label="Close"]::before,
+.sales-employee-lookup-modal__controls button[aria-label="Close"]::before,
+.sap-properties-modal__controls button[aria-label="Close"]::before {
+  content: "x";
+}
+
+.sales-analysis-window__body {
+  padding: 8px 10px 10px;
+  overflow: auto;
+}
+
+.sales-analysis-window__body--report {
+  padding-bottom: 14px;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sales-analysis-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 14px;
+  margin-bottom: -1px;
+}
+
+.sales-analysis-tabs__tab {
+  min-width: 132px;
+  padding: 8px 16px 7px;
+  border: 1px solid var(--sap-border, #d5dce3);
+  border-bottom: 0;
+  border-radius: var(--sap-radius-sm, 6px) var(--sap-radius-sm, 6px) 0 0;
+  background: var(--sap-tab-bg, #eef1f5);
+  color: var(--sap-text-muted, #64748b);
+  font-size: 13px;
+  font-weight: 600;
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.sales-analysis-tabs__tab.is-active {
+  background: var(--sap-surface, #ffffff);
+  border-color: var(--sap-border, #d5dce3);
+  border-top: 2px solid var(--sap-primary, #0a6ed1);
+  padding-top: 6px;
+  color: var(--sap-heading, #0a4a85);
+  position: relative;
+  z-index: 2;
+}
+
+.sales-analysis-panel {
+  background: var(--sap-surface, #ffffff);
+  border: 1px solid var(--sap-border, #d5dce3);
+  border-radius: 0 var(--sap-radius-sm, 6px) var(--sap-radius-sm, 6px) var(--sap-radius-sm, 6px);
+  padding: 10px 12px 12px;
+  min-height: auto;
+  min-width: 860px;
+}
+
+.sales-analysis-panel__row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.sales-analysis-panel__option-group {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+}
+
+.sales-analysis__radio-line,
+.sales-analysis__checkbox-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--sap-text, #223548);
+  font-size: 13px;
+}
+
+.sales-analysis__radio-line input,
+.sales-analysis__checkbox-line input {
+  margin: 0;
+  accent-color: var(--sap-primary, #0a6ed1);
+}
+
+.sales-analysis-divider {
+  margin: 10px 0;
+  border-top: 1px solid var(--sap-border, #d5dce3);
+}
+
+.sales-analysis__dates {
+  display: grid;
+  gap: 6px;
+}
+
+.sales-analysis__date-row {
+  display: grid;
+  grid-template-columns: 164px max-content;
+  column-gap: 6px;
+  align-items: center;
+}
+
+.sales-analysis__date-fields {
+  display: grid;
+  grid-template-columns: 34px 122px 24px 18px 122px 24px;
+  column-gap: 6px;
+  align-items: center;
+  justify-content: start;
+  position: relative;
+}
+
+.sales-analysis__date-native-input {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.sales-analysis__field-label,
+.sales-analysis__column-head {
+  color: var(--sap-text, #223548);
+  font-size: 12px;
+}
+
+.sales-analysis__column-head {
+  margin-bottom: 3px;
+}
+
+.sales-analysis__column-head--blank {
+  color: transparent;
+}
+
+.sales-analysis__date-fields input,
+.sales-analysis__selection-grid input,
+.sales-analysis__selection-grid select {
+  height: 25px;
+  width: 100%;
+  padding: 2px 5px;
+}
+
+.sales-analysis__selection-grid select {
+  appearance: auto;
+}
+
+.sales-analysis__picker-btn,
+.sales-analysis__lookup-btn {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-xs, 4px);
+  background: linear-gradient(180deg, #ffffff 0%, var(--sap-toolbar-bg, #eef2f7) 100%);
+  color: var(--sap-text, #223548);
+  font-size: 11px;
+  padding: 0;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.sales-analysis__picker-btn:hover:not(:disabled),
+.sales-analysis__lookup-btn:hover:not(:disabled) {
+  background: linear-gradient(180deg, #ffffff 0%, #dfe8f1 100%);
+  border-color: var(--sap-primary, #0a6ed1);
+}
+
+.sales-analysis__section {
+  margin-top: 6px;
+}
+
+.sales-analysis__section-title {
+  margin-bottom: 10px;
+  color: var(--sap-heading, #0a4a85);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.sales-analysis__selection-grid {
+  display: grid;
+  grid-template-columns: 112px 1.1fr 1.1fr 1fr 108px 1.25fr;
+  gap: 6px;
+  align-items: end;
+}
+
+.sales-analysis__selection-grid--employees {
+  grid-template-columns: 112px 1fr 1fr;
+  max-width: 460px;
+}
+
+.sales-analysis__selection-row-label {
+  padding-bottom: 4px;
+  color: var(--sap-text, #223548);
+  font-size: 13px;
+}
+
+.sales-analysis__lookup-wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 24px;
+  gap: 4px;
+}
+
+.sales-analysis__sub-check {
+  margin-top: 10px;
+}
+
+.sales-analysis__secondary-block {
+  margin-top: 6px;
+}
+
+.sales-analysis__selection-grid--secondary-employee {
+  grid-template-columns: 112px 1.1fr 1.1fr 1.9fr;
+  margin-top: 6px;
+  align-items: center;
+}
+
+.sales-analysis__selection-grid--secondary-employee .sales-analysis__selection-row-label {
+  padding-bottom: 0;
+}
+
+.sales-analysis__secondary-checkbox-wrap {
+  align-self: center;
+}
+
+.sales-analysis__checkbox-line--compact {
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.sales-analysis__checkbox-line--secondary {
+  margin-top: 6px;
+}
+
+.sales-analysis__system-currency {
+  margin-top: 12px;
+}
+
+.sales-analysis__sap-btn {
+  min-width: 82px;
+  height: 31px;
+}
+
+.sales-analysis__sap-btn--field {
+  width: 100%;
+  min-width: 0;
+}
+
+.sales-analysis__status {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-sm, 6px);
+  background: var(--sap-primary-soft, rgba(10, 110, 209, 0.13));
+  color: var(--sap-heading, #0a4a85);
+  font-size: 13px;
+}
+
+.sales-analysis-window__footer {
+  display: flex;
+  gap: 10px;
+  padding: 4px 0 0;
+}
+
+.sales-analysis__lookup-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.sales-analysis-report-view {
+  position: relative;
+  padding: 10px 18px 24px;
+  min-height: calc(100vh - 140px);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.sales-analysis-report__hint {
+  margin-bottom: 10px;
+  color: var(--sap-text-muted, #64748b);
+  font-size: 13px;
+  flex: 0 0 auto;
+}
+
+.sales-analysis-report__grid-wrap {
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+  overscroll-behavior: contain;
+}
+
+.sales-analysis-report__grid {
+  width: max-content;
+  min-width: 100%;
+  table-layout: fixed;
+  font-size: 11px;
+}
+
+.sales-analysis-report__grid th,
+.sales-analysis-report__grid td {
+  height: 24px;
+  padding: 2px 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sales-analysis-report__grid thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  font-weight: 400;
+}
+
+.sales-analysis-report__grid tfoot td {
+  font-weight: 400;
+}
+
+.sales-analysis-report__grid .is-row-number {
+  width: 3%;
+}
+
+.sales-analysis-report__grid .is-clickable {
+  cursor: pointer;
+}
+
+.sales-analysis-report__grid .is-numeric {
+  text-align: right;
+}
+
+.sales-analysis-report__link-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.sales-analysis-report__link-cell span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sales-analysis-report__grid--customer th:nth-child(2),
+.sales-analysis-report__grid--customer td:nth-child(2) {
+  width: 120px;
+}
+
+.sales-analysis-report__grid--customer th:nth-child(3),
+.sales-analysis-report__grid--customer td:nth-child(3) {
+  width: 260px;
+}
+
+.sales-analysis-report__grid--customer th:nth-child(4),
+.sales-analysis-report__grid--customer td:nth-child(4) {
+  width: 90px;
+}
+
+.sales-analysis-report__grid--customer th:nth-child(5),
+.sales-analysis-report__grid--customer td:nth-child(5),
+.sales-analysis-report__grid--customer th:nth-child(6),
+.sales-analysis-report__grid--customer td:nth-child(6),
+.sales-analysis-report__grid--customer th:nth-child(8),
+.sales-analysis-report__grid--customer td:nth-child(8) {
+  width: 150px;
+}
+
+.sales-analysis-report__grid--customer th:nth-child(7),
+.sales-analysis-report__grid--customer td:nth-child(7) {
+  width: 120px;
+}
+
+.sales-analysis-report__grid--employee th:nth-child(2),
+.sales-analysis-report__grid--employee td:nth-child(2) {
+  width: 360px;
+}
+
+.sales-analysis-report__grid--employee th:nth-child(3),
+.sales-analysis-report__grid--employee td:nth-child(3) {
+  width: 110px;
+}
+
+.sales-analysis-report__grid--employee th:nth-child(4),
+.sales-analysis-report__grid--employee td:nth-child(4),
+.sales-analysis-report__grid--employee th:nth-child(5),
+.sales-analysis-report__grid--employee td:nth-child(5),
+.sales-analysis-report__grid--employee th:nth-child(7),
+.sales-analysis-report__grid--employee td:nth-child(7) {
+  width: 160px;
+}
+
+.sales-analysis-report__grid--employee th:nth-child(6),
+.sales-analysis-report__grid--employee td:nth-child(6) {
+  width: 140px;
+}
+
+.sales-analysis-report__grid--period th:nth-child(2),
+.sales-analysis-report__grid--period td:nth-child(2) {
+  width: 150px;
+}
+
+.sales-analysis-report__grid--period th:nth-child(3),
+.sales-analysis-report__grid--period td:nth-child(3) {
+  width: 360px;
+}
+
+.sales-analysis-report__grid--period th:nth-child(n + 4),
+.sales-analysis-report__grid--period td:nth-child(n + 4) {
+  width: 130px;
+}
+
+.sales-analysis-report__link-icon {
+  color: var(--sap-primary, #0a6ed1);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.sales-analysis-report__link-cell:hover {
+  color: var(--sap-primary-dark, #0854a0);
+}
+
+.sales-analysis-report__empty {
+  padding: 12px;
+  text-align: center;
+  color: var(--sap-text-muted, #64748b);
+}
+
+.sales-analysis-report__footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 14px;
+  flex: 0 0 auto;
+}
+
+.sales-analysis-report__action-group {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sales-analysis-report__back-btn {
+  width: 42px;
+  height: 34px;
+  border-radius: 18px;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.sales-analysis-detail-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.2);
+  z-index: 1300;
+}
+
+body > .sales-analysis-detail-modal__backdrop {
+  position: fixed;
+}
+
+.sales-analysis-detail-modal {
+  width: min(1120px, 100%);
+  max-height: calc(100vh - var(--sap-topbar-height, 64px) - 90px);
+  display: flex;
+  flex-direction: column;
+  background: var(--sap-surface, #ffffff);
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-md, 10px);
+  box-shadow: var(--sap-shadow-modal, 0 20px 48px rgba(15, 35, 65, 0.18));
+  overflow: hidden;
+}
+
+.sales-analysis-detail-modal__titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px 6px;
+  cursor: move;
+  background: linear-gradient(180deg, #ffffff 0%, var(--sap-toolbar-bg, #eef2f7) 100%);
+  border-bottom: 1px solid var(--sap-border, #d5dce3);
+}
+
+.sales-analysis-detail-modal__title {
+  color: var(--sap-heading, #0a4a85);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.sales-analysis-detail-modal__controls {
+  display: flex;
+  gap: 4px;
+  cursor: default;
+}
+
+.sales-analysis-detail-modal__controls button {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-xs, 4px);
+  background: linear-gradient(180deg, #ffffff 0%, #edf3f9 100%);
+  color: var(--sap-text, #223548);
+  font-size: 0;
+  line-height: 1;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.sales-analysis-detail-modal__controls button:hover {
+  background: linear-gradient(180deg, #ffffff 0%, #dfe8f1 100%);
+}
+
+.sales-analysis-detail-modal__accent {
+  height: 3px;
+  background: linear-gradient(90deg, #e0a316 0%, #f3c94f 30%, transparent 30%);
+}
+
+.sales-analysis-detail-modal__body {
+  padding: 6px 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+  min-height: 0;
+}
+
+.sales-analysis-detail-modal__loading {
+  padding: 18px 14px;
+  color: var(--sap-text, #223548);
+  font-size: 14px;
+}
+
+.sales-analysis-detail-modal__grid-wrap {
+  overflow-y: auto;
+  overflow-x: hidden;
+  border: 1px solid var(--sap-border, #d5dce3);
+  border-radius: var(--sap-radius-sm, 6px);
+  background: var(--sap-surface, #ffffff);
+  max-height: 250px;
+}
+
+.sales-analysis-detail-modal__grid {
+  width: 100%;
+  min-width: 0;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 11px;
+}
+
+.sales-analysis-detail-modal__grid th,
+.sales-analysis-detail-modal__grid td {
+  height: 24px;
+  padding: 2px 4px;
+  border: 1px solid var(--sap-border-soft, #e3e8ee);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sales-analysis-detail-modal__grid thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  font-weight: 700;
+  color: var(--sap-heading, #0a4a85);
+  background: var(--sap-toolbar-bg, #eef2f7);
+}
+
+.sales-analysis-detail-modal__grid tbody td {
+  background: var(--sap-surface, #ffffff);
+  color: var(--sap-text, #223548);
+}
+
+.sales-analysis-detail-modal__grid tbody tr:nth-child(even) td {
+  background: var(--sap-row-even, #fafbfd);
+}
+
+.sales-analysis-detail-modal__grid tfoot td {
+  background: var(--sap-surface-soft, #f7fafc);
+  color: var(--sap-heading, #0a4a85);
+  font-weight: 700;
+}
+
+.sales-analysis-detail-modal__grid .is-index {
+  width: 3%;
+}
+
+.sales-analysis-detail-modal__grid .is-numeric {
+  text-align: right;
+}
+
+.sales-analysis-detail-modal__link-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.sales-analysis-detail-modal__link-cell span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sales-analysis-detail-modal__link-icon {
+  color: var(--sap-warning, #8a5a00);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.sales-analysis-detail-modal__link-cell:hover {
+  color: var(--sap-primary-dark, #0854a0);
+}
+
+.sales-analysis-detail-modal__empty {
+  padding: 8px 10px;
+  text-align: center;
+  color: var(--sap-text-muted, #64748b);
+}
+
+.sales-analysis-detail-modal__diagram-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.sales-analysis-detail-modal__diagram-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sales-analysis-detail-modal__diagram-main {
+  padding-bottom: 2px;
+}
+
+.sales-analysis-detail-modal__diagram-note {
+  color: var(--sap-text-muted, #64748b);
+  font-size: 12px;
+}
+
+.sales-analysis-detail-modal__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.sales-analysis-detail-modal__footer-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sales-analysis-detail-modal__footer-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sales-analysis-detail-modal__print-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--sap-text, #223548);
+  font-size: 13px;
+}
+
+.sales-analysis-detail-modal__diagram-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--sap-text, #223548);
+  font-size: 13px;
+}
+
+.sales-analysis-detail-modal__diagram-select select {
+  min-width: 160px;
+  height: 28px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-xs, 4px);
+  background: var(--sap-surface, #ffffff);
+  padding: 2px 6px;
+  color: var(--sap-text, #223548);
+  font-size: 13px;
+}
+
+.bp-lookup-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.34);
+  z-index: 20000;
+}
+
+body > .bp-lookup-modal__backdrop {
+  position: fixed;
+}
+
+.bp-lookup-modal {
+  width: min(1100px, 100%);
+  max-height: calc(100vh - var(--sap-topbar-height, 64px) - 80px);
+  display: flex;
+  flex-direction: column;
+  background: var(--sap-surface, #ffffff);
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-md, 10px);
+  box-shadow: var(--sap-shadow-modal, 0 20px 48px rgba(15, 35, 65, 0.18));
+  overflow: hidden;
+}
+
+.bp-lookup-modal__titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px 6px;
+  cursor: move;
+  background: linear-gradient(180deg, #ffffff 0%, var(--sap-toolbar-bg, #eef2f7) 100%);
+  border-bottom: 1px solid var(--sap-border, #d5dce3);
+}
+
+.bp-lookup-modal__title {
+  color: var(--sap-heading, #0a4a85);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.bp-lookup-modal__controls {
+  display: flex;
+  gap: 4px;
+  cursor: default;
+}
+
+.bp-lookup-modal__controls button {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-xs, 4px);
+  background: linear-gradient(180deg, #ffffff 0%, #edf3f9 100%);
+  color: var(--sap-text, #223548);
+  font-size: 0;
+  line-height: 1;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.bp-lookup-modal__controls button:hover {
+  background: linear-gradient(180deg, #ffffff 0%, #dfe8f1 100%);
+}
+
+.bp-lookup-modal__accent {
+  height: 3px;
+  background: linear-gradient(90deg, #e0a316 0%, #f3c94f 30%, transparent 30%);
+}
+
+.bp-lookup-modal__body {
+  padding: 10px 12px 12px;
+  overflow: auto;
+  background: var(--sap-surface, #ffffff);
+}
+
+.bp-lookup-modal__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.bp-lookup-modal__find-label {
+  color: var(--sap-text, #223548);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.bp-lookup-modal__toolbar input {
+  width: 200px;
+  height: 28px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-xs, 4px);
+  background: var(--sap-surface, #ffffff);
+  padding: 2px 8px;
+  color: var(--sap-text, #223548);
+  font-size: 13px;
+}
+
+.bp-lookup-modal__toolbar input:focus {
+  outline: none;
+  border-color: var(--sap-primary, #0a6ed1);
+  box-shadow: 0 0 0 2px var(--sap-primary-soft, rgba(10, 110, 209, 0.13));
+}
+
+.bp-lookup-modal__action-btn {
+  min-width: 80px;
+  height: 31px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-sm, 6px);
+  background: linear-gradient(180deg, #ffffff 0%, #eef2f7 100%);
+  color: var(--sap-text, #223548);
+  font-size: 13px;
+  font-weight: 600;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.bp-lookup-modal__action-btn:hover:not(:disabled) {
+  background: linear-gradient(180deg, #ffffff 0%, #e2ecf5 100%);
+  border-color: var(--sap-primary, #0a6ed1);
+}
+
+.bp-lookup-modal__action-btn--primary {
+  border-color: var(--sap-primary-dark, #0854a0);
+  background: linear-gradient(180deg, var(--sap-primary, #0a6ed1) 0%, var(--sap-primary-dark, #0854a0) 100%);
+  color: #ffffff;
+}
+
+.bp-lookup-modal__action-btn--primary:hover:not(:disabled) {
+  background: linear-gradient(180deg, #1b7ddb 0%, #0a5fac 100%);
+}
+
+.bp-lookup-modal__action-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.bp-lookup-modal__grid-wrap {
+  overflow: auto;
+  border: 1px solid var(--sap-border, #d5dce3);
+  border-radius: var(--sap-radius-sm, 6px);
+  background: var(--sap-surface, #ffffff);
+}
+
+.bp-lookup-modal__grid {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12px;
+}
+
+.bp-lookup-modal__grid thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 6px 8px;
+  text-align: left;
+  font-weight: 700;
+  color: var(--sap-heading, #0a4a85);
+  background: var(--sap-toolbar-bg, #eef2f7);
+  border: 1px solid var(--sap-border, #d5dce3);
+  white-space: nowrap;
+}
+
+.bp-lookup-modal__grid tbody td {
+  padding: 4px 8px;
+  border: 1px solid var(--sap-border-soft, #e3e8ee);
+  height: 22px;
+  color: var(--sap-text, #223548);
+  white-space: nowrap;
+  background: var(--sap-surface, #ffffff);
+}
+
+.bp-lookup-modal__grid tbody tr:nth-child(even) td {
+  background: var(--sap-row-even, #fafbfd);
+}
+
+.bp-lookup-modal__grid tbody tr:hover td {
+  background: var(--sap-row-hover, #f0f6fd);
+}
+
+.bp-lookup-modal__grid tbody tr.is-selected td {
+  background: #e7f2fb;
+}
+
+.bp-lookup-modal__grid tbody tr.is-selected td:first-child {
+  box-shadow: inset 3px 0 0 var(--sap-primary, #0a6ed1);
+}
+
+.bp-lookup-modal__grid tbody tr {
+  cursor: pointer;
+}
+
+.bp-lookup-modal__grid .is-index {
+  width: 34px;
+}
+
+.bp-lookup-modal__grid .is-name {
+  width: 410px;
+}
+
+.bp-lookup-modal__grid .is-code {
+  width: 92px;
+}
+
+.bp-lookup-modal__grid .is-balance {
+  width: 120px;
+  text-align: right;
+}
+
+.bp-lookup-modal__grid .is-type {
+  width: 92px;
+}
+
+.bp-lookup-modal__grid .is-flag {
+  width: 80px;
+}
+
+.bp-lookup-modal__grid .is-billto {
+  width: 190px;
+}
+
+.bp-lookup-modal__grid .is-address {
+  width: 340px;
+}
+
+.bp-lookup-modal__grid .is-gst {
+  width: 210px;
+}
+
+.bp-lookup-modal__state-cell {
+  padding: 12px 10px;
+  text-align: center;
+}
+
+.bp-lookup-modal__state-cell.is-error {
+  color: var(--sap-danger, #b42318);
+}
+
+.bp-lookup-modal__footer {
+  display: flex;
+  gap: 6px;
+  padding: 0 8px 8px;
+}
+
+.item-lookup-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.34);
+  z-index: 20000;
+}
+
+body > .item-lookup-modal__backdrop {
+  position: fixed;
+}
+
+.item-lookup-modal {
+  width: min(1100px, 100%);
+  max-height: calc(100vh - var(--sap-topbar-height, 64px) - 80px);
+  display: flex;
+  flex-direction: column;
+  background: var(--sap-surface, #ffffff);
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-md, 10px);
+  box-shadow: var(--sap-shadow-modal, 0 20px 48px rgba(15, 35, 65, 0.18));
+  overflow: hidden;
+}
+
+.item-lookup-modal__titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px 6px;
+  cursor: move;
+  background: linear-gradient(180deg, #ffffff 0%, var(--sap-toolbar-bg, #eef2f7) 100%);
+  border-bottom: 1px solid var(--sap-border, #d5dce3);
+}
+
+.item-lookup-modal__title {
+  color: var(--sap-heading, #0a4a85);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.item-lookup-modal__controls {
+  display: flex;
+  gap: 4px;
+  cursor: default;
+}
+
+.item-lookup-modal__controls button {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-xs, 4px);
+  background: linear-gradient(180deg, #ffffff 0%, #edf3f9 100%);
+  color: var(--sap-text, #223548);
+  font-size: 0;
+  line-height: 1;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.item-lookup-modal__controls button:hover {
+  background: linear-gradient(180deg, #ffffff 0%, #dfe8f1 100%);
+}
+
+.item-lookup-modal__accent {
+  height: 3px;
+  background: linear-gradient(90deg, #e0a316 0%, #f3c94f 30%, transparent 30%);
+}
+
+.item-lookup-modal__body {
+  padding: 10px 12px 12px;
+  overflow: auto;
+  background: var(--sap-surface, #ffffff);
+}
+
+.item-lookup-modal__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.item-lookup-modal__find-label {
+  color: var(--sap-text, #223548);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.item-lookup-modal__toolbar input {
+  width: 200px;
+  height: 28px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-xs, 4px);
+  background: var(--sap-surface, #ffffff);
+  padding: 2px 8px;
+  color: var(--sap-text, #223548);
+  font-size: 13px;
+}
+
+.item-lookup-modal__toolbar input:focus {
+  outline: none;
+  border-color: var(--sap-primary, #0a6ed1);
+  box-shadow: 0 0 0 2px var(--sap-primary-soft, rgba(10, 110, 209, 0.13));
+}
+
+.item-lookup-modal__action-btn {
+  min-width: 80px;
+  height: 31px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-sm, 6px);
+  background: linear-gradient(180deg, #ffffff 0%, #eef2f7 100%);
+  color: var(--sap-text, #223548);
+  font-size: 13px;
+  font-weight: 600;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.item-lookup-modal__action-btn:hover:not(:disabled) {
+  background: linear-gradient(180deg, #ffffff 0%, #e2ecf5 100%);
+  border-color: var(--sap-primary, #0a6ed1);
+}
+
+.item-lookup-modal__action-btn--primary {
+  border-color: var(--sap-primary-dark, #0854a0);
+  background: linear-gradient(180deg, var(--sap-primary, #0a6ed1) 0%, var(--sap-primary-dark, #0854a0) 100%);
+  color: #ffffff;
+}
+
+.item-lookup-modal__action-btn--primary:hover:not(:disabled) {
+  background: linear-gradient(180deg, #1b7ddb 0%, #0a5fac 100%);
+}
+
+.item-lookup-modal__action-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.item-lookup-modal__grid-wrap {
+  overflow: auto;
+  border: 1px solid var(--sap-border, #d5dce3);
+  border-radius: var(--sap-radius-sm, 6px);
+  background: var(--sap-surface, #ffffff);
+}
+
+.item-lookup-modal__grid {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12px;
+}
+
+.item-lookup-modal__grid thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 6px 8px;
+  text-align: left;
+  font-weight: 700;
+  color: var(--sap-heading, #0a4a85);
+  background: var(--sap-toolbar-bg, #eef2f7);
+  border: 1px solid var(--sap-border, #d5dce3);
+  white-space: nowrap;
+}
+
+.item-lookup-modal__grid tbody td {
+  padding: 4px 8px;
+  border: 1px solid var(--sap-border-soft, #e3e8ee);
+  height: 22px;
+  color: var(--sap-text, #223548);
+  white-space: nowrap;
+  background: var(--sap-surface, #ffffff);
+}
+
+.item-lookup-modal__grid tbody tr:nth-child(even) td {
+  background: var(--sap-row-even, #fafbfd);
+}
+
+.item-lookup-modal__grid tbody tr:hover td {
+  background: var(--sap-row-hover, #f0f6fd);
+}
+
+.item-lookup-modal__grid tbody tr.is-selected td {
+  background: #e7f2fb;
+}
+
+.item-lookup-modal__grid tbody tr.is-selected td:first-child {
+  box-shadow: inset 3px 0 0 var(--sap-primary, #0a6ed1);
+}
+
+.item-lookup-modal__grid tbody tr {
+  cursor: pointer;
+}
+
+.item-lookup-modal__grid .is-index {
+  width: 34px;
+}
+
+.item-lookup-modal__grid .is-code {
+  width: 150px;
+}
+
+.item-lookup-modal__grid .is-name {
+  width: 610px;
+}
+
+.item-lookup-modal__grid .is-stock {
+  width: 120px;
+  text-align: right;
+}
+
+.item-lookup-modal__grid .is-flag {
+  width: 100px;
+}
+
+.item-lookup-modal__state-cell {
+  padding: 12px 10px;
+  text-align: center;
+}
+
+.item-lookup-modal__state-cell.is-error {
+  color: var(--sap-danger, #b42318);
+}
+
+.item-lookup-modal__footer {
+  display: flex;
+  gap: 6px;
+  padding: 0 8px 8px;
+}
+
+.sales-employee-lookup-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.34);
+  z-index: 20000;
+}
+
+body > .sales-employee-lookup-modal__backdrop {
+  position: fixed;
+}
+
+.sales-employee-lookup-modal {
+  width: min(760px, 100%);
+  max-height: calc(100vh - var(--sap-topbar-height, 64px) - 48px);
+  display: flex;
+  flex-direction: column;
+  background: var(--sap-surface, #ffffff);
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-md, 10px);
+  box-shadow: var(--sap-shadow-modal, 0 20px 48px rgba(15, 35, 65, 0.18));
+  overflow: hidden;
+}
+
+.sales-employee-lookup-modal__titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px 6px;
+  cursor: move;
+  background: linear-gradient(180deg, #ffffff 0%, var(--sap-toolbar-bg, #eef2f7) 100%);
+  border-bottom: 1px solid var(--sap-border, #d5dce3);
+}
+
+.sales-employee-lookup-modal__title {
+  color: var(--sap-heading, #0a4a85);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.sales-employee-lookup-modal__controls {
+  display: flex;
+  gap: 4px;
+  cursor: default;
+}
+
+.sales-employee-lookup-modal__controls button {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-xs, 4px);
+  background: linear-gradient(180deg, #ffffff 0%, #edf3f9 100%);
+  color: var(--sap-text, #223548);
+  font-size: 0;
+  line-height: 1;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.sales-employee-lookup-modal__controls button:hover {
+  background: linear-gradient(180deg, #ffffff 0%, #dfe8f1 100%);
+}
+
+.sales-employee-lookup-modal__accent {
+  height: 3px;
+  background: linear-gradient(90deg, #e0a316 0%, #f3c94f 30%, transparent 30%);
+}
+
+.sales-employee-lookup-modal__body {
+  padding: 10px 12px 12px;
+  overflow: auto;
+  background: var(--sap-surface, #ffffff);
+}
+
+.sales-employee-lookup-modal__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.sales-employee-lookup-modal__find-label {
+  color: var(--sap-text, #223548);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sales-employee-lookup-modal__toolbar input {
+  width: 200px;
+  height: 28px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-xs, 4px);
+  background: var(--sap-surface, #ffffff);
+  padding: 2px 8px;
+  color: var(--sap-text, #223548);
+  font-size: 13px;
+}
+
+.sales-employee-lookup-modal__toolbar input:focus {
+  outline: none;
+  border-color: var(--sap-primary, #0a6ed1);
+  box-shadow: 0 0 0 2px var(--sap-primary-soft, rgba(10, 110, 209, 0.13));
+}
+
+.sales-employee-lookup-modal__action-btn {
+  min-width: 80px;
+  height: 31px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-sm, 6px);
+  background: linear-gradient(180deg, #ffffff 0%, #eef2f7 100%);
+  color: var(--sap-text, #223548);
+  font-size: 13px;
+  font-weight: 600;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.sales-employee-lookup-modal__action-btn:hover:not(:disabled) {
+  background: linear-gradient(180deg, #ffffff 0%, #e2ecf5 100%);
+  border-color: var(--sap-primary, #0a6ed1);
+}
+
+.sales-employee-lookup-modal__action-btn--primary {
+  border-color: var(--sap-primary-dark, #0854a0);
+  background: linear-gradient(180deg, var(--sap-primary, #0a6ed1) 0%, var(--sap-primary-dark, #0854a0) 100%);
+  color: #ffffff;
+}
+
+.sales-employee-lookup-modal__action-btn--primary:hover:not(:disabled) {
+  background: linear-gradient(180deg, #1b7ddb 0%, #0a5fac 100%);
+}
+
+.sales-employee-lookup-modal__action-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.sales-employee-lookup-modal__grid-wrap {
+  overflow: auto;
+  border: 1px solid var(--sap-border, #d5dce3);
+  border-radius: var(--sap-radius-sm, 6px);
+  background: var(--sap-surface, #ffffff);
+}
+
+.sales-employee-lookup-modal__grid {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12px;
+}
+
+.sales-employee-lookup-modal__grid thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 6px 8px;
+  text-align: left;
+  font-weight: 700;
+  color: var(--sap-heading, #0a4a85);
+  background: var(--sap-toolbar-bg, #eef2f7);
+  border: 1px solid var(--sap-border, #d5dce3);
+  white-space: nowrap;
+}
+
+.sales-employee-lookup-modal__grid tbody td {
+  padding: 4px 8px;
+  border: 1px solid var(--sap-border-soft, #e3e8ee);
+  height: 22px;
+  color: var(--sap-text, #223548);
+  white-space: nowrap;
+  background: var(--sap-surface, #ffffff);
+}
+
+.sales-employee-lookup-modal__grid tbody tr:nth-child(even) td {
+  background: var(--sap-row-even, #fafbfd);
+}
+
+.sales-employee-lookup-modal__grid tbody tr:hover td {
+  background: var(--sap-row-hover, #f0f6fd);
+}
+
+.sales-employee-lookup-modal__grid tbody tr.is-selected td {
+  background: #e7f2fb;
+}
+
+.sales-employee-lookup-modal__grid tbody tr.is-selected td:first-child {
+  box-shadow: inset 3px 0 0 var(--sap-primary, #0a6ed1);
+}
+
+.sales-employee-lookup-modal__grid tbody tr {
+  cursor: pointer;
+}
+
+.sales-employee-lookup-modal__grid .is-index {
+  width: 34px;
+}
+
+.sales-employee-lookup-modal__grid .is-name {
+  width: 280px;
+}
+
+.sales-employee-lookup-modal__grid .is-remarks {
+  width: auto;
+}
+
+.sales-employee-lookup-modal__state-cell {
+  padding: 12px 10px;
+  text-align: center;
+}
+
+.sales-employee-lookup-modal__state-cell.is-error {
+  color: var(--sap-danger, #b42318);
+}
+
+.sales-employee-lookup-modal__footer {
+  display: flex;
+  gap: 6px;
+  padding: 0 8px 8px;
+}
+
+.sap-properties-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.22);
+  z-index: 20000;
+}
+
+body > .sap-properties-modal__backdrop {
+  position: fixed;
+}
+
+.sap-properties-modal {
+  width: 560px;
+  max-width: 100%;
+  max-height: calc(100vh - var(--sap-topbar-height, 64px) - 40px);
+  display: flex;
+  flex-direction: column;
+  background: var(--sap-surface, #ffffff);
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-md, 10px);
+  box-shadow: var(--sap-shadow-modal, 0 20px 48px rgba(15, 35, 65, 0.18));
+  overflow: hidden;
+}
+
+.sap-properties-modal__titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px 6px;
+  cursor: move;
+  background: linear-gradient(180deg, #ffffff 0%, var(--sap-toolbar-bg, #eef2f7) 100%);
+  border-bottom: 1px solid var(--sap-border, #d5dce3);
+}
+
+.sap-properties-modal__title {
+  color: var(--sap-heading, #0a4a85);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.sap-properties-modal__controls {
+  display: flex;
+  gap: 4px;
+  cursor: default;
+}
+
+.sap-properties-modal__controls button {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-xs, 4px);
+  background: linear-gradient(180deg, #ffffff 0%, #edf3f9 100%);
+  color: var(--sap-text, #223548);
+  font-size: 0;
+  line-height: 1;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.sap-properties-modal__controls button:hover {
+  background: linear-gradient(180deg, #ffffff 0%, #dfe8f1 100%);
+}
+
+.sap-properties-modal__accent {
+  height: 3px;
+  background: linear-gradient(90deg, #e0a316 0%, #f3c94f 30%, transparent 30%);
+}
+
+.sap-properties-modal__body {
+  padding: 8px 10px 10px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.sap-properties-modal__panel {
+  border: 1px solid var(--sap-border, #d5dce3);
+  border-radius: var(--sap-radius-sm, 6px);
+  background: var(--sap-surface-soft, #f7fafc);
+  padding: 12px 14px 14px;
+}
+
+.sap-properties-modal__checkbox-line,
+.sap-properties-modal__radio-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--sap-text, #223548);
+  font-size: 13px;
+}
+
+.sap-properties-modal__checkbox-line input,
+.sap-properties-modal__radio-line input {
+  margin: 0;
+  accent-color: var(--sap-primary, #0a6ed1);
+}
+
+.sap-properties-modal__top-options {
+  margin-top: 6px;
+}
+
+.sap-properties-modal__top-options.is-disabled {
+  opacity: 0.55;
+}
+
+.sap-properties-modal__link-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.sap-properties-modal__top-label {
+  width: 42px;
+  color: var(--sap-text, #223548);
+  font-size: 13px;
+}
+
+.sap-properties-modal__grid-wrap {
+  margin-top: 6px;
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--sap-border, #d5dce3);
+  border-radius: var(--sap-radius-sm, 6px);
+  background: var(--sap-surface, #ffffff);
+}
+
+.sap-properties-modal__grid-wrap.is-disabled {
+  opacity: 0.55;
+}
+
+.sap-properties-modal__grid {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12px;
+}
+
+.sap-properties-modal__grid thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 4px 6px;
+  text-align: left;
+  font-weight: 700;
+  color: var(--sap-heading, #0a4a85);
+  background: var(--sap-toolbar-bg, #eef2f7);
+  border: 1px solid var(--sap-border, #d5dce3);
+}
+
+.sap-properties-modal__grid tbody td {
+  padding: 3px 6px;
+  border: 1px solid var(--sap-border-soft, #e3e8ee);
+  height: 22px;
+  color: var(--sap-text, #223548);
+  background: var(--sap-surface, #ffffff);
+}
+
+.sap-properties-modal__grid tbody tr:nth-child(even) td {
+  background: var(--sap-row-even, #fafbfd);
+}
+
+.sap-properties-modal__grid tbody tr {
+  cursor: pointer;
+}
+
+.sap-properties-modal__grid tbody tr:hover td {
+  background: var(--sap-row-hover, #f0f6fd);
+}
+
+.sap-properties-modal__grid tbody tr.is-selected td {
+  background: #e7f2fb;
+}
+
+.sap-properties-modal__grid .is-index {
+  width: 36px;
+  text-align: center;
+}
+
+.sap-properties-modal__grid .is-property {
+  width: auto;
+}
+
+.sap-properties-modal__toolbar {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.sap-properties-modal__action-btn {
+  min-width: 118px;
+  height: 28px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-sm, 6px);
+  background: linear-gradient(180deg, #ffffff 0%, #eef2f7 100%);
+  color: var(--sap-text, #223548);
+  font-size: 12px;
+  font-weight: 600;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.sap-properties-modal__action-btn:hover:not(:disabled) {
+  background: linear-gradient(180deg, #ffffff 0%, #e2ecf5 100%);
+  border-color: var(--sap-primary, #0a6ed1);
+}
+
+.sap-properties-modal__action-btn:not(:disabled) {
+  color: var(--sap-text, #223548);
+}
+
+.sap-properties-modal__action-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.sap-properties-modal__footer {
+  display: flex;
+  gap: 8px;
+  padding-top: 10px;
+}
+
+.sap-properties-modal__primary-btn {
+  min-width: 84px;
+  height: 31px;
+  border: 1px solid var(--sap-primary-dark, #0854a0);
+  border-radius: var(--sap-radius-sm, 6px);
+  background: linear-gradient(180deg, var(--sap-primary, #0a6ed1) 0%, var(--sap-primary-dark, #0854a0) 100%);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.sap-properties-modal__primary-btn:hover:not(:disabled) {
+  background: linear-gradient(180deg, #1b7ddb 0%, #0a5fac 100%);
+}
+
+.sales-analysis-window button:hover {
+  filter: brightness(1.03);
+}
+
+.sales-analysis-window button:active {
+  transform: translateY(1px);
+}
+
+@media (max-width: 1100px) {
+  .sales-analysis-panel__row {
+    grid-template-columns: repeat(2, minmax(220px, 1fr));
+  }
+
+  .sales-analysis__selection-grid {
+    grid-template-columns: repeat(2, minmax(180px, 1fr));
+  }
+
+  .sales-analysis__selection-row-label {
+    grid-column: 1 / -1;
+    padding-bottom: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .sales-analysis-page {
+    padding: 12px;
+  }
+
+  .sales-analysis-tabs {
+    padding: 0;
+    overflow-x: auto;
+  }
+
+  .sales-analysis-tabs__tab {
+    min-width: 132px;
+  }
+
+  .sales-analysis-panel {
+    min-height: auto;
+    padding: 12px;
+  }
+
+  .sales-analysis-panel__row,
+  .sales-analysis__date-row,
+  .sales-analysis__selection-grid,
+  .sales-analysis__selection-grid--employees {
+    grid-template-columns: 1fr;
+  }
+
+  .sales-analysis__date-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sales-analysis__picker-btn {
+    width: 100%;
+  }
+
+  .sales-analysis-window__footer {
+    flex-wrap: wrap;
+  }
+
+  .bp-lookup-modal__backdrop {
+    padding: 10px;
+  }
+
+  .bp-lookup-modal {
+    width: 100%;
+    max-height: calc(100vh - var(--sap-topbar-height, 64px) - 20px);
+  }
+
+  .bp-lookup-modal__toolbar {
+    flex-wrap: wrap;
+  }
+
+  .bp-lookup-modal__toolbar input {
+    width: 100%;
+  }
+
+  .bp-lookup-modal__footer {
+    flex-wrap: wrap;
+  }
+
+  .sap-properties-modal__panel {
+    padding: 14px;
+  }
+
+  .sap-properties-modal__link-row,
+  .sap-properties-modal__toolbar,
+  .sap-properties-modal__footer,
+  .sales-analysis-detail-modal__diagram-row,
+  .sales-analysis-detail-modal__footer {
+    flex-wrap: wrap;
+  }
+}

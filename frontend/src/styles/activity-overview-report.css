@@ -1,0 +1,652 @@
+.activity-overview-page {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+}
+
+.activity-overview-window {
+  width: 640px;
+  max-width: 100%;
+  max-height: calc(100vh - 110px);
+}
+
+.activity-overview-criteria {
+  background: var(--sap-surface, #ffffff);
+  color: var(--sap-text, #223548);
+  font-size: 12px;
+}
+
+.activity-overview-grid {
+  display: grid;
+  grid-template-columns: 96px 42px 170px 36px 130px;
+  gap: 4px 8px;
+  align-items: center;
+}
+
+.activity-overview-grid label,
+.activity-overview-grid span,
+.activity-overview-dates label,
+.activity-overview-dates span {
+  color: var(--sap-text, #223548);
+  font-size: 12px;
+}
+
+.activity-overview-grid input,
+.activity-overview-grid select,
+.activity-overview-dates input,
+.activity-overview-property-row input {
+  width: 100%;
+  height: 19px;
+  min-height: 19px;
+  padding: 1px 4px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  background: var(--sap-surface, #ffffff);
+  color: var(--sap-text, #223548);
+  font-size: 12px;
+}
+
+.activity-overview-grid select {
+  padding: 0 2px;
+}
+
+.activity-overview-lookup-input {
+  display: grid;
+  grid-template-columns: 1fr 22px;
+  gap: 2px;
+}
+
+.activity-overview-lookup-input input {
+  background: var(--sap-surface, #ffffff);
+}
+
+.activity-overview-lookup-input button,
+.activity-overview-chooser button,
+.activity-overview-mini-btn {
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-xs, 4px);
+  background: linear-gradient(180deg, #ffffff 0%, #edf3f9 100%);
+  color: var(--sap-text, #223548);
+  font-size: 11px;
+}
+
+.activity-overview-lookup-input button:hover,
+.activity-overview-chooser button:hover,
+.activity-overview-mini-btn:hover {
+  background: linear-gradient(180deg, #ffffff 0%, #dfe8f1 100%);
+  border-color: var(--sap-primary, #0a6ed1);
+}
+
+.activity-overview-from,
+.activity-overview-to {
+  justify-self: center;
+}
+
+.activity-overview-chooser {
+  display: grid;
+  grid-template-columns: 1fr 24px;
+  gap: 3px;
+  align-items: center;
+}
+
+.activity-overview-chooser span {
+  height: 19px;
+  padding: 1px 4px;
+  overflow: hidden;
+  border: 1px solid var(--sap-border, #d5dce3);
+  background: var(--sap-surface-muted, #edf1f5);
+  color: var(--sap-text, #223548);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-overview-span2 {
+  grid-column: span 2;
+}
+
+.activity-overview-property-row {
+  display: grid;
+  grid-template-columns: 136px 166px;
+  gap: 28px;
+  align-items: center;
+  margin: 14px 0 16px 10px;
+}
+
+.activity-overview-property-row .sales-analysis__sap-btn {
+  min-width: 136px;
+  height: 24px;
+}
+
+.activity-overview-property-row input {
+  background: var(--sap-surface-muted, #edf1f5);
+}
+
+.activity-overview-section {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--sap-border, #d5dce3);
+}
+
+.activity-overview-grid--two-side {
+  grid-template-columns: 70px 166px 100px 130px;
+  gap: 4px 5px;
+}
+
+.activity-overview-wide {
+  grid-column: span 3;
+}
+
+.activity-overview-dates {
+  display: grid;
+  grid-template-columns: 154px 42px 118px 34px 128px;
+  gap: 4px 8px;
+  align-items: center;
+  margin-top: 34px;
+}
+
+.activity-overview-checks {
+  display: grid;
+  grid-template-columns: 168px 42px 1fr;
+  gap: 4px 6px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.activity-overview-service-call {
+  grid-column: 1 / -1;
+}
+
+.activity-overview-footer {
+  margin-top: 26px;
+}
+
+.activity-overview-report-grid th,
+.activity-overview-report-grid td {
+  height: 20px;
+}
+
+.activity-overview-report-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.activity-lookup-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 72px 10px 10px;
+  background: rgba(0, 0, 0, 0.18);
+  z-index: 20000;
+}
+
+.activity-lookup-modal {
+  width: min(560px, 100%);
+  max-height: calc(100vh - var(--sap-topbar-height, 64px) - 92px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-md, 10px);
+  background: var(--sap-surface, #ffffff);
+  box-shadow: var(--sap-shadow-modal, 0 20px 48px rgba(15, 35, 65, 0.18));
+}
+
+.activity-lookup-modal__titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px 6px;
+  cursor: move;
+  border-bottom: 1px solid var(--sap-border, #d5dce3);
+  background: linear-gradient(180deg, #ffffff 0%, var(--sap-toolbar-bg, #eef2f7) 100%);
+}
+
+.activity-lookup-modal__title {
+  color: var(--sap-heading, #0a4a85);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.activity-lookup-modal__controls {
+  display: flex;
+  gap: 4px;
+  cursor: default;
+}
+
+.activity-lookup-modal__controls button {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-xs, 4px);
+  background: linear-gradient(180deg, #ffffff 0%, #edf3f9 100%);
+  color: var(--sap-text, #223548);
+  font-size: 0;
+  line-height: 1;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.activity-lookup-modal__controls button:hover {
+  background: linear-gradient(180deg, #ffffff 0%, #dfe8f1 100%);
+}
+
+.activity-lookup-modal__controls button::before {
+  display: block;
+  font-size: 13px;
+  line-height: 22px;
+}
+
+.activity-lookup-modal__controls button[aria-label="Minimize"]::before {
+  content: "-";
+}
+
+.activity-lookup-modal__controls button[aria-label="Restore"]::before {
+  content: "[]";
+}
+
+.activity-lookup-modal__controls button[aria-label="Close"]::before {
+  content: "x";
+}
+
+.activity-lookup-modal__accent {
+  height: 3px;
+  background: linear-gradient(90deg, #e0a316 0%, #f3c94f 30%, transparent 30%);
+}
+
+.activity-lookup-modal__body {
+  min-height: 0;
+  padding: 6px 8px 8px;
+  overflow: auto;
+}
+
+.activity-lookup-modal__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  color: var(--sap-text, #223548);
+  font-size: 13px;
+}
+
+.activity-lookup-modal__toolbar input {
+  width: 224px;
+  height: 20px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  background: var(--sap-surface, #ffffff);
+  color: var(--sap-text, #223548);
+}
+
+.activity-lookup-modal__grid-wrap {
+  max-height: 300px;
+  overflow: auto;
+  border: 1px solid var(--sap-border, #d5dce3);
+  border-radius: var(--sap-radius-sm, 6px);
+  background: var(--sap-surface, #ffffff);
+}
+
+.activity-lookup-modal__grid {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12px;
+}
+
+.activity-lookup-modal__grid th,
+.activity-lookup-modal__grid td {
+  height: 20px;
+  padding: 2px 5px;
+  overflow: hidden;
+  border: 1px solid var(--sap-border-soft, #e3e8ee);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-lookup-modal__grid th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--sap-toolbar-bg, #eef2f7);
+  color: var(--sap-heading, #0a4a85);
+  text-align: left;
+  font-weight: 700;
+}
+
+.activity-lookup-modal__grid td {
+  background: var(--sap-surface, #ffffff);
+  color: var(--sap-text, #223548);
+}
+
+.activity-lookup-modal__grid tr.is-selected td {
+  background: #e7f2fb;
+}
+
+.activity-lookup-modal__grid .is-index {
+  width: 34px;
+}
+
+.activity-lookup-modal__grid .is-select {
+  width: 58px;
+  text-align: center;
+}
+
+.activity-lookup-modal__state {
+  padding: 12px;
+  text-align: center;
+}
+
+.activity-lookup-modal__state.is-error {
+  color: var(--sap-danger, #b42318);
+}
+
+.activity-lookup-modal__footer {
+  display: flex;
+  gap: 8px;
+  padding: 0 8px 8px;
+}
+
+.activity-lookup-modal__action-btn {
+  min-width: 82px;
+  height: 26px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-sm, 6px);
+  background: linear-gradient(180deg, #ffffff 0%, #eef2f7 100%);
+  color: var(--sap-text, #223548);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.activity-lookup-modal__action-btn:hover:not(:disabled) {
+  background: linear-gradient(180deg, #ffffff 0%, #e2ecf5 100%);
+  border-color: var(--sap-primary, #0a6ed1);
+}
+
+.activity-lookup-modal__action-btn--primary {
+  border-color: var(--sap-primary-dark, #0854a0);
+  background: linear-gradient(180deg, var(--sap-primary, #0a6ed1) 0%, var(--sap-primary-dark, #0854a0) 100%);
+  color: #ffffff;
+}
+
+.activity-lookup-modal__action-btn--primary:hover:not(:disabled) {
+  background: linear-gradient(180deg, #1b7ddb 0%, #0a5fac 100%);
+}
+
+@media (max-width: 760px) {
+  .activity-overview-grid,
+  .activity-overview-grid--two-side,
+  .activity-overview-dates,
+  .activity-overview-checks {
+    grid-template-columns: 1fr;
+  }
+
+  .activity-overview-wide,
+  .activity-overview-span2,
+  .activity-overview-service-call {
+    grid-column: auto;
+  }
+
+  .activity-overview-property-row {
+    grid-template-columns: 1fr;
+    margin-left: 0;
+  }
+}
+
+.activity-page {
+  width: 100%;
+  min-height: calc(100vh - 88px);
+  padding: 8px 12px;
+  overflow: auto;
+  background: var(--sap-page-bg, #f5f6f8);
+}
+
+.activity-window {
+  min-width: 1120px;
+  min-height: 780px;
+  overflow: hidden;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  background: var(--sap-surface, #ffffff);
+}
+
+.activity-window__titlebar {
+  padding: 4px 6px 4px 10px;
+}
+
+.activity-form {
+  padding: 8px 12px 10px;
+  color: var(--sap-text, #223548);
+  font-size: 12px;
+}
+
+.activity-form input,
+.activity-form select,
+.activity-form button.activity-form__link-input {
+  height: 20px;
+  min-height: 20px;
+  padding: 1px 4px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  background: var(--sap-surface, #ffffff);
+  color: var(--sap-text, #223548);
+  font: inherit;
+}
+
+.activity-form select {
+  padding: 0 2px;
+}
+
+.activity-form input[readonly],
+.activity-form button.activity-form__link-input {
+  background: var(--sap-surface-muted, #edf1f5);
+}
+
+.activity-form__top {
+  display: grid;
+  grid-template-columns: 390px 360px;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 14px;
+}
+
+.activity-form__left-fields,
+.activity-form__right-fields {
+  display: grid;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.activity-form__left-fields {
+  grid-template-columns: 80px 1fr;
+}
+
+.activity-form__right-fields {
+  grid-template-columns: 100px 1fr;
+}
+
+.activity-form__left-fields label,
+.activity-form__right-fields label,
+.activity-general-panel label {
+  color: var(--sap-text, #223548);
+}
+
+.activity-form__assigned {
+  display: grid;
+  grid-template-columns: 18px 90px 1fr;
+  gap: 3px;
+  align-items: center;
+}
+
+.activity-form__arrow {
+  color: var(--sap-warning, #8a5a00);
+  font-weight: 700;
+}
+
+.activity-form__bp-field {
+  display: grid;
+  grid-template-columns: 1fr 70px;
+  gap: 4px;
+}
+
+.activity-form__bp-field button {
+  height: 20px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  background: var(--sap-surface-muted, #edf1f5);
+}
+
+.activity-form__link-input {
+  width: 100%;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-form__link-input:not(:disabled) {
+  cursor: pointer;
+}
+
+.activity-form__link-input:not(:disabled):hover {
+  color: var(--sap-primary-dark, #0854a0);
+  text-decoration: underline;
+}
+
+.activity-form__checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.activity-form__checkbox input {
+  width: 14px;
+  height: 14px;
+  min-height: 14px;
+  margin: 0;
+}
+
+.activity-tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 0;
+  margin-left: 8px;
+}
+
+.activity-tabs button {
+  min-width: 138px;
+  height: 25px;
+  border: 1px solid var(--sap-border, #d5dce3);
+  border-bottom: 0;
+  border-radius: var(--sap-radius-sm, 6px) var(--sap-radius-sm, 6px) 0 0;
+  background: var(--sap-tab-bg, #eef1f5);
+  color: var(--sap-text-muted, #64748b);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.activity-tabs button.is-active {
+  position: relative;
+  z-index: 2;
+  border-top: 2px solid var(--sap-primary, #0a6ed1);
+  color: var(--sap-heading, #0a4a85);
+  background: var(--sap-surface, #ffffff);
+}
+
+.activity-general-panel {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(520px, 1fr) 300px;
+  grid-template-rows: auto 1fr auto;
+  min-height: 575px;
+  padding: 14px 14px 12px;
+  border: 1px solid var(--sap-border, #d5dce3);
+  background: var(--sap-surface, #ffffff);
+}
+
+.activity-general-panel__left {
+  display: grid;
+  grid-template-columns: 70px 510px;
+  gap: 4px 8px;
+  align-content: start;
+}
+
+.activity-general-panel__right {
+  display: grid;
+  grid-template-columns: 96px 170px;
+  gap: 4px 8px;
+  align-content: start;
+  justify-self: end;
+  margin-top: 22px;
+}
+
+.activity-form__remarks {
+  background: var(--sap-surface, #ffffff);
+}
+
+.activity-form__date-time {
+  display: grid;
+  grid-template-columns: 120px 100px;
+  gap: 4px;
+  width: 224px;
+}
+
+.activity-general-panel__left > input,
+.activity-general-panel__left > select {
+  max-width: 224px;
+}
+
+.activity-general-panel__left .activity-form__remarks {
+  max-width: none;
+}
+
+.activity-general-panel__bottom-left {
+  display: grid;
+  grid-template-columns: 70px 110px;
+  gap: 8px;
+  align-items: center;
+  grid-column: 1;
+  grid-row: 3;
+  align-self: end;
+}
+
+.activity-general-panel__bottom-checks {
+  display: grid;
+  gap: 4px;
+  grid-column: 2;
+  grid-row: 3;
+  justify-self: start;
+  align-self: end;
+}
+
+.activity-form__status {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-sm, 6px);
+  background: var(--sap-primary-soft, rgba(10, 110, 209, 0.13));
+  color: var(--sap-heading, #0a4a85);
+}
+
+.activity-form__status.is-error {
+  border-color: var(--sap-danger, #b42318);
+  background: rgba(180, 35, 24, 0.08);
+  color: var(--sap-danger, #b42318);
+}
+
+.activity-form__bottom {
+  display: grid;
+  grid-template-columns: 100px 170px 1fr 120px;
+  gap: 8px;
+  align-items: center;
+  margin-top: -28px;
+  padding: 0 4px;
+}
+
+.activity-form__follow-up {
+  grid-column: 4;
+}
+
+.activity-form__footer {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}

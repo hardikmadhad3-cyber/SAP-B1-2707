@@ -1,0 +1,62 @@
+.sap-address-modal {
+  width: min(540px, calc(100% - 40px));
+  font-size: 12px !important;
+}
+
+.sap-address-modal__body {
+  padding: 10px 14px;
+}
+
+.sap-address-modal__field {
+  display: grid;
+  grid-template-columns: minmax(150px, 42%) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 5px;
+  color: var(--sap-text);
+  font-size: 12px !important;
+  font-weight: 400 !important;
+  line-height: 1.25;
+}
+
+.sap-address-modal__field > span {
+  text-align: right;
+  color: var(--sap-text);
+  font-size: 12px !important;
+  font-weight: 400 !important;
+  letter-spacing: normal;
+}
+
+.sap-address-modal__field input,
+.sap-address-modal__field select {
+  width: 100%;
+  min-width: 0;
+  height: 26px;
+  padding: 2px 7px;
+  border: 1px solid var(--sap-border-strong);
+  border-radius: var(--sap-radius-xs);
+  background: var(--sap-surface);
+  color: var(--sap-text);
+  font-family: var(--sap-font-family) !important;
+  font-size: 12px !important;
+  font-weight: 400 !important;
+  line-height: 1.2 !important;
+}
+
+.sap-address-modal__field input:focus,
+.sap-address-modal__field select:focus {
+  border-color: var(--sap-primary);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--sap-primary-soft);
+}
+
+@media (max-width: 600px) {
+  .sap-address-modal__field {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+
+  .sap-address-modal__field > span {
+    text-align: left;
+  }
+}

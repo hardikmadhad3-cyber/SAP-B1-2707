@@ -1,0 +1,130 @@
+.sales-analysis-empty {
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  color: var(--sap-heading, #0a4a85);
+}
+
+.sales-analysis-empty h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.sales-analysis-empty p {
+  margin: 0;
+  max-width: 560px;
+  color: var(--sap-text-muted, #64748b);
+}
+
+.crm-activities-options {
+  display: flex;
+  align-items: center;
+  gap: 190px;
+  min-height: 24px;
+  padding: 0 4px 2px;
+  flex: 0 0 auto;
+}
+
+.crm-activities-option {
+  font-size: 12px;
+  color: var(--sap-text, #223548);
+}
+
+.crm-activities-grid-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--sap-border, #d5dce3);
+  border-radius: var(--sap-radius-sm, 6px);
+  background: var(--sap-surface, #ffffff);
+}
+
+.crm-activities-grid-wrap::after {
+  content: "";
+  position: sticky;
+  right: 0;
+  top: 0;
+  float: right;
+  width: 16px;
+  height: 16px;
+  border-left: 1px solid var(--sap-border, #d5dce3);
+  border-bottom: 1px solid var(--sap-border, #d5dce3);
+  background:
+    linear-gradient(135deg, transparent 45%, var(--sap-primary, #0a6ed1) 46%, var(--sap-primary, #0a6ed1) 58%, transparent 59%),
+    var(--sap-toolbar-bg, #eef2f7);
+}
+
+.crm-activities-grid {
+  width: max-content;
+  min-width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  color: var(--sap-text, #223548);
+  font-size: 12px;
+}
+
+.crm-activities-grid th,
+.crm-activities-grid td {
+  height: 20px;
+  padding: 2px 4px;
+  border-right: 1px solid var(--sap-border-soft, #e3e8ee);
+  border-bottom: 1px solid var(--sap-border-soft, #e3e8ee);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.crm-activities-grid th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--sap-toolbar-bg, #eef2f7);
+  color: var(--sap-heading, #0a4a85);
+  text-align: left;
+  font-weight: 700;
+}
+
+.crm-activities-grid td {
+  background: var(--sap-surface, #ffffff);
+}
+
+.crm-activities-link-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.crm-activities-link-cell span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.crm-activities-link-icon {
+  color: var(--sap-warning, #8a5a00);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+@media (max-width: 900px) {
+  .crm-activities-options {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+  }
+}
