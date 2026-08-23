@@ -162,12 +162,13 @@ const applyTopLimit = (sqlText) => {
     const previous = fullText[index - 1] || '';
     if (isIdentifierChar(previous)) return null;
 
-    const topMatch = rest.match(/^SELECT\s+TOP\s*(?:\(\s*)?(@[A-Za-z_][A-Za-z0-9_]*|\d+)(?:\s*\))?\s+/i);
+    const topMatch = rest.match(/^SELECT\s+(DISTINCT\s+)?TOP\s*(?:\(\s*)?(@[A-Za-z_][A-Za-z0-9_]*|\d+)(?:\s*\))?\s+/i);
     if (!topMatch) return null;
 
     return {
       text: topMatch[0],
-      limit: topMatch[1],
+      distinct: topMatch[1] || '',
+      limit: topMatch[2],
     };
   });
 
@@ -175,7 +176,7 @@ const applyTopLimit = (sqlText) => {
     return sqlText;
   }
 
-  const sql = `${sqlText.slice(0, match.start)}SELECT ${sqlText.slice(match.end)}`;
+  const sql = `${sqlText.slice(0, match.start)}SELECT ${match.distinct}${sqlText.slice(match.end)}`;
   if (hasTopLevelKeyword(sql, 'LIMIT')) {
     return sql;
   }

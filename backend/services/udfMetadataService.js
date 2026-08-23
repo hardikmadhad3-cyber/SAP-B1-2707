@@ -1,4 +1,13 @@
 const db = require('./dbService');
+const { createTableColumnDetailsReader } = require('./salesDocumentDbCompatibility');
+const {
+  filterUdfMetadataRowsByPhysicalColumns,
+  getPhysicalUdfKeyMap,
+  loadUdfDefinitionsOrEmpty,
+  normalizeUdfKey,
+} = require('./udfMetadataUtils');
+
+const getTableColumnDetails = createTableColumnDetailsReader({ database: db });
 
 const safe = async (promise) => {
   try {
@@ -10,29 +19,18 @@ const safe = async (promise) => {
 };
 
 const getColumnSet = async (tableName) => {
-  const rows = await safe(db.query(`
-    SELECT COLUMN_NAME
-    FROM INFORMATION_SCHEMA.COLUMNS
-    WHERE TABLE_NAME = @tableName
-  `, { tableName }));
-
-  return new Set(rows.map((row) => String(row.COLUMN_NAME || '').trim()));
+  const rows = await getTableColumnDetails(tableName);
+  return new Set(rows.map((row) => row.columnName));
 };
 
 const getPhysicalUdfColumns = async (tableName) => {
-  const rows = await safe(db.query(`
-    SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH
-    FROM INFORMATION_SCHEMA.COLUMNS
-    WHERE TABLE_NAME = @tableName
-      AND COLUMN_NAME LIKE 'U[_]%'
-    ORDER BY ORDINAL_POSITION
-  `, { tableName }));
-
+  const rows = await getTableColumnDetails(tableName);
   return rows
+    .filter((row) => row.columnName.toUpperCase().startsWith('U_'))
     .map((row) => ({
-      columnName: String(row.COLUMN_NAME || '').trim(),
-      dataType: String(row.DATA_TYPE || '').trim().toLowerCase(),
-      maxLength: row.CHARACTER_MAXIMUM_LENGTH,
+      columnName: row.columnName,
+      dataType: row.dataType,
+      maxLength: row.maxLength,
     }))
     .filter((row) => row.columnName);
 };
@@ -53,16 +51,6 @@ const SUBTYPE_MAP = {
   P: 'number',
   Q: 'number',
   A: 'textarea',
-};
-
-const normalizeUdfKey = (aliasId) => {
-  let value = String(aliasId || '').trim();
-  if (!value) return '';
-  // strip any non-alphanumeric/underscore characters to mirror frontend normalization
-  value = value.replace(/[^A-Za-z0-9_]+/g, '');
-  if (!value) return '';
-  if (!value.startsWith('U_')) value = `U_${value.replace(/^_+/, '')}`;
-  return value;
 };
 
 const SQL_NUMBER_TYPES = new Set([
@@ -156,11 +144,14 @@ const getUdfDefinitions = async (tableId) => {
     ORDER BY T0.FieldID, T1.IndexID
   `, { tableId: normalizedTableId }));
 
+  const physicalKeyByNormalized = getPhysicalUdfKeyMap(physicalColumns);
+  const liveRows = filterUdfMetadataRowsByPhysicalColumns(rows, physicalColumns);
   const byKey = new Map();
   const normalizedKeys = new Set();
 
-  rows.forEach((row) => {
-    const key = normalizeUdfKey(row.AliasID);
+  liveRows.forEach((row) => {
+    const metadataKey = normalizeUdfKey(row.AliasID);
+    const key = physicalKeyByNormalized.get(metadataKey.toUpperCase());
     if (!key) return;
 
     if (!byKey.has(key)) {
@@ -212,7 +203,9 @@ const getUdfDefinitions = async (tableId) => {
   });
 
   return Array.from(byKey.values()).map((field) => {
-    const sourceRow = rows.find((row) => normalizeUdfKey(row.AliasID) === field.key) || {};
+    const sourceRow = liveRows.find(
+      (row) => normalizeUdfKey(row.AliasID).toUpperCase() === field.key.toUpperCase(),
+    ) || {};
     if (!sourceRow.AliasID) return field;
 
     const type = mapType(sourceRow, field.options);
@@ -232,6 +225,11 @@ const getUdfDefinitions = async (tableId) => {
     };
   });
 };
+
+const getUdfDefinitionsOrEmpty = async (
+  tableId,
+  { getDefinitions = getUdfDefinitions, logger = console } = {},
+) => loadUdfDefinitionsOrEmpty(tableId, { getDefinitions, logger });
 
 const getMarketingDocumentUdfs = async ({ headerTable, lineTable }) => {
   const [header, rows] = await Promise.all([
@@ -289,8 +287,10 @@ const getLineUdfValues = async ({ tableId, keyColumn = 'DocEntry', keyValue }) =
 };
 
 module.exports = {
+  filterUdfMetadataRowsByPhysicalColumns,
   getMarketingDocumentUdfs,
   getUdfDefinitions,
+  getUdfDefinitionsOrEmpty,
   getHeaderUdfValues,
   getLineUdfValues,
 };

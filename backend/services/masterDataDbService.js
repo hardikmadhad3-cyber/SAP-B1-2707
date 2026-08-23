@@ -1,5 +1,6 @@
 const db = require("./dbService");
 const { appendSapSearchCondition } = require("./documentListUtils");
+const { escapeLikeValue, LIKE_ESCAPE_SQL } = require('./salesDocumentDbCompatibility');
 
 const toInt = (value, fallback) => {
   const parsed = Number.parseInt(value, 10);
@@ -768,28 +769,60 @@ const queryDocumentTaxCodes = async (query = "", documentType = "", top = 500, s
         ELSE 'OTHER'
       END AS GSTType,
       '' AS Category,
-      STRING_AGG(CONCAT(CONCAT(ISNULL(T1.STACode, ''), ':'), CAST(ISNULL(T1.EfctivRate, 0) AS NVARCHAR(50))), ', ') AS Components
+      '' AS Components
     FROM OSTC T0
     INNER JOIN STC1 T1
       ON T0.Code = T1.STCCode
      AND T1.STAType IN ('-100', '-110', '-120')
     WHERE ISNULL(T0.Lock, 'N') <> 'Y'
       AND (@query = ''
-        OR T0.Code LIKE @like
-        OR ISNULL(T0.Name, '') LIKE @like
-        OR CAST(ISNULL(T1.EfctivRate, 0) AS NVARCHAR(50)) LIKE @like)
+        OR T0.Code LIKE @like ${LIKE_ESCAPE_SQL}
+        OR ISNULL(T0.Name, '') LIKE @like ${LIKE_ESCAPE_SQL}
+        OR CAST(ISNULL(T1.EfctivRate, 0) AS NVARCHAR(50)) LIKE @like ${LIKE_ESCAPE_SQL})
       ${categoryFilter}
     GROUP BY T0.Code, T0.Name
     ORDER BY T0.Code
     OFFSET @skip ROWS FETCH NEXT @top ROWS ONLY
   `, {
     query: trimmed,
-    like: `%${trimmed}%`,
+    like: `%${escapeLikeValue(trimmed)}%`,
     top: limit,
     skip: offset,
   });
 
-  return rows.map(mapDocumentTaxCode);
+  const mappedRows = rows.map(mapDocumentTaxCode);
+  const taxCodes = mappedRows.map((row) => row.Code).filter(Boolean);
+  if (!taxCodes.length) return mappedRows;
+
+  const componentParams = {};
+  const componentPlaceholders = taxCodes.map((code, index) => {
+    const key = `componentCode${index}`;
+    componentParams[key] = code;
+    return `@${key}`;
+  });
+  const componentRows = await queryRows(`
+    SELECT
+      T0.STCCode AS Code,
+      T0.STACode,
+      T0.EfctivRate
+    FROM STC1 T0
+    WHERE T0.STCCode IN (${componentPlaceholders.join(', ')})
+      AND T0.STAType IN ('-100', '-110', '-120')
+    ORDER BY T0.STCCode, T0.STACode
+  `, componentParams);
+  const componentsByCode = componentRows.reduce((acc, row) => {
+    const code = String(row.Code || '').trim();
+    const componentCode = String(row.STACode || '').trim();
+    if (!code || !componentCode) return acc;
+    if (!acc.has(code)) acc.set(code, []);
+    acc.get(code).push(`${componentCode}:${Number(row.EfctivRate || 0)}`);
+    return acc;
+  }, new Map());
+
+  return mappedRows.map((row) => ({
+    ...row,
+    Components: (componentsByCode.get(row.Code) || []).join(', '),
+  }));
 };
 
 const searchDocumentTaxCodes = async (query = "", documentType = "", top = 500, skip = 0) => {

@@ -15,6 +15,15 @@ const {
   buildDocumentAddressComponents,
 } = require('./documentAddressDbUtils');
 const { selectSapEligibleSeries } = require('./documentSeriesDbUtils');
+const {
+  createTableColumnDetailsReader,
+  createTableFieldMetadataReader,
+  resolveDatabaseScope,
+} = require('./salesDocumentDbCompatibility');
+const { buildLineDeliveryDateFields } = require('./salesDocumentHydrationUtils');
+const { getRequestContext } = require('./requestContextService');
+const authDbService = require('./authDbService');
+const { selectEffectiveCprfRows } = require('./sapFormPreferenceUtils');
 
 const safe = async (promise) => {
   try {
@@ -24,6 +33,7 @@ const safe = async (promise) => {
     if (e?.status === 503 || /\bis busy\b/i.test(String(e?.message || ''))) {
       throw e;
     }
+    console.warn('[AR Invoice DB] Query failed silently:', e.message);
     return [];
   }
 };
@@ -40,11 +50,8 @@ const referenceDataCache = new Map();
 const cloneReferenceData = (data) => JSON.parse(JSON.stringify(data || {}));
 
 const getReferenceDataCacheKey = async () => {
-  try {
-    return String(await db.resolveDatabaseName() || 'default');
-  } catch (_error) {
-    return 'default';
-  }
+  const scope = await resolveDatabaseScope(db);
+  return scope.cacheKey;
 };
 
 const runReferenceDataTasks = async (tasks) => {
@@ -90,35 +97,10 @@ const getCachedReferenceData = async (loadData) => {
   }
 };
 
-const tableFieldMetadataPromises = new Map();
-
-const getTableFieldMetadata = async (tableName) => {
-  const normalizedTableName = String(tableName || '').trim();
-  if (!normalizedTableName) return {};
-
-  const databaseName = await db.resolveDatabaseName().catch(() => '');
-  const cacheKey = `${databaseName || 'default'}:${normalizedTableName}`;
-
-  if (!tableFieldMetadataPromises.has(cacheKey)) {
-    const metadataPromise = safe(db.query(`
-      SELECT COLUMN_NAME, DATA_TYPE
-      FROM INFORMATION_SCHEMA.COLUMNS
-      WHERE TABLE_NAME = @tableName
-      ORDER BY ORDINAL_POSITION
-    `, { tableName: normalizedTableName })).then((rows) => rows.reduce((acc, row) => {
-      const columnName = String(row.COLUMN_NAME || '').trim();
-      if (!columnName) return acc;
-      acc[columnName] = String(row.DATA_TYPE || '').trim().toLowerCase();
-      return acc;
-    }, {})).catch((error) => {
-      tableFieldMetadataPromises.delete(cacheKey);
-      throw error;
-    });
-    tableFieldMetadataPromises.set(cacheKey, metadataPromise);
-  }
-
-  return tableFieldMetadataPromises.get(cacheKey);
-};
+const getTableFieldMetadata = createTableFieldMetadataReader({ database: db });
+const getTableColumnDetails = createTableColumnDetailsReader({ database: db });
+const getARInvoiceHeaderTableFieldMetadata = () => getTableFieldMetadata('OINV');
+const getARInvoiceLineTableFieldMetadata = () => getTableFieldMetadata('INV1');
 
 const AR_INVOICE_FORM_ID = '133';
 const AR_INVOICE_MATRIX_ITEM_ID = '38';
@@ -200,8 +182,23 @@ const resolveSapUserSign = async () => {
 
   try {
     const { getActiveCompanyConfig } = require('./companyConfigService');
-    const activeConfig = await getActiveCompanyConfig();
-    sapUsername = String(activeConfig.serviceLayer?.username || '').trim();
+    const company = await getActiveCompanyConfig();
+    const requestAuth = getRequestContext()?.req?.auth || {};
+    const applicationUser = requestAuth.username
+      ? { Username: requestAuth.username }
+      : Number.isInteger(Number(requestAuth.userId))
+        ? await authDbService.queryOne(`
+            SELECT Username
+            FROM Users
+            WHERE UserId = @userId
+          `, { userId: Number(requestAuth.userId) })
+        : null;
+    sapUsername = String(
+      company?.userMapping?.sapUserCode
+      || applicationUser?.Username
+      || company?.serviceLayer?.username
+      || '',
+    ).trim();
   } catch (_error) {
     sapUsername = '';
   }
@@ -223,22 +220,22 @@ const resolveSapUserSign = async () => {
 };
 
 const getARInvoiceColumnPreferences = async () => {
-  const tableRows = await safe(db.query(`
-    SELECT TABLE_NAME
-    FROM INFORMATION_SCHEMA.TABLES
-    WHERE TABLE_NAME = 'CPRF'
-  `));
+  let cprfColumnDetails;
+  try {
+    cprfColumnDetails = await getTableColumnDetails('CPRF');
+  } catch (_error) {
+    cprfColumnDetails = [];
+  }
 
-  if (!tableRows.length) return { byKey: {}, rows: [], userSign: null };
+  if (!cprfColumnDetails.length) return { byKey: {}, rows: [], userSign: null };
 
-  const cprfColumns = await safe(db.query(`
-    SELECT COLUMN_NAME
-    FROM INFORMATION_SCHEMA.COLUMNS
-    WHERE TABLE_NAME = 'CPRF'
-  `));
-  const columnSet = new Set(cprfColumns.map((row) => String(row.COLUMN_NAME || '').trim()));
+  const columnSet = new Set(cprfColumnDetails.map((col) => String(col.columnName || '').trim()));
   const hasItemUid = columnSet.has('ItemUID');
   const hasTableName = columnSet.has('TableName');
+  const hasCaption = columnSet.has('Caption');
+  const hasTitle = columnSet.has('Title');
+  const hasDescr = columnSet.has('Descr');
+  const hasColAlias = columnSet.has('ColAlias');
   const userSign = await resolveSapUserSign();
   if (userSign == null) return { byKey: {}, rows: [], userSign: null };
 
@@ -258,6 +255,10 @@ const getARInvoiceColumnPreferences = async () => {
       TPLId
       ${hasTableName ? ', TableName' : ", '' AS TableName"}
       ${hasItemUid ? ', ItemUID' : ", '' AS ItemUID"}
+      ${hasCaption ? ', Caption' : ", '' AS Caption"}
+      ${hasTitle ? ', Title' : ", '' AS Title"}
+      ${hasDescr ? ', Descr' : ", '' AS Descr"}
+      ${hasColAlias ? ', ColAlias' : ", '' AS ColAlias"}
     FROM CPRF
     WHERE FormID = @formId
       AND (
@@ -272,7 +273,6 @@ const getARInvoiceColumnPreferences = async () => {
   `, {
     formId: AR_INVOICE_FORM_ID,
     itemId: AR_INVOICE_MATRIX_ITEM_ID,
-    tableName: 'INV1',
     userSign,
   }));
 
@@ -293,6 +293,10 @@ const getARInvoiceColumnPreferences = async () => {
         TPLId,
         TableName
         ${hasItemUid ? ', ItemUID' : ", '' AS ItemUID"}
+        ${hasCaption ? ', Caption' : ", '' AS Caption"}
+        ${hasTitle ? ', Title' : ", '' AS Title"}
+        ${hasDescr ? ', Descr' : ", '' AS Descr"}
+        ${hasColAlias ? ', ColAlias' : ", '' AS ColAlias"}
       FROM CPRF
       WHERE FormID = @formId
         AND TableName = @tableName
@@ -308,8 +312,10 @@ const getARInvoiceColumnPreferences = async () => {
     }));
   }
 
+  rows = selectEffectiveCprfRows(rows);
+
   const byKey = rows.reduce((acc, row) => {
-    [row.ColID, row.TableName, row.ItemUID]
+    [row.ColID, row.TableName, row.ItemUID, row.Caption, row.Title, row.Descr, row.ColAlias]
       .map(normalizePreferenceKey)
       .filter(Boolean)
       .forEach((key) => {
@@ -352,34 +358,28 @@ const getColumnMetadata = (column, lineColumns = {}) => {
 };
 
 const getARInvoiceLineTableColumns = async () => {
-  const rows = await safe(db.query(`
-    SELECT
-      COLUMN_NAME,
-      DATA_TYPE,
-      CHARACTER_MAXIMUM_LENGTH,
-      NUMERIC_PRECISION,
-      NUMERIC_SCALE,
-      IS_NULLABLE,
-      ORDINAL_POSITION
-    FROM INFORMATION_SCHEMA.COLUMNS
-    WHERE TABLE_NAME = 'INV1'
-    ORDER BY ORDINAL_POSITION
-  `));
+  try {
+    const columnDetails = await getTableColumnDetails('INV1');
+    if (!columnDetails.length) return {};
 
-  return rows.reduce((acc, row) => {
-    const columnName = String(row.COLUMN_NAME || '').trim();
-    if (!columnName) return acc;
-    acc[columnName.toUpperCase()] = {
-      name: columnName,
-      dataType: String(row.DATA_TYPE || '').trim().toLowerCase(),
-      maxLength: row.CHARACTER_MAXIMUM_LENGTH,
-      precision: row.NUMERIC_PRECISION,
-      scale: row.NUMERIC_SCALE,
-      nullable: String(row.IS_NULLABLE || '').toUpperCase() === 'YES',
-      ordinal: Number(row.ORDINAL_POSITION || 0),
-    };
-    return acc;
-  }, {});
+    return columnDetails.reduce((acc, col) => {
+      const columnName = String(col.columnName || '').trim();
+      if (!columnName) return acc;
+      acc[columnName.toUpperCase()] = {
+        name: columnName,
+        dataType: String(col.dataType || '').trim().toLowerCase(),
+        maxLength: col.maxLength ?? null,
+        precision: col.numericPrecision ?? null,
+        scale: col.numericScale ?? null,
+        nullable: Boolean(col.nullable),
+        ordinal: col.ordinal || 0,
+      };
+      return acc;
+    }, {});
+  } catch (error) {
+    console.warn('[AR Invoice DB] getARInvoiceLineTableColumns failed:', error.message);
+    return {};
+  }
 };
 
 const getARInvoiceLineFieldMetadata = async () => {
@@ -553,15 +553,15 @@ const getItems = async () => {
   );
 
   return safe(db.query(`
-  SELECT ItemCode, ItemName,
-         SalUnitMsr  AS SalesUnit,
-         InvntryUom  AS InventoryUOM,
-         SUoMEntry   AS UoMGroupEntry,
-         SWW         AS HSNCode,
-         CountryOrg  AS ItemCountryOrg,
-         SACEntry    AS SACEntry,
-         VatGourpSa  AS TaxCodeAR,
-         DfltWH      AS DefaultWarehouse,
+  SELECT T0.ItemCode, T0.ItemName,
+         T0.SalUnitMsr  AS SalesUnit,
+         T0.InvntryUom  AS InventoryUOM,
+         T0.SUoMEntry   AS UoMGroupEntry,
+         T0.SWW         AS HSNCode,
+         T0.CountryOrg  AS ItemCountryOrg,
+         T0.SACEntry    AS SACEntry,
+         T0.VatGourpSa  AS TaxCodeAR,
+         T0.DfltWH      AS DefaultWarehouse,
          ${salesGlAccountExpression} AS SalesGLAccount,
          ${salesGlAccountExpression} AS IncomeAccount,
          ${distributionRuleExpression} AS DistributionRule,
@@ -571,7 +571,7 @@ const getItems = async () => {
   LEFT JOIN OITW W ON W.ItemCode = T0.ItemCode AND W.WhsCode = T0.DfltWH
   WHERE  T0.SellItem = 'Y'
     AND  T0.validFor  <> 'N'
-  ORDER  BY ItemCode
+  ORDER  BY T0.ItemCode
 `));
 };
 
@@ -1419,6 +1419,7 @@ const getARInvoice = async (docEntry) => {
       COALESCE(NULLIF(LTRIM(RTRIM(T0.Dscription)), ''), ITM.ItemName, '') AS ItemDescription,
       T0.Quantity,
       T0.OpenQty AS OpenQuantity,
+      ${optionalColumn(lineFieldMetadata, 'T0', 'ShipDate', 'ShipDate', 'NULL')},
       T0.Price AS UnitPrice,
       T0.DiscPrcnt AS DiscountPercent,
       ${lineTaxExpression} AS TaxCode,
@@ -1466,6 +1467,7 @@ const getARInvoice = async (docEntry) => {
         T0.Dscription AS ItemDescription,
         T0.Quantity,
         T0.Quantity AS OpenQuantity,
+        ${optionalColumn(lineFieldMetadata, 'T0', 'ShipDate', 'ShipDate', 'NULL')},
         T0.Price AS UnitPrice,
         T0.DiscPrcnt AS DiscountPercent,
         ${lineTaxExpression} AS TaxCode,
@@ -1628,6 +1630,7 @@ const getARInvoice = async (docEntry) => {
         HSNCode: line.HSNCode || '',
         quantity: line.Quantity != null ? String(line.Quantity) : '',
         Quantity: line.Quantity != null ? String(line.Quantity) : '',
+        ...buildLineDeliveryDateFields(line),
         openQty: line.OpenQuantity != null ? String(line.OpenQuantity) : (line.Quantity != null ? String(line.Quantity) : ''),
         unitPrice: line.UnitPrice != null ? String(line.UnitPrice) : '',
         UnitPrice: line.UnitPrice != null ? String(line.UnitPrice) : '',
@@ -2244,6 +2247,8 @@ const getARInvoiceForCopy = async (docEntry) => {
 };
 
 module.exports = {
+  getARInvoiceHeaderTableFieldMetadata,
+  getARInvoiceLineTableFieldMetadata,
   getReferenceData,
   getCustomerDetails,
   getARInvoiceList,

@@ -16,17 +16,29 @@ const {
   splitBusinessPartnerAddresses,
 } = require('./businessPartnerAddressDbUtils');
 const { getMarketingDocumentSeries } = require('./documentSeriesDbUtils');
+const authDbService = require('./authDbService');
+const { getRequestContext } = require('./requestContextService');
+const { selectEffectiveCprfRows } = require('./sapFormPreferenceUtils');
+const {
+  createTableColumnDetailsReader,
+  createTableFieldMetadataReader,
+  escapeLikeValue,
+  LIKE_ESCAPE_SQL,
+  normalizeRecordset,
+  resolveDatabaseScope,
+} = require('./salesDocumentDbCompatibility');
 
 const safe = async (promise) => {
   try {
     const r = await promise;
     return r.recordset || [];
   } catch (e) {
+    console.warn('[Sales Order DB] Query failed silently:', e.message);
     return [];
   }
 };
 
-const escapeLike = (value) => String(value || '').replace(/[%_[\]]/g, (match) => `[${match}]`);
+const escapeLike = escapeLikeValue;
 const normalizeTopLimit = (value) => {
   if (value == null || value === '') return null;
 
@@ -299,12 +311,12 @@ const buildSalesOrderListFilterQuery = ({
 
   if (normalizedQuery) {
     whereClauses.push(`(
-      CAST(T0.DocNum AS NVARCHAR(50)) LIKE @query
-      OR T0.NumAtCard LIKE @query
-      OR T0.CardCode LIKE @query
-      OR T0.CardName LIKE @query
-      OR ${salesOrderSellerCodeExpression} LIKE @query
-      OR ${salesOrderSellerNameExpression} LIKE @query
+      CAST(T0.DocNum AS NVARCHAR(50)) LIKE @query ${LIKE_ESCAPE_SQL}
+      OR T0.NumAtCard LIKE @query ${LIKE_ESCAPE_SQL}
+      OR T0.CardCode LIKE @query ${LIKE_ESCAPE_SQL}
+      OR T0.CardName LIKE @query ${LIKE_ESCAPE_SQL}
+      OR ${salesOrderSellerCodeExpression} LIKE @query ${LIKE_ESCAPE_SQL}
+      OR ${salesOrderSellerNameExpression} LIKE @query ${LIKE_ESCAPE_SQL}
     )`);
     params.query = `%${escapeLike(normalizedQuery)}%`;
   }
@@ -315,27 +327,27 @@ const buildSalesOrderListFilterQuery = ({
   }
 
   if (normalizedCustomerRefNo && excludeField !== 'customerRefNo') {
-    whereClauses.push('T0.NumAtCard LIKE @customerRefNo');
+    whereClauses.push(`T0.NumAtCard LIKE @customerRefNo ${LIKE_ESCAPE_SQL}`);
     params.customerRefNo = `%${escapeLike(normalizedCustomerRefNo)}%`;
   }
 
   if (normalizedCustomerCode && excludeField !== 'customerCode') {
-    whereClauses.push('T0.CardCode LIKE @customerCode');
+    whereClauses.push(`T0.CardCode LIKE @customerCode ${LIKE_ESCAPE_SQL}`);
     params.customerCode = `%${escapeLike(normalizedCustomerCode)}%`;
   }
 
   if (normalizedCustomerName && excludeField !== 'customerName') {
-    whereClauses.push('T0.CardName LIKE @customerName');
+    whereClauses.push(`T0.CardName LIKE @customerName ${LIKE_ESCAPE_SQL}`);
     params.customerName = `%${escapeLike(normalizedCustomerName)}%`;
   }
 
   if (normalizedSellerCode && excludeField !== 'sellerCode') {
-    whereClauses.push(`${salesOrderSellerCodeExpression} LIKE @sellerCode`);
+    whereClauses.push(`${salesOrderSellerCodeExpression} LIKE @sellerCode ${LIKE_ESCAPE_SQL}`);
     params.sellerCode = `%${escapeLike(normalizedSellerCode)}%`;
   }
 
   if (normalizedSellerName && excludeField !== 'sellerName') {
-    whereClauses.push(`${salesOrderSellerNameExpression} LIKE @sellerName`);
+    whereClauses.push(`${salesOrderSellerNameExpression} LIKE @sellerName ${LIKE_ESCAPE_SQL}`);
     params.sellerName = `%${escapeLike(normalizedSellerName)}%`;
   }
 
@@ -376,9 +388,9 @@ const searchCustomers = async ({ query = '', cardCode = '', cardName = '', top, 
       *
     FROM OCRD
     WHERE CardType = 'C'
-      AND (@query = '' OR CardCode LIKE @queryLike OR CardName LIKE @queryLike)
-      AND (@cardCode = '' OR CardCode LIKE @cardCodeLike)
-      AND (@cardName = '' OR CardName LIKE @cardNameLike)
+      AND (@query = '' OR CardCode LIKE @queryLike ${LIKE_ESCAPE_SQL} OR CardName LIKE @queryLike ${LIKE_ESCAPE_SQL})
+      AND (@cardCode = '' OR CardCode LIKE @cardCodeLike ${LIKE_ESCAPE_SQL})
+      AND (@cardName = '' OR CardName LIKE @cardNameLike ${LIKE_ESCAPE_SQL})
     ORDER BY ${orderBy}
   `, {
     ...(normalizedTop ? { top: normalizedTop } : {}),
@@ -392,20 +404,21 @@ const searchCustomers = async ({ query = '', cardCode = '', cardName = '', top, 
 };
 
 const getItems = () => safe(db.query(`
-  SELECT ItemCode, ItemName,
-         SalUnitMsr  AS SalesUnit,
-         InvntryUom  AS InventoryUOM,
-         SUoMEntry   AS UoMGroupEntry,
-         SWW         AS HSNCode,
-         CountryOrg  AS ItemCountryOrg,
-         SACEntry    AS SACEntry,
-         VatGourpSa  AS TaxCodeAR,
+  SELECT T0.ItemCode, T0.ItemName,
+         T0.SalUnitMsr  AS SalesUnit,
+         T0.InvntryUom  AS InventoryUOM,
+         T0.SUoMEntry   AS UoMGroupEntry,
+         COALESCE(NULLIF(LTRIM(RTRIM(CHP.ChapterID)), ''), NULLIF(LTRIM(RTRIM(T0.SWW)), '')) AS HSNCode,
+         T0.CountryOrg  AS ItemCountryOrg,
+         T0.SACEntry    AS SACEntry,
+         T0.VatGourpSa  AS TaxCodeAR,
          ''          AS DistributionRule,
-         DfltWH      AS DefaultWarehouse
-  FROM   OITM
-  WHERE  SellItem = 'Y'
-    AND  validFor  <> 'N'
-  ORDER  BY ItemCode
+         T0.DfltWH      AS DefaultWarehouse
+  FROM   OITM T0
+  LEFT JOIN OCHP CHP ON CHP.AbsEntry = T0.ChapterID
+  WHERE  T0.SellItem = 'Y'
+    AND  T0.validFor  <> 'N'
+  ORDER  BY T0.ItemCode
 `));
 
 // Enhanced item list for modal with all details
@@ -670,32 +683,9 @@ const getUomGroups = () => safe(db.query(`
   ORDER  BY g.UgpEntry, d.LineNum
 `));
 
-const tableFieldMetadataPromises = new Map();
 const itemUomContextCache = new Map();
-
-const getTableFieldMetadata = async (tableName) => {
-  const normalizedTableName = String(tableName || '').trim();
-  if (!normalizedTableName) return {};
-
-  const databaseName = await db.resolveDatabaseName();
-  const cacheKey = `${databaseName || 'default'}:${normalizedTableName}`;
-
-  if (!tableFieldMetadataPromises.has(cacheKey)) {
-    tableFieldMetadataPromises.set(cacheKey, safe(db.query(`
-      SELECT COLUMN_NAME, DATA_TYPE
-      FROM INFORMATION_SCHEMA.COLUMNS
-      WHERE TABLE_NAME = @tableName
-      ORDER BY ORDINAL_POSITION
-    `, { tableName: normalizedTableName })).then((rows) => rows.reduce((acc, row) => {
-      const columnName = String(row.COLUMN_NAME || '').trim();
-      if (!columnName) return acc;
-      acc[columnName] = String(row.DATA_TYPE || '').trim().toLowerCase();
-      return acc;
-    }, {})));
-  }
-
-  return tableFieldMetadataPromises.get(cacheKey);
-};
+const getTableFieldMetadata = createTableFieldMetadataReader({ database: db });
+const getTableColumnDetails = createTableColumnDetailsReader({ database: db });
 
 const toSqlIdentifier = (identifier) => `[${String(identifier || '').replace(/]/g, ']]')}]`;
 
@@ -832,19 +822,21 @@ const SALES_ORDER_MATRIX_COLUMN_DEFS = [
   { key: 'forRate', label: 'FOR Rate', minWidth: 110, numeric: true, sapField: 'Rate', alternativeFields: ['U_ForRate', 'U_FORRATE', 'U_FOR_RATE', 'U_For_Rate', 'U_FORRate'], sapColumnIds: ['U_ForRate', 'U_FORRATE', 'U_FOR_RATE', 'U_For_Rate', 'Rate', 'FOR Rate', 'FORRATE'] },
   { key: 'stdDiscount', label: 'Discount %', minWidth: 90, numeric: true, sapField: 'DiscPrcnt', sapColumnIds: ['15', 'DiscPrcnt', 'DiscountPercent', 'Disc%', 'Discount %'] },
   { key: 'stcode', label: 'STCODE', minWidth: 110, sapField: 'U_SELLTCODE', sapColumnIds: ['U_SELLTCODE', 'STCODE'] },
-  { key: 'taxCode', label: 'Tax Code', minWidth: 110, sapField: 'TaxCode', sapColumnIds: ['160', '234000377', 'TaxCode', 'Tax Code'] },
+  { key: 'taxCode', label: 'Tax Code', minWidth: 110, sapField: 'TaxCode', alternativeFields: ['VatGroup'], sapColumnIds: ['160', '234000377', 'TaxCode', 'VatGroup', 'Tax Code'] },
   { key: 'taxAmount', label: 'Tax Amount (Doc)', minWidth: 125, readOnly: true, numeric: true, sapField: 'VatSum', sapColumnIds: ['83', 'VatSum', 'Tax Amount (Doc)', 'Tax Amount (LC)'] },
-  { key: 'totalLC', label: 'Total (Doc)', minWidth: 115, readOnly: true, numeric: true, sapField: 'LineTotal', sapColumnIds: ['23', '17', 'GTotal', 'LineTotal', 'Total', 'Total (Doc)', 'Total (LC)'] },
+  { key: 'totalLC', label: 'Total (LC)', minWidth: 115, readOnly: true, numeric: true, sapField: 'LineTotal', sapColumnIds: ['17', 'LineTotal', 'Total', 'Total (LC)'] },
+  { key: 'totalDoc', label: 'Total (Doc)', minWidth: 115, readOnly: true, numeric: true, sapField: 'TotalFrgn', sapColumnIds: ['23', 'TotalFrgn', 'Total (Doc)', 'Total Doc', 'Total (FC)'] },
+  { key: 'grossTotal', label: 'Gross Total', minWidth: 120, readOnly: true, numeric: true, sapField: 'GTotal', sapColumnIds: ['GTotal', 'GrossTotal', 'Gross Total'] },
   { key: 'whse', label: 'Whse', minWidth: 85, sapField: 'WhsCode', sapColumnIds: ['24', 'WhsCode', 'WarehouseCode', 'Warehouse', 'Whse'] },
   { key: 'lineDeliveryDate', label: 'Del. Date', minWidth: 125, sapField: 'ShipDate', sapColumnIds: ['25', 'ShipDate', 'Del. Date', 'Delivery Date'] },
   { key: 'lineShippingType', label: 'Shipping Type', minWidth: 125, sapField: 'TrnsCode', alternativeFields: ['ShipType'], sapColumnIds: ['174', 'TrnsCode', 'ShipType', 'Shipping Type'] },
   { key: 'distRule', label: 'Distr. Rule', minWidth: 105, sapField: 'OcrCode', sapColumnIds: ['21', 'OcrCode', 'DistributionRule', 'Distr. Rule'] },
   { key: 'openQty', label: 'Open Qty', minWidth: 85, readOnly: true, numeric: true, sapField: 'OpenQty', sapColumnIds: ['32', 'OpenQty', 'Open Qty'] },
-  { key: 'taxLiable', label: 'Tax Liable', minWidth: 95, sapField: 'TaxOnly', sapColumnIds: ['38', 'TaxOnly', 'Tax Liable'] },
+  { key: 'taxLiable', label: 'Tax Liable', minWidth: 95, sapField: 'TaxOnly', sapColumnIds: ['22', 'TaxOnly', 'Tax Liable'] },
   { key: 'countryOfOrigin', label: 'Country/Region of Origin', minWidth: 175, sapField: 'CountryOrg', sapColumnIds: ['10002037', 'CountryOrg', 'Country/Region of Origin'] },
   { key: 'freeText', label: 'Free Text', minWidth: 150, sapField: 'FreeTxt', sapColumnIds: ['FreeTxt', 'Free Text'] },
-  { key: 'uomName', label: 'UoM Name', minWidth: 120, readOnly: true, sapField: 'unitMsr', alternativeFields: ['UomCode'], sapColumnIds: ['1470002149', '1470002145', 'unitMsr', 'UomName', 'UoM Name'] },
-  { key: 'uomCode', label: 'UoM Code', minWidth: 105, sapField: 'UomCode', alternativeFields: ['UomEntry'], sapColumnIds: ['UomCode', 'UoMCode', 'UoM Code'] },
+  { key: 'uomName', label: 'UoM Name', minWidth: 120, readOnly: true, sapField: 'unitMsr', alternativeFields: ['UomCode'], sapColumnIds: ['1470002145', 'unitMsr', 'UomName', 'UoM Name'] },
+  { key: 'uomCode', label: 'UoM Code', minWidth: 105, sapField: 'UomCode', alternativeFields: ['UomEntry'], sapColumnIds: ['1470002149', 'UomCode', 'UoMCode', 'UoM Code'] },
   { key: 'loc', label: 'Loc.', minWidth: 120, readOnly: true, sapField: 'LocCode', alternativeFields: ['WhsCode', 'BPLId'], sapColumnIds: ['10002047', 'LocCode', 'Loc.'] },
   { key: 'specialRebate', label: 'Special Rebate', minWidth: 110, sapField: 'U_SPLRBT', sapColumnIds: ['U_SPLRBT', 'Special Rebate'] },
   { key: 'commission', label: 'Commision', minWidth: 100, sapField: 'U_COMPRC', sapColumnIds: ['U_COMPRC', 'Commission', 'Commision'] },
@@ -906,52 +898,28 @@ const getRichTableColumns = async (tableName) => {
   const normalizedTableName = String(tableName || '').trim();
   if (!normalizedTableName) return {};
 
-  const rows = await safe(db.query(`
-    SELECT
-      COLUMN_NAME,
-      DATA_TYPE,
-      CHARACTER_MAXIMUM_LENGTH,
-      NUMERIC_PRECISION,
-      NUMERIC_SCALE,
-      IS_NULLABLE,
-      ORDINAL_POSITION
-    FROM INFORMATION_SCHEMA.COLUMNS
-    WHERE TABLE_NAME = @tableName
-    ORDER BY ORDINAL_POSITION
-  `, { tableName: normalizedTableName }));
+  try {
+    const columnDetails = await getTableColumnDetails(normalizedTableName);
+    if (!columnDetails.length) return {};
 
-  const richColumns = rows.reduce((acc, row) => {
-    const columnName = String(row.COLUMN_NAME ?? row.column_name ?? row.columnName ?? '').trim();
-    if (!columnName) return acc;
-    acc[columnName.toUpperCase()] = {
-      name: columnName,
-      dataType: String(row.DATA_TYPE ?? row.data_type ?? row.dataType ?? '').trim().toLowerCase(),
-      maxLength: row.CHARACTER_MAXIMUM_LENGTH ?? row.character_maximum_length ?? row.maxLength ?? null,
-      precision: row.NUMERIC_PRECISION ?? row.numeric_precision ?? row.numericPrecision ?? null,
-      scale: row.NUMERIC_SCALE ?? row.numeric_scale ?? row.numericScale ?? null,
-      nullable: String(row.IS_NULLABLE ?? row.is_nullable ?? row.isNullable ?? '').toUpperCase() === 'YES',
-      ordinal: Number(row.ORDINAL_POSITION ?? row.ordinal_position ?? row.ordinalPosition ?? 0),
-    };
-    return acc;
-  }, {});
-
-  if (!Object.keys(richColumns).length) {
-    const basicMetadata = await getTableFieldMetadata(normalizedTableName);
-    return Object.entries(basicMetadata).reduce((acc, [name, dataType], ordinal) => {
-      acc[String(name).toUpperCase()] = {
-        name,
-        dataType: String(dataType || '').trim().toLowerCase(),
-        maxLength: null,
-        precision: null,
-        scale: null,
-        nullable: true,
-        ordinal: ordinal + 1,
+    return columnDetails.reduce((acc, col) => {
+      const columnName = String(col.columnName || '').trim();
+      if (!columnName) return acc;
+      acc[columnName.toUpperCase()] = {
+        name: columnName,
+        dataType: String(col.dataType || '').trim().toLowerCase(),
+        maxLength: col.maxLength ?? null,
+        precision: col.numericPrecision ?? null,
+        scale: col.numericScale ?? null,
+        nullable: Boolean(col.nullable),
+        ordinal: col.ordinal || 0,
       };
       return acc;
     }, {});
+  } catch (error) {
+    console.warn('[Sales Order DB] getRichTableColumns failed for', normalizedTableName, error.message);
+    return {};
   }
-
-  return richColumns;
 };
 
 const shouldReplaceColumnPreference = (current, next) => {
@@ -981,7 +949,25 @@ const resolveSapUserSign = async () => {
   try {
     const { getActiveCompanyConfig } = require('./companyConfigService');
     const company = await getActiveCompanyConfig();
-    sapUsername = String(company?.serviceLayer?.username || '').trim();
+    const requestAuth = getRequestContext()?.req?.auth || {};
+    const applicationUser = requestAuth.username
+      ? { Username: requestAuth.username }
+      : Number.isInteger(Number(requestAuth.userId))
+        ? await authDbService.queryOne(`
+            SELECT Username
+            FROM Users
+            WHERE UserId = @userId
+          `, { userId: Number(requestAuth.userId) })
+        : null;
+    // CPRF Form Settings belong to the SAP B1 user. Prefer the explicit
+    // user/company mapping, then the signed-in user, over the technical
+    // Service Layer account.
+    sapUsername = String(
+      company?.userMapping?.sapUserCode
+      || applicationUser?.Username
+      || company?.serviceLayer?.username
+      || '',
+    ).trim();
   } catch (_error) {
     sapUsername = '';
   }
@@ -1003,20 +989,18 @@ const resolveSapUserSign = async () => {
 };
 
 const getSalesOrderColumnPreferences = async () => {
-  const tableRows = await safe(db.query(`
-    SELECT TABLE_NAME
-    FROM INFORMATION_SCHEMA.TABLES
-    WHERE TABLE_NAME = 'CPRF'
-  `));
+  // Use the shared dialect-safe reader to check CPRF existence and columns.
+  // This works on both SQL Server and HANA without raw INFORMATION_SCHEMA.
+  let cprfColumnDetails;
+  try {
+    cprfColumnDetails = await getTableColumnDetails('CPRF');
+  } catch (_error) {
+    cprfColumnDetails = [];
+  }
 
-  if (!tableRows.length) return { byKey: {}, rows: [], userSign: null };
+  if (!cprfColumnDetails.length) return { byKey: {}, rows: [], userSign: null };
 
-  const cprfColumns = await safe(db.query(`
-    SELECT COLUMN_NAME
-    FROM INFORMATION_SCHEMA.COLUMNS
-    WHERE TABLE_NAME = 'CPRF'
-  `));
-  const columnSet = new Set(cprfColumns.map((row) => String(row.COLUMN_NAME || '').trim()));
+  const columnSet = new Set(cprfColumnDetails.map((col) => String(col.columnName || '').trim()));
   const hasItemUid = columnSet.has('ItemUID');
   const hasTableName = columnSet.has('TableName');
   const hasCaption = columnSet.has('Caption');
@@ -1131,6 +1115,8 @@ const getSalesOrderColumnPreferences = async () => {
       userSign,
     }));
   }
+
+  rows = selectEffectiveCprfRows(rows);
 
   const byKey = rows.reduce((acc, row) => {
     [row.ColID, row.TableName, row.ItemUID, row.Caption, row.Title, row.Descr, row.ColAlias]
@@ -1644,14 +1630,9 @@ const getUdfLinkedTableLookupOptions = async (source, query = '', limit = 50) =>
   const lookupTable = sanitizeSapTableName(field?.lookupTable);
   if (!field || !lookupTable) return { options: [] };
 
-  const tableRows = await safe(db.query(`
-    SELECT TABLE_NAME
-    FROM INFORMATION_SCHEMA.TABLES
-    WHERE TABLE_NAME = @tableName
-  `, { tableName: lookupTable }));
-  if (!tableRows.length) return { options: [] };
-
   const columns = await getRichTableColumns(lookupTable);
+  if (!Object.keys(columns).length) return { options: [] };
+
   const codeColumn = findColumnName(columns, [
     'Code', 'AbsEntry', 'DocEntry', 'ItemCode', 'CardCode', 'WhsCode', 'BPLId', 'U_Code',
   ]);
@@ -1663,8 +1644,8 @@ const getUdfLinkedTableLookupOptions = async (source, query = '', limit = 50) =>
   const top = Math.min(Math.max(Number(limit) || 50, 1), 200);
   const normalizedQuery = String(query || '').trim();
   const whereSql = normalizedQuery
-    ? `WHERE CAST(${quoteSqlIdentifier(codeColumn)} AS NVARCHAR(254)) LIKE @query
-        OR CAST(${quoteSqlIdentifier(labelColumn)} AS NVARCHAR(254)) LIKE @query`
+    ? `WHERE CAST(${quoteSqlIdentifier(codeColumn)} AS NVARCHAR(254)) LIKE @query ${LIKE_ESCAPE_SQL}
+        OR CAST(${quoteSqlIdentifier(labelColumn)} AS NVARCHAR(254)) LIKE @query ${LIKE_ESCAPE_SQL}`
     : '';
 
   const rows = await safe(db.query(`
@@ -1692,25 +1673,26 @@ const getUdfLinkedTableLookupOptions = async (source, query = '', limit = 50) =>
 };
 
 const getSacLookupSqlParts = (lineAlias, sacAlias, sacFieldMetadata = {}, lineFieldMetadata = {}) => {
-  const hasOsacTable = Object.keys(sacFieldMetadata || {}).length > 0;
   const sacEntryColumn = resolveTableColumnName(lineFieldMetadata, 'SACEntry');
-  const serviceNameColumn = sacFieldMetadata.ServName
-    ? `${sacAlias}.ServName`
-    : sacFieldMetadata.ServiceName
-      ? `${sacAlias}.ServiceName`
-      : "''";
-  const serviceCodeColumn = sacFieldMetadata.ServCode
-    ? `${sacAlias}.ServCode`
-    : sacFieldMetadata.ServiceCode
-      ? `${sacAlias}.ServiceCode`
-      : "''";
+  const sacAbsEntryColumn = resolveTableColumnName(sacFieldMetadata, 'AbsEntry');
+  const serviceNameColumnName = resolveTableColumnName(sacFieldMetadata, 'ServName')
+    || resolveTableColumnName(sacFieldMetadata, 'ServiceName');
+  const serviceCodeColumnName = resolveTableColumnName(sacFieldMetadata, 'ServCode')
+    || resolveTableColumnName(sacFieldMetadata, 'ServiceCode');
+  const canJoin = Boolean(sacEntryColumn && sacAbsEntryColumn);
+  const serviceNameColumn = canJoin && serviceNameColumnName
+    ? `${sacAlias}.${quoteSqlIdentifier(serviceNameColumnName)}`
+    : "''";
+  const serviceCodeColumn = canJoin && serviceCodeColumnName
+    ? `${sacAlias}.${quoteSqlIdentifier(serviceCodeColumnName)}`
+    : "''";
   const sacEntryExpression = sacEntryColumn
     ? `CAST(${lineAlias}.${quoteSqlIdentifier(sacEntryColumn)} AS NVARCHAR(50))`
     : "''";
 
   return {
-    joinSql: hasOsacTable && sacEntryColumn
-      ? `LEFT JOIN OSAC ${sacAlias} ON ${sacAlias}.AbsEntry = ${lineAlias}.${quoteSqlIdentifier(sacEntryColumn)}`
+    joinSql: canJoin
+      ? `LEFT JOIN OSAC ${sacAlias} ON ${sacAlias}.${quoteSqlIdentifier(sacAbsEntryColumn)} = ${lineAlias}.${quoteSqlIdentifier(sacEntryColumn)}`
       : '',
     serviceNameColumn,
     serviceCodeColumn,
@@ -1722,8 +1704,11 @@ const getItemUomContext = async (itemCode) => {
   const normalizedItemCode = String(itemCode || '').trim();
   if (!normalizedItemCode) return null;
 
-  if (!itemUomContextCache.has(normalizedItemCode)) {
-    itemUomContextCache.set(normalizedItemCode, safe(db.query(`
+  const scope = await resolveDatabaseScope(db);
+  const cacheKey = `${scope.cacheKey}:${normalizedItemCode.toUpperCase()}`;
+
+  if (!itemUomContextCache.has(cacheKey)) {
+    const pending = db.query(`
       SELECT TOP 1
         T0.ItemCode,
         T0.UgpEntry,
@@ -1737,10 +1722,16 @@ const getItemUomContext = async (itemCode) => {
       LEFT JOIN OUOM SU ON SU.UomEntry = T0.SUoMEntry
       LEFT JOIN OUOM IU ON IU.UomEntry = T0.IUoMEntry
       WHERE T0.ItemCode = @itemCode
-    `, { itemCode: normalizedItemCode })).then((rows) => rows[0] || null));
+    `, { itemCode: normalizedItemCode })
+      .then(normalizeRecordset)
+      .then((rows) => rows[0] || null);
+    itemUomContextCache.set(cacheKey, pending);
+    pending.catch(() => {
+      if (itemUomContextCache.get(cacheKey) === pending) itemUomContextCache.delete(cacheKey);
+    });
   }
 
-  return itemUomContextCache.get(normalizedItemCode);
+  return itemUomContextCache.get(cacheKey);
 };
 
 const resolveSalesOrderLineUomEntry = async (itemCode, uomValue) => {
@@ -2272,6 +2263,7 @@ const getReferenceData = async () => {
       SalesUnit:     i.SalesUnit,
       InventoryUOM:  i.InventoryUOM,
       UoMGroupEntry: i.UoMGroupEntry,
+      HSNCode:       i.HSNCode || '',
       SWW:           i.HSNCode || '',
       ItemCountryOrg:i.ItemCountryOrg || '',
       SACEntry:      i.SACEntry != null ? String(i.SACEntry) : '',
@@ -2372,20 +2364,21 @@ const getCustomerDetails = async (cardCode) => {
 
 const getItemDetails = async (itemCode) => {
   const rows = await safe(db.query(`
-    SELECT ItemCode, ItemName,
-           SalUnitMsr AS SalesUnit,
-           InvntryUom AS InventoryUOM,
-           UgpEntry   AS UgpEntry,
-           SUoMEntry  AS UoMGroupEntry,
-           IUoMEntry  AS InventoryUomEntry,
-           SWW        AS HSNCode,
-           CountryOrg AS ItemCountryOrg,
-           SACEntry   AS SACEntry,
-           VatGourpSa AS TaxCodeAR,
+    SELECT T0.ItemCode, T0.ItemName,
+           T0.SalUnitMsr AS SalesUnit,
+           T0.InvntryUom AS InventoryUOM,
+           T0.UgpEntry   AS UgpEntry,
+           T0.SUoMEntry  AS UoMGroupEntry,
+           T0.IUoMEntry  AS InventoryUomEntry,
+           COALESCE(NULLIF(LTRIM(RTRIM(CHP.ChapterID)), ''), NULLIF(LTRIM(RTRIM(T0.SWW)), '')) AS HSNCode,
+           T0.CountryOrg AS ItemCountryOrg,
+           T0.SACEntry   AS SACEntry,
+           T0.VatGourpSa AS TaxCodeAR,
            ''         AS DistributionRule,
-           DfltWH     AS DefaultWarehouse
-    FROM   OITM
-    WHERE  ItemCode = @itemCode
+           T0.DfltWH     AS DefaultWarehouse
+    FROM   OITM T0
+    LEFT JOIN OCHP CHP ON CHP.AbsEntry = T0.ChapterID
+    WHERE  T0.ItemCode = @itemCode
   `, { itemCode }));
   const item = rows[0];
   if (!item) return null;
@@ -2397,6 +2390,7 @@ const getItemDetails = async (itemCode) => {
     UgpEntry:      item.UgpEntry,
     UoMGroupEntry: item.UoMGroupEntry,
     InventoryUomEntry: item.InventoryUomEntry,
+    HSNCode:       item.HSNCode || '',
     SWW:           item.HSNCode || '',
     ItemCountryOrg:item.ItemCountryOrg || '',
     SACEntry:      item.SACEntry != null ? String(item.SACEntry) : '',
@@ -2527,7 +2521,7 @@ const getSalesOrderFilterOptions = async ({
   if (normalizedField === 'customerCode' || normalizedField === 'customerName') {
     const customerWhereClauses = [
       "CardType = 'C'",
-      "(@lookupQuery = '' OR CardCode LIKE @lookupLike OR CardName LIKE @lookupLike)",
+      `(@lookupQuery = '' OR CardCode LIKE @lookupLike ${LIKE_ESCAPE_SQL} OR CardName LIKE @lookupLike ${LIKE_ESCAPE_SQL})`,
     ];
     const customerParams = {
       lookupQuery: normalizedQuery,
@@ -2543,12 +2537,12 @@ const getSalesOrderFilterOptions = async ({
     const normalizedCustomerName = String(customerName || '').trim();
 
     if (normalizedCustomerCode && normalizedField !== 'customerCode') {
-      customerWhereClauses.push('CardCode LIKE @customerCode');
+      customerWhereClauses.push(`CardCode LIKE @customerCode ${LIKE_ESCAPE_SQL}`);
       customerParams.customerCode = `%${escapeLike(normalizedCustomerCode)}%`;
     }
 
     if (normalizedCustomerName && normalizedField !== 'customerName') {
-      customerWhereClauses.push('CardName LIKE @customerName');
+      customerWhereClauses.push(`CardName LIKE @customerName ${LIKE_ESCAPE_SQL}`);
       customerParams.customerName = `%${escapeLike(normalizedCustomerName)}%`;
     }
 
@@ -2586,7 +2580,7 @@ const getSalesOrderFilterOptions = async ({
         T0.CardName AS name,
         T0.DocNum AS sort_code
       `,
-      queryClause: 'CAST(T0.DocNum AS NVARCHAR(50)) LIKE @lookupQuery',
+      queryClause: `CAST(T0.DocNum AS NVARCHAR(50)) LIKE @lookupQuery ${LIKE_ESCAPE_SQL}`,
       orderBy: 'sort_code DESC',
     },
     customerCode: {
@@ -2595,7 +2589,7 @@ const getSalesOrderFilterOptions = async ({
         T0.CardCode AS code,
         T0.CardName AS name
       `,
-      queryClause: '(T0.CardCode LIKE @lookupQuery OR T0.CardName LIKE @lookupQuery)',
+      queryClause: `(T0.CardCode LIKE @lookupQuery ${LIKE_ESCAPE_SQL} OR T0.CardName LIKE @lookupQuery ${LIKE_ESCAPE_SQL})`,
       orderBy: 'code',
     },
     customerName: {
@@ -2604,7 +2598,7 @@ const getSalesOrderFilterOptions = async ({
         T0.CardName AS code,
         T0.CardCode AS name
       `,
-      queryClause: '(T0.CardName LIKE @lookupQuery OR T0.CardCode LIKE @lookupQuery)',
+      queryClause: `(T0.CardName LIKE @lookupQuery ${LIKE_ESCAPE_SQL} OR T0.CardCode LIKE @lookupQuery ${LIKE_ESCAPE_SQL})`,
       orderBy: 'code',
     },
     sellerCode: {
@@ -2613,7 +2607,7 @@ const getSalesOrderFilterOptions = async ({
         ${salesOrderSellerCodeExpression} AS code,
         ${salesOrderSellerNameExpression} AS name
       `,
-      queryClause: `(${salesOrderSellerCodeExpression} LIKE @lookupQuery OR ${salesOrderSellerNameExpression} LIKE @lookupQuery)`,
+      queryClause: `(${salesOrderSellerCodeExpression} LIKE @lookupQuery ${LIKE_ESCAPE_SQL} OR ${salesOrderSellerNameExpression} LIKE @lookupQuery ${LIKE_ESCAPE_SQL})`,
       orderBy: 'code',
     },
     sellerName: {
@@ -2622,7 +2616,7 @@ const getSalesOrderFilterOptions = async ({
         ${salesOrderSellerNameExpression} AS code,
         ${salesOrderSellerCodeExpression} AS name
       `,
-      queryClause: `(${salesOrderSellerNameExpression} LIKE @lookupQuery OR ${salesOrderSellerCodeExpression} LIKE @lookupQuery)`,
+      queryClause: `(${salesOrderSellerNameExpression} LIKE @lookupQuery ${LIKE_ESCAPE_SQL} OR ${salesOrderSellerCodeExpression} LIKE @lookupQuery ${LIKE_ESCAPE_SQL})`,
       orderBy: 'code',
     },
   };
@@ -2816,10 +2810,10 @@ const getReferenceDocumentLookup = async ({
   }
 
   if (normalizedQuery) {
-    const queryParts = ['CAST(T0.[DocNum] AS NVARCHAR(50)) LIKE @query'];
-    if (fieldMetadata.CardCode) queryParts.push('T0.[CardCode] LIKE @query');
-    if (fieldMetadata.CardName) queryParts.push('T0.[CardName] LIKE @query');
-    if (fieldMetadata.NumAtCard) queryParts.push('T0.[NumAtCard] LIKE @query');
+    const queryParts = [`CAST(T0.[DocNum] AS NVARCHAR(50)) LIKE @query ${LIKE_ESCAPE_SQL}`];
+    if (fieldMetadata.CardCode) queryParts.push(`T0.[CardCode] LIKE @query ${LIKE_ESCAPE_SQL}`);
+    if (fieldMetadata.CardName) queryParts.push(`T0.[CardName] LIKE @query ${LIKE_ESCAPE_SQL}`);
+    if (fieldMetadata.NumAtCard) queryParts.push(`T0.[NumAtCard] LIKE @query ${LIKE_ESCAPE_SQL}`);
     whereClauses.push(`(${queryParts.join(' OR ')})`);
     params.query = `%${escapeLike(normalizedQuery)}%`;
   }
@@ -2873,6 +2867,25 @@ const getSalesOrder = async (docEntry) => {
       ? `T1.${quoteSqlIdentifier(resolveTableColumnName(lineFieldMetadata, columnName))} AS ${quoteSqlIdentifier(alias)}`
       : `${fallback} AS ${quoteSqlIdentifier(alias)}`
   );
+  const resolveLineColumn = (candidates = []) => candidates
+    .map((candidate) => resolveTableColumnName(lineFieldMetadata, candidate))
+    .find(Boolean);
+  const taxCodeColumn = resolveLineColumn(['TaxCode', 'VatGroup']);
+  const uomEntryColumn = resolveLineColumn(['UomEntry']);
+  const unitMeasureColumn = resolveLineColumn(['unitMsr']);
+  const hsnEntryColumn = resolveLineColumn(['HsnEntry']);
+  const commissionColumn = resolveLineColumn(['CommPercent', 'Commission']);
+  const taxCodeExpression = taxCodeColumn ? `T1.${quoteSqlIdentifier(taxCodeColumn)}` : "''";
+  const unitMeasureExpression = unitMeasureColumn
+    ? `NULLIF(LTRIM(RTRIM(T1.${quoteSqlIdentifier(unitMeasureColumn)})), '')`
+    : 'NULL';
+  const uomCodeExpression = uomEntryColumn
+    ? `COALESCE(UOM.UomCode, ${unitMeasureExpression}, '')`
+    : `COALESCE(${unitMeasureExpression}, '')`;
+  const uomNameExpression = `COALESCE(${unitMeasureExpression}${uomEntryColumn ? ', UOM.UomCode' : ''}, '')`;
+  const uomJoinSql = uomEntryColumn
+    ? `LEFT JOIN OUOM UOM ON UOM.UomEntry = T1.${quoteSqlIdentifier(uomEntryColumn)}`
+    : '';
   const addressExtensionField = (candidates, alias, fallback = "''") => {
     const columnName = candidates
       .map((candidate) => resolveTableColumnName(addressExtensionFieldMetadata, candidate))
@@ -2911,7 +2924,7 @@ const getSalesOrder = async (docEntry) => {
     T0.DocCur,
     T0.DocRate,
     T0.CntctCode,
-    T0.BPLId,
+    ${optionalHeaderColumn(headerFieldMetadata, ['BPLId', 'BPL_IDAssignedToInvoice'], 'BPLId', 'NULL')},
     T0.GroupNum,
     T0.ShipToCode,
     T0.PayToCode,
@@ -2986,15 +2999,24 @@ const getSalesOrder = async (docEntry) => {
     T1.Price,
     T1.PriceBefDi,
     T1.DiscPrcnt AS LineDiscPrcnt,
-    T1.TaxCode AS TaxCode,
+    ${taxCodeExpression} AS TaxCode,
     T1.WhsCode,
-    T1.unitMsr AS UomCode,
-    T1.unitMsr AS UomName,
+    ${lineField('UomEntry', 'UoMEntry', 'NULL')},
+    ${lineField('NumPerMsr', 'UomFactor', 'CAST(1 AS DECIMAL(19, 6))')},
+    ${uomCodeExpression} AS UomCode,
+    ${uomNameExpression} AS UomName,
     T1.OcrCode AS DistributionRule,
     ${lineField('OcrCode2', 'DistributionRule2')},
     ${lineField('OcrCode3', 'DistributionRule3')},
     ${lineField('OcrCode4', 'DistributionRule4')},
     ${lineField('OcrCode5', 'DistributionRule5')},
+    ${lineField('CogsOcrCod', 'COGSDistributionRule')},
+    ${lineField('CogsOcrCo2', 'COGSDistributionRule2')},
+    ${lineField('CogsOcrCo3', 'COGSDistributionRule3')},
+    ${lineField('CogsOcrCo4', 'COGSDistributionRule4')},
+    ${lineField('CogsOcrCo5', 'COGSDistributionRule5')},
+    ${lineField('AcctCode', 'GLAccount')},
+    ${lineField('HsnEntry', 'HSNEntry', 'NULL')},
     ${lineField('SACEntry', 'SACEntry', 'NULL')},
     ${sacSql.displayExpression} AS SACCode,
     ${sacSql.serviceNameColumn} AS SACServiceName,
@@ -3002,6 +3024,20 @@ const getSalesOrder = async (docEntry) => {
     ${lineField('FreeTxt', 'FreeText')},
     ${lineField('CountryOrg', 'CountryOfOrigin')},
     ${lineField('LocCode', 'LocationCode', 'NULL')},
+    ${lineField('ShipDate', 'LineDeliveryDate', 'NULL')},
+    ${lineField('TrnsCode', 'LineShippingType', 'NULL')},
+    ${lineField('WtLiable', 'WTaxLiable')},
+    ${lineField('TaxOnly', 'TaxLiable')},
+    ${lineField('AgrNo', 'BlanketAgreementNo', 'NULL')},
+    ${lineField('AgrLnNum', 'BlanketAgreementLine', 'NULL')},
+    ${lineField('TotalFrgn', 'DocumentTotal', 'NULL')},
+    ${lineField('GTotal', 'GrossTotal', 'NULL')},
+    ${commissionColumn ? `T1.${quoteSqlIdentifier(commissionColumn)}` : 'NULL'} AS CommissionPercent,
+    ${lineField('NoInvtryMv', 'WithoutQtyPosting')},
+    ${lineField('EnSetCost', 'EnableSettingCost')},
+    ${lineField('RetCost', 'ReturnCost', 'NULL')},
+    COALESCE(ITW.OnHand, 0) AS QuantityInWarehouse,
+    COALESCE(ITM.OnHand, 0) AS InStock,
     T1.OpenQty AS OpenQuantity,
     CAST((ISNULL(T1.Quantity, 0) - ISNULL(T1.OpenQty, 0)) AS DECIMAL(19, 6)) AS DeliveredQuantity,
     ISNULL(T1.VatSum, 0) AS LineTaxAmount,
@@ -3080,7 +3116,9 @@ LEFT JOIN OCST ST
 
 -- ✅ HSN
 LEFT JOIN OITM ITM ON ITM.ItemCode = T1.ItemCode
-LEFT JOIN OCHP CHP ON CHP.AbsEntry = ITM.ChapterID
+LEFT JOIN OITW ITW ON ITW.ItemCode = T1.ItemCode AND ITW.WhsCode = T1.WhsCode
+LEFT JOIN OCHP CHP ON CHP.AbsEntry = ${hsnEntryColumn ? `COALESCE(T1.${quoteSqlIdentifier(hsnEntryColumn)}, ITM.ChapterID)` : 'ITM.ChapterID'}
+${uomJoinSql}
 ${sacSql.joinSql}
 
 WHERE T0.DocEntry = @DocEntry
@@ -3387,7 +3425,7 @@ ORDER BY T1.LineNum
         rounding: Number(header.RoundingAmount || 0) !== 0,
         roundingAmount: header.RoundingAmount != null ? String(header.RoundingAmount) : '',
         totalPaymentDue: header.DocTotal != null ? String(header.DocTotal) : '',
-        currency: header.DocCur || 'INR',
+        currency: header.DocCur || '',
         exchangeRate: header.DocRate != null ? String(header.DocRate) : '',
       },
       header_udfs: headerUdfs,
@@ -3414,7 +3452,7 @@ ORDER BY T1.LineNum
           calculatedForRate
         );
         // Get HSN Code from the joined query
-        const hsnCode = line.HSNCode || '';
+        const hsnCode = line.HSNCode || (line.HSNEntry != null ? String(line.HSNEntry) : '');
         
         console.log('🔍 [Backend] Processing line:', line.LineNum, 'Item:', line.ItemCode, 'HSN:', hsnCode);
         
@@ -3462,6 +3500,10 @@ ORDER BY T1.LineNum
           brokerageNumber: lineUdf.U_BDNum || line.BrokerageNumber || '',
           uomCode: line.UomCode || '',
           uomName: line.UomName || line.UomCode || '',
+          uomEntry: line.UoMEntry != null ? Number(line.UoMEntry) : null,
+          uomFactor: line.UomFactor != null && line.UomFactor !== '' ? Number(line.UomFactor) : 1,
+          inStock: line.InStock != null ? String(line.InStock) : '',
+          qtyInWhse: line.QuantityInWarehouse != null ? String(line.QuantityInWarehouse) : '',
           discountAmount: displayDiscountAmount,
           stdDiscount: String(line.LineDiscPrcnt || ''),
           taxCode: line.TaxCode || '',
@@ -3473,9 +3515,26 @@ ORDER BY T1.LineNum
           distRule3: line.DistributionRule3 || '',
           distRule4: line.DistributionRule4 || '',
           distRule5: line.DistributionRule5 || '',
+          cogsDistRule: line.COGSDistributionRule || '',
+          cogsDistRule2: line.COGSDistributionRule2 || '',
+          cogsDistRule3: line.COGSDistributionRule3 || '',
+          cogsDistRule4: line.COGSDistributionRule4 || '',
+          cogsDistRule5: line.COGSDistributionRule5 || '',
+          glAccount: line.GLAccount || '',
           freeText: line.FreeText || '',
           countryOfOrigin: line.CountryOfOrigin || '',
           loc: line.LocationCode != null ? String(line.LocationCode) : '',
+          blanketAgreementNo: line.BlanketAgreementNo != null ? String(line.BlanketAgreementNo) : '',
+          blanketAgreementLine: line.BlanketAgreementLine != null ? String(line.BlanketAgreementLine) : '',
+          commPercent: line.CommissionPercent != null ? String(line.CommissionPercent) : '',
+          grossTotal: line.GrossTotal != null ? String(line.GrossTotal) : '',
+          lineShippingType: line.LineShippingType != null ? String(line.LineShippingType) : '',
+          lineDeliveryDate: formatSapDate(line.LineDeliveryDate),
+          wTaxLiable: line.WTaxLiable || '',
+          taxLiable: line.TaxLiable || '',
+          withoutQtyPosting: line.WithoutQtyPosting || '',
+          enableSettingCost: line.EnableSettingCost || '',
+          returnCost: line.ReturnCost != null ? String(line.ReturnCost) : '',
           openQty: line.OpenQuantity != null ? String(line.OpenQuantity) : '',
           deliveredQty: line.DeliveredQuantity != null ? String(line.DeliveredQuantity) : '',
           documentCreated: formatSapDate(line.DocumentCreated),
@@ -3568,11 +3627,16 @@ const getSalesOrderForCopy = async (docEntry) => {
   const lineFieldMetadata = await getSalesOrderLineFieldMetadata();
   const sacFieldMetadata = await getTableFieldMetadata('OSAC');
   const sqlAlias = (alias) => `[${String(alias || '').replace(/]/g, ']]')}]`;
-  const headerBranchField = headerFieldMetadata?.BPL_IDAssignedToInvoice
-    ? 'T0.BPL_IDAssignedToInvoice'
-    : headerFieldMetadata?.BPLId
-      ? 'T0.BPLId'
-      : 'NULL';
+  const headerBplColumn = resolveTableColumnName(headerFieldMetadata, 'BPLId')
+    || resolveTableColumnName(headerFieldMetadata, 'BPL_IDAssignedToInvoice');
+  const headerAssignedBplColumn = resolveTableColumnName(headerFieldMetadata, 'BPL_IDAssignedToInvoice')
+    || headerBplColumn;
+  const headerBplField = headerBplColumn
+    ? `T0.${quoteSqlIdentifier(headerBplColumn)}`
+    : 'NULL';
+  const headerBranchField = headerAssignedBplColumn
+    ? `T0.${quoteSqlIdentifier(headerAssignedBplColumn)}`
+    : 'NULL';
   const paymentMethodColumn = resolveTableColumnName(headerFieldMetadata, 'PeyMethod');
   const paymentMethodExpression = paymentMethodColumn ? `T0.${quoteSqlIdentifier(paymentMethodColumn)}` : "''";
   const lineField = (columnName, alias, fallback = "''") => (
@@ -3590,7 +3654,7 @@ const getSalesOrderForCopy = async (docEntry) => {
       T0.CardCode, T0.CardName, T0.CntctCode,
       T0.NumAtCard, T0.Comments,
       T0.Address, T0.Address2, T0.ShipToCode, T0.PayToCode,
-      T0.BPLId,
+      ${headerBplField} AS BPLId,
       ${headerBranchField} AS BPL_IDAssignedToInvoice,
       T0.GroupNum, T0.SlpCode,
       T0.DiscPrcnt, T0.RoundDif, T0.TotalExpns AS Freight,

@@ -15,9 +15,11 @@ const getStore = (namespace) => {
 
 const getCacheKey = (req, namespace) => {
   const companyId = req.auth?.companyId || "public";
+  const userId = req.auth?.userId || "anonymous";
   return [
     namespace,
     `company:${sanitizeKeyPart(companyId)}`,
+    `user:${sanitizeKeyPart(userId)}`,
     sanitizeKeyPart(req.method),
     sanitizeKeyPart(req.originalUrl),
   ].join(":");

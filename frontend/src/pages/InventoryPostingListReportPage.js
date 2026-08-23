@@ -8,6 +8,7 @@ import ItemLookupModal from "../components/reports/ItemLookupModal";
 import PropertiesSelectionModal from "../components/reports/PropertiesSelectionModal";
 import useFloatingWindow from "../components/reports/useFloatingWindow";
 import { useSapWindowTaskbarActions } from "../components/SapWindowTaskbarContext";
+import { createActiveCompanyScopedRouteState } from "../utils/companyStorageScope";
 import "../styles/item-list-report.css";
 import "../styles/inventory-posting-list-report.css";
 import "../styles/sales-analysis-report.css";
@@ -577,9 +578,9 @@ function InventoryPostingListReportPage() {
     }
 
     navigate("/ar-invoice", {
-      state: {
+      state: createActiveCompanyScopedRouteState({
         arInvoiceDocEntry: docEntry,
-      },
+      }),
     });
   };
 

@@ -13,6 +13,7 @@ import ReferenceInformationModal, {
 import BatchAllocationModal from '../../components/BatchAllocationModal';
 import DistributionRuleAssignmentModal from '../../components/DistributionRuleAssignmentModal';
 import LineValueLookupModal from '../../components/sales-document/LineValueLookupModal';
+import InventoryPrintLayoutActions from '../../components/print-layout/InventoryPrintLayoutActions';
 import JournalEntryPreviewButton from '../../components/journal-entry/JournalEntryPreviewButton';
 import {
   BATCH_QTY_TOLERANCE,
@@ -1348,28 +1349,28 @@ function GoodsIssue() {
 
   return (
     <form ref={formRef} className={`po-page sap-document-page gr-goods-receipt__page inventory-document-page${isRightSidebarOpen ? ' po-page--sidebar-open inventory-document-page--sidebar-open' : ''}`} onSubmit={handleSubmit} onChangeCapture={markDirty}>
-      <div className="po-toolbar">
-        <div className="po-toolbar__title">
+      <div className="po-toolbar sap-document-toolbar">
+        <div className="po-toolbar__title sap-document-toolbar__title">
           Goods Issue{currentDocEntry ? ` - #${header.number || currentDocEntry}` : ''}
         </div>
         <span className={`po-mode-badge po-mode-badge--${currentDocEntry ? 'update' : 'add'}`}>
           {currentDocEntry ? 'Update' : 'Add'} Mode
         </span>
-        <button type="submit" className="po-btn po-btn--primary" disabled={pageState.posting} title={primaryActionLabel}>
+        <button type="submit" className="po-btn po-btn--primary sap-document-toolbar__primary" disabled={pageState.posting} title={primaryActionLabel}>
           {primaryActionLabel}
         </button>
         <button
           type="button"
-          className="po-btn"
+          className="po-btn sap-document-toolbar__cancel"
           onClick={resetForm}
           disabled={pageState.posting}
         >
           Cancel
         </button>
-        <button type="button" className="po-btn" onClick={() => navigate('/goods-issue/find')}>
+        <button type="button" className="po-btn sap-document-toolbar__find" onClick={() => navigate('/goods-issue/find')}>
           Find
         </button>
-        <button type="button" className="po-btn" onClick={resetForm}>
+        <button type="button" className="po-btn sap-document-toolbar__new" onClick={resetForm}>
           New
         </button>
         <button
@@ -1380,7 +1381,7 @@ function GoodsIssue() {
         >
           Duplicate
         </button>
-        <button type="button" className="po-btn" onClick={() => {
+        <button type="button" className="po-btn sap-document-toolbar__udf" onClick={() => {
           setFormSettingsOpen(false);
           setSidebarOpen((open) => !open);
         }}>
@@ -1388,7 +1389,7 @@ function GoodsIssue() {
         </button>
         <button
           type="button"
-          className="po-btn"
+          className="po-btn sap-document-toolbar__settings"
           onClick={() => {
             setSidebarOpen(false);
             setFormSettingsOpen((open) => !open);
@@ -1396,6 +1397,15 @@ function GoodsIssue() {
         >
           Form Settings
         </button>
+        <InventoryPrintLayoutActions
+          documentKey="goodsIssue"
+          docEntry={currentDocEntry}
+          docNumber={header.number}
+          series={header.series}
+          disabled={pageState.posting || pageState.loading}
+          onSuccess={(message) => setPageState((current) => ({ ...current, error: '', success: message }))}
+          onError={(message) => setPageState((current) => ({ ...current, success: '', error: message }))}
+        />
         <JournalEntryPreviewButton
           documentType="goodsIssue"
           documentLabel="Goods Issue"

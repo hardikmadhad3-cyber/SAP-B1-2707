@@ -76,6 +76,20 @@ export const hydrateDocumentLineFromItem = (line = {}, item = {}, {
     'DistributionRule',
     'OcrCode',
   ]);
+  const itemInStock = firstItemValue(item, [
+    'InStock',
+    'QuantityOnStock',
+    'OnHandQty',
+    'OnHand',
+  ]);
+  const itemWarehouseQuantity = firstItemValue(item, [
+    'QtyInWhse',
+    'QtyInWarehouse',
+    'QuantityInWarehouse',
+    'WarehouseQuantity',
+    'WarehouseStock',
+    'WhsQty',
+  ]);
 
   const next = {
     ...line,
@@ -89,6 +103,8 @@ export const hydrateDocumentLineFromItem = (line = {}, item = {}, {
     glAccount: line.glAccount || salesGlAccount || '',
     distRule: line.distRule || distributionRule || '',
     cogsDistRule: line.cogsDistRule || cogsDistributionRule || line.distRule || distributionRule || '',
+    inStock: hasValue(line.inStock) ? line.inStock : itemInStock,
+    qtyInWhse: hasValue(line.qtyInWhse) ? line.qtyInWhse : itemWarehouseQuantity,
     whse: line.whse || defaultWarehouse,
     inventoryUOM: item.InventoryUOM || line.inventoryUOM || '',
     batchManaged: item.BatchManaged === 'Y' || item.ManageBatchNumbers === 'tYES' || item.ManBtchNum === 'Y' || line.batchManaged || false,

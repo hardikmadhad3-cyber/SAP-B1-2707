@@ -1,7 +1,40 @@
 const path = require('path');
+const crypto = require('crypto');
+const fs = require('fs');
 const dotenv = require('dotenv');
 
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
+
+const readOrCreateJwtSecret = () => {
+  const configuredSecret = String(process.env.JWT_SECRET || '').trim();
+  if (configuredSecret) return configuredSecret;
+
+  const secretPath = path.resolve(__dirname, '../data/.jwt-secret');
+
+  try {
+    const storedSecret = fs.readFileSync(secretPath, 'utf8').trim();
+    if (storedSecret) return storedSecret;
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+
+  fs.mkdirSync(path.dirname(secretPath), { recursive: true });
+  const generatedSecret = crypto.randomBytes(64).toString('hex');
+
+  try {
+    fs.writeFileSync(secretPath, `${generatedSecret}\n`, {
+      encoding: 'utf8',
+      flag: 'wx',
+      mode: 0o600,
+    });
+    return generatedSecret;
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    const storedSecret = fs.readFileSync(secretPath, 'utf8').trim();
+    if (!storedSecret) throw new Error('Generated JWT secret file is empty.');
+    return storedSecret;
+  }
+};
 
 const parseBoolean = (value, fallback = false) => {
   if (value === undefined) return fallback;
@@ -10,7 +43,7 @@ const parseBoolean = (value, fallback = false) => {
 
 module.exports = {
   port: Number(process.env.PORT || 5001),
-  jwtSecret: process.env.JWT_SECRET || '',
+  jwtSecret: readOrCreateJwtSecret(),
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '12h',
   pendingJwtExpiresIn: process.env.PENDING_JWT_EXPIRES_IN || '15m',
   setupAdminUsername: process.env.SETUP_ADMIN_USERNAME || 'manager',
@@ -48,4 +81,9 @@ module.exports = {
   dbPassword:  process.env.DB_PASSWORD  || '',
   dbEncrypt:   parseBoolean(process.env.DB_ENCRYPT,   false),
   dbTrustCert: parseBoolean(process.env.DB_TRUST_CERT, true),
+  // Comma-separated list of extra allowed CORS origins, e.g. http://125.18.226.46:5005
+  allowedOrigins: (process.env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean),
 };

@@ -50,6 +50,7 @@ const {
 
 const authRoutes            = require('./routes/authRoutes');
 const menuRoutes            = require('./routes/menuRoutes');
+const dashboardRoutes       = require('./routes/dashboardRoutes');
 const sapRoutes             = require('./routes/sapRoutes');
 const itemRoutes            = require('./routes/itemRoutes');
 const businessPartnerRoutes = require('./routes/businessPartnerRoutes');
@@ -142,6 +143,10 @@ const isReusableLookupRequest = (req) => {
   if (req.method !== 'GET') return false;
 
   const path = req.path.toLowerCase();
+  const isDocumentLayoutRequest = path === '/sap/layout/document' || path === '/api/sap/layout/document';
+  const isForcedLiveLayoutRead = isDocumentLayoutRequest
+    && ['1', 'true', 'yes'].includes(String(req.query?.refresh || '').trim().toLowerCase());
+  if (isForcedLiveLayoutRead) return false;
   const isNextNumberRoute =
     path.includes('/next-number') ||
     path.endsWith('/series/next') ||
@@ -152,7 +157,7 @@ const isReusableLookupRequest = (req) => {
   return (
     path.endsWith('/reference-data') ||
     path.endsWith('/lookups') ||
-    path === '/api/sap/layout/document' ||
+    isDocumentLayoutRequest ||
     path.startsWith('/api/hsn-codes') ||
     path.includes('/lookup/') ||
     path.endsWith('/metadata') ||
@@ -172,6 +177,9 @@ const reusableLookupCache = cacheMiddleware({
 
 const isAllowedOrigin = (origin) => {
   if (!origin) return true;
+
+  // Explicitly listed origins from ALLOWED_ORIGINS env var take priority
+  if (env.allowedOrigins.includes(origin)) return true;
 
   try {
     const { protocol, hostname, port } = new URL(origin);
@@ -282,6 +290,14 @@ app.use('/api', reusableLookupCache);
 // Routes
 app.use('/api',                    authRoutes);
 app.use('/api/menu',               menuRoutes);
+app.use('/api/dashboard',
+  cacheMiddleware({
+    namespace: 'dashboard',
+    ttlSeconds: 45,
+    shouldCache: (req) => String(req.query.refresh || '') !== '1',
+  }),
+  dashboardRoutes,
+);
 app.get('/api/items',              cacheMiddleware({ namespace: 'items', ttlSeconds: 3600 }), goodsReceiptController.getItems);
 app.use('/api/items',              ...masterDataCache('items', 3600), itemRoutes);
 app.use('/api/business-partners',  ...masterDataCache('business-partners', 3600), businessPartnerRoutes);

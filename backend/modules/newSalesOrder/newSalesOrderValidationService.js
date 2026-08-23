@@ -1,5 +1,10 @@
-const HEADER_TABLE = 'ORDR';
-const LINE_TABLE = 'RDR1';
+const {
+  SALES_ORDER_DOCUMENT,
+  resolveSalesDocument,
+} = require('./newSalesOrderConstants');
+
+const HEADER_TABLE = SALES_ORDER_DOCUMENT.headerTable;
+const LINE_TABLE = SALES_ORDER_DOCUMENT.lineTable;
 
 const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value || {}, key);
 const isPlainObject = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -12,6 +17,29 @@ const createHttpError = (statusCode, message, details, code) => {
   if (details !== undefined) error.details = details;
   if (code) error.code = code;
   return error;
+};
+
+const resolveSchemaTables = (schema = {}) => {
+  let document = SALES_ORDER_DOCUMENT;
+  if (text(schema.documentType)) {
+    try {
+      document = resolveSalesDocument(schema.documentType);
+    } catch (_error) {
+      throw createHttpError(500, 'Current schema has an unsupported document type.', undefined, 'INVALID_SCHEMA');
+    }
+  }
+
+  const headerTable = upper(schema.headerTable || document.headerTable);
+  const lineTable = upper(schema.lineTable || document.lineTable);
+  if (headerTable !== document.headerTable || lineTable !== document.lineTable) {
+    throw createHttpError(
+      500,
+      'Current schema tables do not match its sales-document profile.',
+      { documentType: document.documentType, headerTable, lineTable },
+      'INVALID_SCHEMA',
+    );
+  }
+  return { document, headerTable, lineTable };
 };
 
 const fieldIdentifier = (field, index, tableName) =>
@@ -375,8 +403,9 @@ const validateNewSalesOrderForm = async ({ schema, formData, validateLookupValue
     throw createHttpError(400, 'formData must be an object.', undefined, 'INVALID_FORM_DATA');
   }
 
-  const headerFields = normalizeSchemaFields(schema, 'headerFields', HEADER_TABLE);
-  const lineFields = normalizeSchemaFields(schema, 'lineFields', LINE_TABLE);
+  const { headerTable, lineTable } = resolveSchemaTables(schema);
+  const headerFields = normalizeSchemaFields(schema, 'headerFields', headerTable);
+  const lineFields = normalizeSchemaFields(schema, 'lineFields', lineTable);
   const errors = [];
 
   for (const key of Object.keys(formData)) {
@@ -447,5 +476,6 @@ module.exports = {
   isEmptyValue,
   isUdfField,
   normalizeCheckbox,
+  resolveSchemaTables,
   validateNewSalesOrderForm,
 };

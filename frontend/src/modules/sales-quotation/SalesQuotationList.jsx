@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import './styles/SalesQuotationList.css';
 import { useNavigate } from 'react-router-dom';
 import { fetchSalesQuotations } from '../../api/salesQuotationApi';
+import { createActiveCompanyScopedRouteState } from '../../utils/companyStorageScope';
 
 function SalesQuotationList() {
   const navigate = useNavigate();
@@ -60,7 +61,7 @@ function SalesQuotationList() {
                   key={q.doc_entry}
                   className="sq-list-row"
                   onClick={() => navigate('/sales-quotation', {
-                    state: { salesQuotationDocEntry: q.doc_entry }
+                    state: createActiveCompanyScopedRouteState({ salesQuotationDocEntry: q.doc_entry })
                   })}
                 >
                   <td>{q.doc_num}</td>

@@ -228,6 +228,9 @@ const buildTableFields = ({
     if (!physical) {
       const layoutField = text(layout.fieldName || layout.columnUid || layout.label);
       if (!layoutField) continue;
+      // SAP form layouts can retain deleted or company-specific UDF columns.
+      // A UDF is live only when the current company table physically contains it.
+      if (layout.isUdf || upper(layoutField).startsWith('U_')) continue;
       const id = `${tableName}.LAYOUT_${layoutField.replace(/[^A-Za-z0-9_]+/g, '_')}`;
       const mappedLayoutType = mapLayoutDataType(layout.dataType);
       fields.push({

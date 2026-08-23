@@ -21,6 +21,7 @@ import StateSelectionModal from '../../components/common/StateSelectionModal';
 import HSNCodeModal from '../../components/common/HSNCodeModal';
 import ItemSelectionModal from '../../components/common/ItemSelectionModal';
 import QualitySelectionModal from '../sales-order/components/QualitySelectionModal';
+import ExchangeRatesIndexesModal from '../sales-order/components/ExchangeRatesIndexesModal';
 import FreightChargesModal from '../../components/freight/FreightChargesModal';
 import DocumentCurrencySelect from '../../components/document/DocumentCurrencySelect';
 import SapGoldenArrowButton from '../../components/document/SapGoldenArrowButton';
@@ -34,7 +35,6 @@ import useDocumentDraftTask from '../../hooks/useDocumentDraftTask';
 import { copyToDocument } from '../../services/documentCopyService';
 import { filterWarehousesByBranch, getWarehouseBranchId } from '../../utils/warehouseBranch';
 import { hydrateDocumentLineFromItem, mergeItemMaster } from '../../utils/documentItemHydration';
-import { FALLBACK_UOM, FALLBACK_WAREHOUSES } from '../../utils/fallbackReferenceData';
 import { getDefaultSeriesForCurrentYear, getSapVisibleDocumentSeries } from '../../utils/seriesDefaults';
 import {
   SAP_MANUAL_SERIES_VALUE,
@@ -43,7 +43,9 @@ import {
 } from '../../utils/documentSeries';
 import { readGeneralSettings } from '../../utils/generalSettingsStorage';
 import { useCompanyScopedFormSettings } from '../../utils/formSettingsStorage';
+import { updateFormSettingPreference } from '../../utils/formSettingsPreferences';
 import { buildVisibleEnteredRowUdfPayload } from '../../utils/rowUdfPayload';
+import { resolveDocumentCurrency } from '../../utils/documentCurrency';
 import { getStateCodeValue, getStateDisplayName } from '../../utils/stateDisplay';
 import { findTaxCode, getTaxComponentCodes } from '../../utils/taxCodeComponents';
 import { isRouteStateForActiveCompany } from '../../utils/companyStorageScope';
@@ -66,12 +68,16 @@ import { useAuth } from '../../auth/AuthContext';
 import { getDocumentLayout } from '../../api/sapLayoutApi';
 import {
   DELIVERY_LAYOUT_DOCUMENT_TYPE,
-  buildSalesOrderMatrixColumnsFromLayout,
-  buildSalesOrderMatrixColumnsFromSchema,
-  buildSalesOrderRowUdfDefinitionsFromSchema,
+  getSapStandardSalesMatrixColumns,
 } from '../sales-order/documentLayout';
-import { fetchSalesDocumentSchema } from '../../api/salesDocumentSchemaApi';
-import { normalizeSalesDocumentSchema } from '../../utils/salesDocumentSchema';
+import { fetchSalesDocumentLookup, fetchSalesDocumentSchema } from '../../api/salesDocumentSchemaApi';
+import {
+  buildSalesDocumentLiveFields,
+  filterLayoutToCurrentSchema,
+  getSalesDocumentCompanyScopeKey,
+  loadSalesDocumentFieldLookupOptions,
+} from '../../utils/salesDocumentLiveFields';
+import { buildDeliveryLiveMatrixColumns } from './deliveryLiveMatrix';
 import { hydrateWorkbookDocumentLine } from '../../utils/workbookLineHydration';
 import {
   fetchDeliveryReferenceData,
@@ -95,16 +101,17 @@ import {
   createDeliveryLookupValue,
   saveDeliverySalesEmployeesSetup
 } from '../../api/deliveryApi';
-import { fetchSalesOrderByDocEntry, fetchSalesOrderReferenceDocumentLookup } from '../../api/salesOrderApi';
+import {
+  fetchSalesOrderByDocEntry,
+  fetchSalesOrderExchangeRates,
+  fetchSalesOrderReferenceDocumentLookup,
+  saveSalesOrderExchangeRate,
+} from '../../api/salesOrderApi';
 import { fetchHSNCodeFromItem } from '../../api/hsnCodeApi';
 import { deliveryCopyFromApi, normaliseDocumentHeader, normaliseDocumentLine, BASE_TYPE } from '../../api/copyFromApi';
 import {
   FORM_SETTINGS_STORAGE_KEY,
-  HEADER_UDF_DEFINITIONS,
-  ROW_UDF_DEFINITIONS,
-  BASE_MATRIX_COLUMNS,
   createUdfState,
-  filterDeliveryRowUdfDefinitions,
   normalizeUdfState,
   readSavedFormSettings,
 } from '../../config/deliveryForm';
@@ -139,6 +146,10 @@ const mergeUdfValues = (...sources) =>
     });
     return acc;
   }, {});
+
+const normalizeCompanyUdfState = (definitions = [], values = {}) => {
+  return normalizeUdfState(definitions, values, { preserveExtra: false });
+};
 
 const pickLineUdfValues = (source = {}) =>
   Object.entries(source || {}).reduce((acc, [key, value]) => {
@@ -381,26 +392,51 @@ const checkBatchAvailability = async (itemCode, whsCode) => {
   }
 };
 
-// ─── static fallbacks ────────────────────────────────────────────────────────
-const FALLBACK_PAYMENT_TERMS = [
-  { value: '0', label: 'Immediate' },
-  { value: '1', label: 'Net 30' },
-  { value: '2', label: 'Net 60' },
-  { value: '3', label: 'Net 90' },
-];
-const FALLBACK_SHIPPING = [
-  { value: '1', label: 'Air' },
-  { value: '2', label: 'Sea' },
-  { value: '3', label: 'Road' },
-  { value: '4', label: 'Courier' },
-];
 // ─── constants ────────────────────────────────────────────────────────────────
 const DEC = { QtyDec: 2, PriceDec: 2, SumDec: 2, RateDec: 2, PercentDec: 2 };
 const TAB_NAMES = ['Contents', 'Logistics', 'Accounting', 'Tax', 'Electronic Documents', 'Attachments'];
+const buildExchangeRatesFallbackData = ({
+  year,
+  month,
+  currencies = [],
+  localCurrency = '',
+  documentCurrency = '',
+}) => {
+  const normalizedYear = Number(year) || new Date().getFullYear();
+  const normalizedMonth = Number(month) || (new Date().getMonth() + 1);
+  const localCode = String(localCurrency || '').trim();
+  const currencyMap = new Map();
+  const addCurrency = (code, name = '') => {
+    const normalizedCode = String(code || '').trim();
+    if (!normalizedCode || normalizedCode === localCode || currencyMap.has(normalizedCode)) return;
+    currencyMap.set(normalizedCode, {
+      code: normalizedCode,
+      name: String(name || normalizedCode).trim(),
+    });
+  };
+
+  (Array.isArray(currencies) ? currencies : []).forEach((entry) => addCurrency(
+    entry.CurrCode || entry.Code || entry.code || entry.value,
+    entry.CurrName || entry.Name || entry.name || entry.label,
+  ));
+  addCurrency(documentCurrency);
+
+  const daysInMonth = new Date(normalizedYear, normalizedMonth, 0).getDate();
+  return {
+    year: normalizedYear,
+    month: normalizedMonth,
+    localCurrency: localCode,
+    currencies: [...currencyMap.values()].sort((left, right) => left.code.localeCompare(right.code)),
+    days: Array.from({ length: daysInMonth }, (_unused, index) => ({ day: index + 1, rates: {} })),
+  };
+};
 
 const DELIVERY_LINE_UPDATE_FIELDS = [
-  'lineNum', 'baseEntry', 'baseType', 'baseLine', 'itemNo', 'quantity', 'unitPrice',
-  'whse', 'uomEntry', 'uomCode', 'taxCode', 'distRule', 'freeText', 'sacCode',
+  'lineNum', 'baseEntry', 'baseType', 'baseLine', 'itemNo', 'itemDescription', 'quantity', 'unitPrice',
+  'whse', 'uomEntry', 'uomCode', 'taxCode', 'distRule', 'distRule2', 'distRule3', 'distRule4', 'distRule5',
+  'cogsDistRule', 'cogsDistRule2', 'cogsDistRule3', 'cogsDistRule4', 'cogsDistRule5', 'glAccount',
+  'lineShippingType', 'lineDeliveryDate', 'taxLiable', 'wTaxLiable', 'withoutQtyPosting',
+  'loc', 'blanketAgreementNo', 'blanketAgreementLine', 'commPercent', 'freeText', 'hsnCode', 'sacCode',
   'countryOfOrigin', 'specialRebate', 'commission', 'sellerBrokeragePerQty',
   'unitPriceUdf', 'discountAmount', 'sellerBrokerage', 'buyerBrokerage',
   'buyerDelivery', 'sellerDelivery', 'buyerPaymentTerms', 'sellerPaymentTerms',
@@ -436,7 +472,7 @@ const getDeliveryLinesUpdateSignature = (documentLines = []) => JSON.stringify(
     }))
 );
 
-const createLine = (rowUdfDefinitions = ROW_UDF_DEFINITIONS, headerUdfsParam = {}) => ({
+const createLine = (rowUdfDefinitions = [], headerUdfsParam = {}) => ({
   itemNo: '', itemDescription: '',
   sellerQuality: '', buyerQuality: '',
   hsnCode: '', quantity: '', unitPrice: '',
@@ -449,9 +485,13 @@ const createLine = (rowUdfDefinitions = ROW_UDF_DEFINITIONS, headerUdfsParam = {
   buyerBillDiscount: '', sellerBillDiscount: '', sellerItem: '', sellerQty: '',
   freightPurchase: '', freightSales: '', freightProvider: '', freightProviderName: '',
   brokerageNumber: '',
-  uomCode: '', stdDiscount: '', stcode: '', taxCode: '', total: '', taxAmount: '', whse: '',
-  uomName: '', price: '', priceAfterDiscount: '', itemCost: '', binLocationAllocation: '',
-  distRule: '', freeText: '', countryOfOrigin: '', sacCode: '',
+  uomCode: '', uomEntry: null, stdDiscount: '', stcode: '', taxCode: '', total: '', taxAmount: '', whse: '',
+  uomName: '', inStock: '', qtyInWhse: '', price: '', priceAfterDiscount: '', itemCost: '', binLocationAllocation: '',
+  distRule: '', distRule2: '', distRule3: '', distRule4: '', distRule5: '',
+  cogsDistRule: '', cogsDistRule2: '', cogsDistRule3: '', cogsDistRule4: '', cogsDistRule5: '', glAccount: '',
+  freeText: '', countryOfOrigin: '', sacCode: '', blanketAgreementNo: '', blanketAgreementLine: '',
+  commPercent: '', grossTotal: '', lineShippingType: '', lineDeliveryDate: '', wTaxLiable: '', taxLiable: '',
+  withoutQtyPosting: '', enableSettingCost: '', returnCost: '',
   openQty: '', deliveredQty: '', documentCreated: '',
   loc: '', branch: '', lineNum: undefined, baseEntry: null, baseType: null, baseLine: null,
   batchManaged: false, serialManaged: false, binManaged: false,
@@ -532,163 +572,6 @@ const createInitialHeader = (settings = readGeneralSettings()) => ({
   documentDate: today(),
 });
 
-const compactColumnToken = (value) => String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
-
-const DELIVERY_ACTUAL_MATRIX_COLUMNS = BASE_MATRIX_COLUMNS.filter((column) => column.key !== 'batch');
-const DELIVERY_ACTUAL_MATRIX_KEY_SET = new Set(DELIVERY_ACTUAL_MATRIX_COLUMNS.map((column) => column.key));
-
-const DELIVERY_COLUMN_EXTRA_TOKENS = {
-  itemNo: ['ITEMCODE'],
-  itemDescription: ['DSCRIPTION', 'DESCRIPTION'],
-  uomName: ['UNITMSR', 'UOMNAME'],
-  hsnCode: ['HSNCODE', 'HSNENTRY'],
-  unitPrice: ['UNITPRICE', 'PRICEBEFDI'],
-  taxCode: ['VATGROUP'],
-  totalLC: ['LINETOTAL', 'GTOTAL', 'TOTAL'],
-  whse: ['WHSCODE', 'WAREHOUSE'],
-  binLocationAllocation: ['BINALLOC', 'BINALLOCATION', 'BINLOCATIONALLOCATION'],
-  priceAfterDiscount: ['PRICEAFTERDISCOUNT'],
-  itemCost: ['ITEMCOST'],
-  taxCodeRepeat: ['UTAXCODE'],
-  price: ['UPRICE'],
-  sellerBrokerage: ['UBROKSELLER'],
-  buyerBrokerage: ['UBROKBUYER'],
-  buyerDelivery: ['UBUYERDELIVERY'],
-  sellerDelivery: ['USELLERDELIVERY'],
-  buyerPaymentTerms: ['UBUYERPAYMENTTERMS'],
-  sellerPaymentTerms: ['USELLERPAYMENTTERM', 'USELLERPAYMENTTERMS'],
-  buyerQuality: ['UBUYERQUALITY'],
-  sellerQuality: ['USELLERQUALITY'],
-  buyerPrice: ['UBUYERPRICE'],
-  sellerPrice: ['USELLERPRICE'],
-  buyerSpecialInstruction: ['UBUYERSPINS'],
-  sellerSpecialInstruction: ['USELLERSPINS'],
-  sellerBrokerageAmtPer: ['USELBROKAP'],
-  sellerBrokeragePercent: ['USELLERBROKPER'],
-  stcode: ['USELLTCODE'],
-  sellerItem: ['USITEM'],
-  sellerQty: ['USQTY'],
-  specialRebate: ['USPLRBT'],
-  commission: ['UCOMPRC', 'COMMISSION'],
-  sellerBrokeragePerQty: ['USBROKPERQTY'],
-  U_Fix_Brock_B: ['UFIXBROKBUYER', 'UFIXBROCKB', 'UFIXBROKB'],
-  U_Fix_Brock_S: ['UFIXBROCKSELLER', 'UFIXBROKSELLER', 'UFIXBROCKS', 'UFIXBROKS'],
-};
-
-const buildDeliveryColumnTokenMap = () => {
-  const map = new Map();
-  const add = (token, key) => {
-    const normalized = compactColumnToken(token);
-    if (normalized && !map.has(normalized)) map.set(normalized, key);
-  };
-
-  DELIVERY_ACTUAL_MATRIX_COLUMNS.forEach((column) => {
-    [column.key, column.valueKey, column.rendererKey, column.label].forEach((token) => add(token, column.key));
-  });
-  Object.entries(DELIVERY_COLUMN_EXTRA_TOKENS).forEach(([key, tokens]) => {
-    tokens.forEach((token) => add(token, key));
-  });
-
-  return map;
-};
-
-const DELIVERY_COLUMN_KEY_BY_TOKEN = buildDeliveryColumnTokenMap();
-
-const getDeliveryColumnIdentity = (column = {}) => {
-  if (DELIVERY_ACTUAL_MATRIX_KEY_SET.has(column.key)) return column.key;
-
-  const rawLabel = String(column.label || column.columnTitle || '').trim();
-  const rawField = String(column.sapField || column.fieldName || column.layoutFieldName || '').trim();
-  const labelToken = compactColumnToken(rawLabel);
-  const fieldToken = compactColumnToken(rawField);
-
-  if (labelToken === 'TAXCODE') return rawLabel.includes(' ') ? 'taxCode' : 'taxCodeRepeat';
-  if (fieldToken === 'UTAXCODE') return 'taxCodeRepeat';
-  if (fieldToken === 'TAXCODE') return 'taxCode';
-  if (labelToken === 'UNITPRICE') return 'unitPrice';
-  if (labelToken === 'PRICE' && fieldToken.startsWith('U')) return 'price';
-  if (fieldToken === 'UPRICE') return 'price';
-
-  const tokens = [
-    column.key,
-    column.valueKey,
-    column.rendererKey,
-    column.sapField,
-    column.fieldName,
-    column.layoutFieldName,
-    column.label,
-  ].map(compactColumnToken).filter(Boolean);
-
-  return tokens.map((token) => DELIVERY_COLUMN_KEY_BY_TOKEN.get(token)).find(Boolean) || '';
-};
-
-const ensureDeliveryMatrixColumns = (columns = []) => {
-  const sourceByKey = new Map();
-  const orderedKeys = [];
-  const dynamicUdfColumns = [];
-  (Array.isArray(columns) ? columns : []).filter(Boolean).forEach((column) => {
-    const key = getDeliveryColumnIdentity(column);
-    if (key && !sourceByKey.has(key)) {
-      sourceByKey.set(key, column);
-      orderedKeys.push(key);
-    } else if (!key && column.isUdf && String(column.key || column.valueKey || '').trim()) {
-      dynamicUdfColumns.push(column);
-    }
-  });
-
-  const baseByKey = new Map(DELIVERY_ACTUAL_MATRIX_COLUMNS.map((column) => [column.key, column]));
-  const keys = [
-    ...orderedKeys,
-    ...DELIVERY_ACTUAL_MATRIX_COLUMNS.map((column) => column.key).filter((key) => !sourceByKey.has(key)),
-  ];
-  const normalized = keys.map((key, index) => {
-    const baseColumn = baseByKey.get(key);
-    if (!baseColumn) return null;
-    const sourceColumn = sourceByKey.get(baseColumn.key) || {};
-    const minWidth = Number(sourceColumn.minWidth || sourceColumn.width || baseColumn.minWidth || 125);
-
-    return {
-      ...baseColumn,
-      ...sourceColumn,
-      key: baseColumn.key,
-      valueKey: baseColumn.isUdf
-        ? (baseColumn.valueKey || sourceColumn.valueKey || sourceColumn.key || baseColumn.key)
-        : (sourceColumn.valueKey || baseColumn.valueKey || sourceColumn.key || baseColumn.key),
-      rendererKey: baseColumn.rendererKey || sourceColumn.rendererKey || sourceColumn.valueKey || baseColumn.key,
-      label: sourceColumn.label || baseColumn.label,
-      visible: sourceColumn.visible !== false && baseColumn.visible !== false,
-      active: sourceColumn.active !== false,
-      readOnly: sourceColumn.readOnly ?? baseColumn.readOnly,
-      isUdf: Boolean(baseColumn.isUdf || sourceColumn.isUdf),
-      field: sourceColumn.field || baseColumn.field,
-      type: sourceColumn.type || baseColumn.type,
-      options: sourceColumn.options || baseColumn.options,
-      minWidth,
-      width: minWidth,
-      order: index + 1,
-      columnOrder: index + 1,
-      sapControlled: true,
-      importedLayout: Boolean(sourceColumn.importedLayout || sourceColumn.sapControlled),
-      source: sourceColumn.source || 'delivery-sap-order',
-    };
-  }).filter(Boolean);
-
-  dynamicUdfColumns.forEach((column) => {
-    const key = String(column.key || column.valueKey).trim();
-    normalized.push({
-      ...column,
-      key,
-      valueKey: column.valueKey || key,
-      rendererKey: column.rendererKey || column.valueKey || key,
-      isUdf: true,
-      sapControlled: true,
-      order: normalized.length + 1,
-      columnOrder: normalized.length + 1,
-    });
-  });
-  return normalized;
-};
-
 const INIT_ATTACH = Array.from({ length: 9 }, (_, i) => ({
   id: i + 1, targetPath: '', fileName: '', attachmentDate: '',
   freeText: '', copyToTargetDocument: '', documentType: '', atchDocDate: '', alert: '',
@@ -707,12 +590,17 @@ function Delivery() {
   const { company } = useAuth();
   const activeCompanyId = company?.companyId || '';
   const activeCompanyDb = company?.dbName || '';
+  const activeFieldMetadataScope = getSalesDocumentCompanyScopeKey({
+    companyId: activeCompanyId,
+    companyDb: activeCompanyDb,
+  });
   const { removeTask, upsertTask } = useSapWindowTaskbarActions();
   const formRef = useRef(null);
   const isHydratingDocumentRef = useRef(false);
   const loadedLinesSignatureRef = useRef('');
   const handledCopyFromRef = useRef('');
   const copiedLinesNeedBatchOpenRef = useRef(false);
+  const copyFromRateAppliedRef = useRef(false);
   const generalSettingsRef = useRef(readGeneralSettings());
   const defaultWarehouseAppliedRef = useRef(false);
   const requestedEditDocEntry = isRouteStateForActiveCompany(location.state) ? (
@@ -728,20 +616,25 @@ function Delivery() {
 
   const [currentDocEntry, setCurrentDocEntry] = useState(null);
   const [header, setHeader] = useState(() => createInitialHeader(generalSettingsRef.current));
-  const [headerUdfDefinitions, setHeaderUdfDefinitions] = useState(HEADER_UDF_DEFINITIONS);
-  const [rowUdfDefinitions, setRowUdfDefinitions] = useState(ROW_UDF_DEFINITIONS);
-  const [matrixColumnDefinitions, setMatrixColumnDefinitions] = useState(BASE_MATRIX_COLUMNS);
-  const [lines, setLines] = useState([createLine(ROW_UDF_DEFINITIONS)]);
+  const [headerUdfDefinitions, setHeaderUdfDefinitions] = useState([]);
+  const [rowUdfDefinitions, setRowUdfDefinitions] = useState([]);
+  const [matrixColumnDefinitions, setMatrixColumnDefinitions] = useState(getSapStandardSalesMatrixColumns);
+  const [hydratedFieldMetadataScope, setHydratedFieldMetadataScope] = useState('');
+  const [lines, setLines] = useState([createLine([])]);
   const [attachments, setAttachments] = useState(INIT_ATTACH);
   const [activeTab, setActiveTab] = useState('Contents');
   const [referenceDocumentsModal, setReferenceDocumentsModal] = useState(false);
   const [referenceDocuments, setReferenceDocuments] = useState([]);
   const [referenceDocumentsChanged, setReferenceDocumentsChanged] = useState(false);
-  const [headerUdfs, setHeaderUdfs] = useState(() => normalizeUdfState(HEADER_UDF_DEFINITIONS));
-  const [formSettings, setFormSettings, formSettingsStorageKey] = useCompanyScopedFormSettings(
+  const [headerUdfs, setHeaderUdfs] = useState({});
+  const [formSettings, setFormSettings, formSettingsStorageKey, replaceFormSettings, formSettingsStatus] = useCompanyScopedFormSettings(
     FORM_SETTINGS_STORAGE_KEY,
     readSavedFormSettings,
     [headerUdfDefinitions, rowUdfDefinitions, matrixColumnDefinitions],
+    { saveMode: 'explicit' },
+  );
+  const companyFormSettingsReady = Boolean(activeCompanyId || activeCompanyDb) && (
+    formSettingsStatus.loaded && hydratedFieldMetadataScope === activeFieldMetadataScope
   );
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
@@ -756,7 +649,7 @@ function Delivery() {
     eway_bill_transporters: [],
     eway_bill_options: {},
     local_currency: '', system_currency: '', currencies: [],
-    line_field_metadata: { matrix_columns: BASE_MATRIX_COLUMNS, sap_form: {} },
+    line_field_metadata: { matrix_columns: getSapStandardSalesMatrixColumns(), sap_form: {} },
   });
   const [pageState, setPageState] = useState({ loading: false, vendorLoading: false, posting: false, error: '', success: '', seriesLoading: false });
   const [valErrors, setValErrors] = useState({ header: {}, lines: {}, form: '' });
@@ -782,6 +675,15 @@ function Delivery() {
     allowCreate: true,
   });
   const [freightModal, setFreightModal] = useState({ open: false, freightCharges: [], loading: false });
+  const [exchangeRatesModal, setExchangeRatesModal] = useState({
+    open: false,
+    currency: '',
+    postingDate: '',
+    initialRate: '',
+    loading: false,
+    error: '',
+    data: null,
+  });
   const [salesEmployeeSetup, setSalesEmployeeSetup] = useState({ open: false, rows: [], saving: false });
   const [copyFromModal, setCopyFromModal] = useState(false);
   const [eWayBillModalOpen, setEWayBillModalOpen] = useState(false);
@@ -870,14 +772,25 @@ function Delivery() {
       ? updateActionLabel
       : 'Add & New';
 
+  const loadDynamicLineLookupOptions = useCallback((source, field = {}, line = {}) => (
+    loadSalesDocumentFieldLookupOptions({
+      fetchLookup: fetchSalesDocumentLookup,
+      source,
+      field,
+      line,
+      documentType: 'DELIVERY',
+      schemaVersion: refData.line_field_metadata?.live_schema?.schemaVersion || '',
+    })
+  ), [refData.line_field_metadata]);
+
   useEffect(() => {
     const draft = location.state?.deliveryDraft;
     if (!draft) return;
 
     setCurrentDocEntry(draft.currentDocEntry || null);
     setHeader(draft.header || createInitialHeader(generalSettingsRef.current));
-    setLines(Array.isArray(draft.lines) && draft.lines.length ? draft.lines : [createLine(ROW_UDF_DEFINITIONS)]);
-    setHeaderUdfs(draft.headerUdfs || normalizeUdfState(HEADER_UDF_DEFINITIONS));
+    setLines(Array.isArray(draft.lines) && draft.lines.length ? draft.lines : [createLine([])]);
+    setHeaderUdfs(draft.headerUdfs || {});
     setReferenceDocuments(Array.isArray(draft.referenceDocuments) ? draft.referenceDocuments : []);
     setReferenceDocumentsChanged(Boolean(draft.referenceDocumentsChanged));
     setActiveTab(draft.activeTab || 'Contents');
@@ -1086,9 +999,24 @@ function Delivery() {
       taxAmount: String(line?.taxAmount ?? line?.LineTaxAmount ?? line?.VatSum ?? ''),
       whse: line?.whse || line?.Warehouse || line?.WarehouseCode || line?.WhsCode || '',
       distRule: line?.distRule || line?.DistributionRule || line?.OcrCode || '',
+      distRule2: line?.distRule2 || line?.DistributionRule2 || line?.OcrCode2 || '',
+      distRule3: line?.distRule3 || line?.DistributionRule3 || line?.OcrCode3 || '',
+      distRule4: line?.distRule4 || line?.DistributionRule4 || line?.OcrCode4 || '',
+      distRule5: line?.distRule5 || line?.DistributionRule5 || line?.OcrCode5 || '',
+      cogsDistRule: line?.cogsDistRule || line?.COGSDistributionRule || line?.CogsOcrCod || '',
       freeText: line?.freeText || line?.FreeText || '',
       countryOfOrigin: line?.countryOfOrigin || line?.CountryOfOrigin || '',
       sacCode: line?.sacCode || line?.SACCode || '',
+      blanketAgreementNo: String(line?.blanketAgreementNo ?? line?.BlanketAgreementNo ?? ''),
+      commPercent: String(line?.commPercent ?? line?.CommissionPercent ?? ''),
+      grossTotal: String(line?.grossTotal ?? line?.GrossTotal ?? ''),
+      lineShippingType: String(line?.lineShippingType ?? line?.ShippingMethod ?? line?.TrnsCode ?? ''),
+      lineDeliveryDate: line?.lineDeliveryDate || line?.DeliveryDate || line?.ShipDate || '',
+      wTaxLiable: line?.wTaxLiable ?? line?.WTaxLiable ?? line?.WTLiable ?? '',
+      taxLiable: line?.taxLiable ?? line?.TaxLiable ?? line?.TaxOnly ?? '',
+      withoutQtyPosting: line?.withoutQtyPosting ?? line?.WithoutQtyPosting ?? '',
+      enableSettingCost: line?.enableSettingCost ?? line?.EnableSettingCost ?? '',
+      returnCost: String(line?.returnCost ?? line?.ReturnCost ?? ''),
       deliveredQty: String(line?.deliveredQty ?? line?.DeliveredQty ?? ''),
       documentCreated: line?.documentCreated || line?.DocumentCreated || '',
       loc: String(line?.loc ?? line?.Loc ?? ''),
@@ -1106,7 +1034,7 @@ function Delivery() {
       serialNumbers: Array.isArray(line?.serialNumbers) ? line.serialNumbers : [],
       binAllocations: Array.isArray(line?.binAllocations) ? line.binAllocations : [],
       hasBatchesAvailable: batchManaged ? true : false,
-      udf: normalizeUdfState(
+      udf: normalizeCompanyUdfState(
         rowUdfDefinitions,
         mergeUdfValues(pickLineUdfValues(line), workbookLine.udf, line?.line_udfs, line?.lineUdfs, line?.udf)
       ),
@@ -1239,13 +1167,14 @@ function Delivery() {
   // ── load reference data ───────────────────────────────────────────────────
   useEffect(() => {
     let ignore = false;
+    setHydratedFieldMetadataScope('');
     const load = async () => {
       setPageState(p => ({ ...p, loading: true, error: '', success: '' }));
       try {
         if (!activeCompanyId) {
           setHeaderUdfDefinitions([]);
           setRowUdfDefinitions([]);
-          setMatrixColumnDefinitions(BASE_MATRIX_COLUMNS);
+          setMatrixColumnDefinitions(getSapStandardSalesMatrixColumns());
           setHeaderUdfs({});
           setLines([createLine([])]);
           setRefData(prev => ({
@@ -1260,11 +1189,13 @@ function Delivery() {
             eway_bill_options: {},
             local_currency: '', system_currency: '', currencies: [],
             udf_metadata: { header: [], rows: [] },
-            line_field_metadata: { matrix_columns: BASE_MATRIX_COLUMNS, sap_form: {} },
+            line_field_metadata: { matrix_columns: getSapStandardSalesMatrixColumns(), sap_form: {} },
           }));
           return;
         }
 
+        setHeaderUdfDefinitions([]);
+        setRowUdfDefinitions([]);
         setMatrixColumnDefinitions([]);
 
         const [refDataRes, layoutRes, liveSchema] = await Promise.all([
@@ -1273,6 +1204,7 @@ function Delivery() {
             companyDb: activeCompanyDb || undefined,
             documentType: DELIVERY_LAYOUT_DOCUMENT_TYPE,
             objectType: '15',
+            refresh: true,
           }).catch((error) => ({
             data: {
               success: false,
@@ -1288,49 +1220,51 @@ function Delivery() {
         
         if (!ignore) {
           const vendorRows = refDataRes.data.vendors || refDataRes.data.customers || [];
-          const nextHeaderUdfs = refDataRes.data.udf_metadata?.header || [];
-          const schemaMatchesActiveCompany = !liveSchema || (
-            (liveSchema.companyId == null || String(liveSchema.companyId) === String(activeCompanyId))
-            && (!liveSchema.companyDb || !activeCompanyDb
-              || String(liveSchema.companyDb).trim().toLowerCase() === String(activeCompanyDb).trim().toLowerCase())
-          );
-          const normalizedSchema = schemaMatchesActiveCompany && liveSchema
-            ? normalizeSalesDocumentSchema(liveSchema, 'DELIVERY')
-            : null;
-          const schemaLineFields = normalizedSchema?.lineFields || [];
-          const schemaRowUdfs = buildSalesOrderRowUdfDefinitionsFromSchema(schemaLineFields, { lineTable: 'DLN1' });
-          const nextRowUdfs = schemaRowUdfs.length
-            ? schemaRowUdfs
-            : filterDeliveryRowUdfDefinitions(refDataRes.data.udf_metadata?.rows || []);
-          const liveMatrixColumns = refDataRes.data.line_field_metadata?.matrix_columns?.length
-            ? refDataRes.data.line_field_metadata.matrix_columns
-            : BASE_MATRIX_COLUMNS;
-          const schemaMatrixColumns = buildSalesOrderMatrixColumnsFromSchema({
-            schemaLineFields,
-            liveMatrixColumns,
-            rowUdfFields: nextRowUdfs,
+          const sourceMatrixColumns = refDataRes.data.line_field_metadata?.matrix_columns || [];
+          const liveFields = buildSalesDocumentLiveFields({
+            schema: liveSchema,
+            documentType: 'DELIVERY',
+            objectType: '15',
+            headerTable: 'ODLN',
+            lineTable: 'DLN1',
+            companyId: activeCompanyId,
+            companyDb: activeCompanyDb,
+            layoutResponse: layoutRes,
+            referenceMatrixColumns: sourceMatrixColumns,
+            referenceSapForm: refDataRes.data.line_field_metadata?.sap_form,
+            includeLineNumber: false,
           });
+          const normalizedSchema = liveFields.liveSchema;
+          const schemaLineFields = normalizedSchema?.lineFields || [];
+          const nextHeaderUdfs = liveFields.headerUdfFields;
+          const nextRowUdfs = liveFields.rowUdfFields;
+          const liveMatrixColumns = liveFields.liveAvailable && sourceMatrixColumns.length
+            ? sourceMatrixColumns
+            : liveFields.matrixColumns;
           const layoutSource = String(layoutRes?.data?.source || '').trim().toLowerCase();
           const realLayoutColumns = layoutSource && layoutSource !== 'fallback'
-            ? (layoutRes?.data?.columns || [])
+            ? filterLayoutToCurrentSchema(layoutRes?.data?.columns || [], schemaLineFields)
             : [];
-          let nextMatrixColumns = ensureDeliveryMatrixColumns(buildSalesOrderMatrixColumnsFromLayout({
-            layoutColumns: realLayoutColumns,
-            liveMatrixColumns: schemaMatrixColumns.length ? schemaMatrixColumns : liveMatrixColumns,
+          const nextMatrixColumns = buildDeliveryLiveMatrixColumns({
+            schemaLineFields,
+            referenceMatrixColumns: liveMatrixColumns,
             rowUdfFields: nextRowUdfs,
-            includeLineNumber: false,
-          }));
-          // Hide wTaxLiable column on Delivery page unless explicitly required by layout
-          nextMatrixColumns = nextMatrixColumns.filter((c) => (c.key || c.valueKey || '').toString() !== 'wTaxLiable');
+            layoutColumns: realLayoutColumns,
+          });
           setHeaderUdfDefinitions(nextHeaderUdfs);
           setRowUdfDefinitions(nextRowUdfs);
           setMatrixColumnDefinitions(nextMatrixColumns);
-          setHeaderUdfs((prev) => normalizeUdfState(nextHeaderUdfs, prev));
+          setHeaderUdfs((prev) => normalizeCompanyUdfState(nextHeaderUdfs, prev));
           setLines((prev) => prev.map((line) => ({
             ...line,
-            udf: normalizeUdfState(nextRowUdfs, line.udf || {}),
+            udf: normalizeCompanyUdfState(nextRowUdfs, line.udf || {}),
           })));
-          setFormSettings(readSavedFormSettings(nextHeaderUdfs, nextRowUdfs, nextMatrixColumns, formSettingsStorageKey));
+          replaceFormSettings(readSavedFormSettings(
+            nextHeaderUdfs,
+            nextRowUdfs,
+            nextMatrixColumns,
+            formSettingsStorageKey,
+          ));
           setRefData(prev => ({
             ...prev,
             company: refDataRes.data.company || '',
@@ -1364,28 +1298,64 @@ function Delivery() {
             decimal_settings: { ...DEC, ...(refDataRes.data.decimal_settings || {}) },
             warnings: [
               ...(refDataRes.data.warnings || []),
-              ...(!schemaMatchesActiveCompany ? ['Ignored a Delivery schema belonging to another company.'] : []),
+              ...(!liveFields.schemaMatchesCompany && liveSchema ? ['Ignored a Delivery schema belonging to another company.'] : []),
+              ...(!liveFields.liveAvailable ? ['Live Delivery field metadata was unavailable; SAP standard fields are shown.'] : []),
               ...(layoutRes?.data?.warning ? [layoutRes.data.warning] : []),
             ],
-            udf_metadata: refDataRes.data.udf_metadata || { header: [], rows: [] },
+            udf_metadata: { header: nextHeaderUdfs, rows: nextRowUdfs },
             line_field_metadata: {
               ...(refDataRes.data.line_field_metadata || { sap_form: {} }),
               matrix_columns: nextMatrixColumns,
-              imported_layout: layoutRes?.data || null,
+              source_matrix_columns: liveMatrixColumns,
+              imported_layout: {
+                ...(layoutRes?.data || {}),
+                columns: realLayoutColumns,
+              },
               live_schema: normalizedSchema,
+              live_available: liveFields.liveAvailable,
             },
             series: Array.isArray(prev.series) ? prev.series : [],
           }));
+          setHydratedFieldMetadataScope(activeFieldMetadataScope);
         }
       } catch (e) {
-        if (!ignore) setPageState(p => ({ ...p, error: getErrMsg(e, 'Failed to load reference data.') }));
+        if (!ignore) {
+          const fallbackColumns = getSapStandardSalesMatrixColumns();
+          setHeaderUdfDefinitions([]);
+          setRowUdfDefinitions([]);
+          setMatrixColumnDefinitions(fallbackColumns);
+          setHeaderUdfs({});
+          setRefData((previous) => ({
+            ...previous,
+            udf_metadata: { header: [], rows: [] },
+            line_field_metadata: {
+              matrix_columns: fallbackColumns,
+              source_matrix_columns: fallbackColumns,
+              sap_form: {},
+              imported_layout: null,
+              live_schema: null,
+            },
+          }));
+          setHydratedFieldMetadataScope(activeFieldMetadataScope);
+          setPageState(p => ({ ...p, error: getErrMsg(e, 'Failed to load reference data. SAP standard fields are shown.') }));
+        }
       } finally {
         if (!ignore) setPageState(p => ({ ...p, loading: false }));
       }
     };
     load();
     return () => { ignore = true; };
-  }, [activeCompanyDb, activeCompanyId, formSettingsStorageKey]);
+  }, [activeCompanyDb, activeCompanyId, activeFieldMetadataScope, formSettingsStorageKey]);
+
+  useEffect(() => {
+    if (!companyFormSettingsReady || formSettingsStatus.hasUnsavedChanges) return;
+    replaceFormSettings(readSavedFormSettings(
+      headerUdfDefinitions,
+      rowUdfDefinitions,
+      matrixColumnDefinitions,
+      formSettingsStorageKey,
+    ));
+  }, [companyFormSettingsReady, formSettingsStatus.hasUnsavedChanges, formSettingsStorageKey, headerUdfDefinitions, matrixColumnDefinitions, replaceFormSettings, rowUdfDefinitions]);
 
   useEffect(() => {
     if (currentDocEntry || requestedEditDocEntry || isHydratingDocumentRef.current) return;
@@ -1454,6 +1424,7 @@ function Delivery() {
 
     const docEntry = requestedEditDocEntry;
     if (!docEntry) return;
+    if (hydratedFieldMetadataScope !== activeFieldMetadataScope) return;
     let ignore = false;
     let hydrationTimer = null;
     const load = async () => {
@@ -1566,7 +1537,7 @@ function Delivery() {
         
         console.log('📦 [Delivery] Lines after mapping:', lines);
         
-        setHeaderUdfs(normalizeUdfState(headerUdfDefinitions, so.header_udfs || {}));
+        setHeaderUdfs(normalizeCompanyUdfState(headerUdfDefinitions, so.header_udfs || {}));
         setSnapshotPending(true);
         setIsDirty(false);
         if (so.header?.customerCode || so.header?.customer) {
@@ -1595,7 +1566,7 @@ function Delivery() {
       isHydratingDocumentRef.current = false;
       if (hydrationTimer) clearTimeout(hydrationTimer);
     };
-  }, [hydrateLoadedLine, location.pathname, location.state, navigate]);
+  }, [activeFieldMetadataScope, hydrateLoadedLine, hydratedFieldMetadataScope, location.pathname, location.state, navigate]);
 
   useEffect(() => {
     if (!currentDocEntry) {
@@ -1695,7 +1666,7 @@ function Delivery() {
       sourceBranch: normalizedHeader.branch || srcHeader.branch || srcHeader.BPL_IDAssignedToInvoice || srcHeader.BPLId,
       sourceWarehouse: srcHeader.warehouse,
       fallbackWarehouse: firstLineWarehouse,
-      warehouses: refData.warehouses.length ? refData.warehouses : FALLBACK_WAREHOUSES,
+      warehouses: refData.warehouses || [],
     });
 
     setCurrentDocEntry(null);
@@ -1730,7 +1701,8 @@ function Delivery() {
       freight:          srcHeader.freight || '',
       tax:              srcHeader.tax || '',
       currency:         srcHeader.currency || refData.local_currency || '',
-      exchangeRate:     srcHeader.exchangeRate || srcHeader.docRate || '',
+      currencyMode:     srcHeader.currencyMode || (srcHeader.currency ? 'BP' : 'BP'),
+      exchangeRate:     srcHeader.exchangeRate || srcHeader.docRate || srcHeader.DocRate || '',
       shipTo:           srcHeader.shipTo || srcHeader.shipToAddress || '',
       shipToCode:       srcHeader.shipToCode || '',
       shipToAddress:    srcHeader.shipToAddress || srcHeader.shipTo || '',
@@ -1739,7 +1711,7 @@ function Delivery() {
       billToCode:       srcHeader.billToCode || srcHeader.payToCode || '',
       billToAddress:    srcHeader.billToAddress || srcHeader.payTo || '',
     }));
-    setHeaderUdfs(normalizeUdfState(
+    setHeaderUdfs(normalizeCompanyUdfState(
       headerUdfDefinitions,
       mergeUdfValues(copyFrom.headerUdfs, copyFrom.header_udfs, srcHeader.header_udfs, srcHeader.headerUdfs)
     ));
@@ -1767,7 +1739,7 @@ function Delivery() {
           baseEntry,
           baseType,
           baseLine: l.lineNum ?? l.LineNum ?? normalizedLine.baseLine ?? idx,
-          udf: normalizeUdfState(rowUdfDefinitions, mergeUdfValues(pickLineUdfValues(l), l.line_udfs, l.lineUdfs, l.udf)),
+          udf: normalizeCompanyUdfState(rowUdfDefinitions, mergeUdfValues(pickLineUdfValues(l), l.line_udfs, l.lineUdfs, l.udf)),
         });
       });
       copiedLinesNeedBatchOpenRef.current = !refData.items.length && copiedLines.some(line => line.itemNo);
@@ -1781,6 +1753,10 @@ function Delivery() {
     // Load vendor details to populate contacts/addresses
     const cardCode = normalizedHeader.vendor || srcHeader.vendor || srcHeader.CardCode;
     if (cardCode) loadVendorDetails(cardCode, { preserveExisting: true });
+
+    // Mark that exchange rate was applied from source document (SAP B1 behavior: don't prompt again)
+    const copiedRate = srcHeader.exchangeRate || srcHeader.docRate || srcHeader.DocRate || '';
+    if (copiedRate) copyFromRateAppliedRef.current = true;
 
     const sourceLabel = copyFrom.sourceLabel || copyFrom.type || 'source document';
     setPageState(p => ({ ...p, success: `Copied from ${sourceLabel}. Please review and save.` }));
@@ -1844,7 +1820,7 @@ function Delivery() {
     ? refData.sales_employees
     : [{ SlpCode: -1, SlpName: 'No Sales Employee / Buyer', Active: 'Y' }];
   const effectiveWarehouses = useMemo(
-    () => refData.warehouses.length ? refData.warehouses : FALLBACK_WAREHOUSES,
+    () => refData.warehouses || [],
     [refData.warehouses]
   );
   const branchFilteredWarehouses = useMemo(
@@ -1852,18 +1828,16 @@ function Delivery() {
     [effectiveWarehouses, header.branch]
   );
   const freightTotals = summarizeFreightRows(freightModal.freightCharges, effectiveTaxCodes);
-  const payTermOpts = refData.payment_terms.length
-    ? refData.payment_terms.map(t => ({ value: String(t.GroupNum), label: t.PymntGroup }))
-    : FALLBACK_PAYMENT_TERMS;
+  const payTermOpts = (refData.payment_terms || [])
+    .map(t => ({ value: String(t.GroupNum), label: t.PymntGroup }));
   const paymentMethodOpts = (refData.payment_methods || []).map(method => ({
     value: String(method.Code || '').trim(),
     label: method.Description
       ? `${method.Code} - ${method.Description}`
       : String(method.Code || '').trim(),
   })).filter(method => method.value);
-  const shipTypeOpts = refData.shipping_types.length
-    ? refData.shipping_types.map(s => ({ value: String(s.TrnspCode), label: s.TrnspName }))
-    : FALLBACK_SHIPPING;
+  const shipTypeOpts = (refData.shipping_types || [])
+    .map(s => ({ value: String(s.TrnspCode), label: s.TrnspName }));
 
   useEffect(() => {
     if (isHydratingDocumentRef.current || currentDocEntry || requestedEditDocEntry || defaultWarehouseAppliedRef.current) return;
@@ -1998,7 +1972,7 @@ function Delivery() {
       const fb = String(item.SalesUnit || item.InventoryUOM || '').trim();
       if (fb) return [fb];
     }
-    return FALLBACK_UOM;
+    return [];
   }, [refData.items, uomGroupMap]);
 
   const lineItemOptions = lines.reduce((acc, line, i) => {
@@ -2274,6 +2248,124 @@ function Delivery() {
     String(bp.PaymentMethod || bp.PymCode || bp.PeymentMethodCode || '').trim()
   );
 
+  const openExchangeRatesModal = useCallback(({ currency, postingDate, initialRate = '' }) => {
+    setExchangeRatesModal({
+      open: true,
+      currency,
+      postingDate,
+      initialRate,
+      loading: false,
+      error: '',
+      data: null,
+    });
+  }, []);
+
+  const loadExchangeRatesMonth = useCallback(async ({ year, month }) => {
+    setExchangeRatesModal((previous) => ({ ...previous, loading: true, error: '' }));
+    try {
+      const response = await fetchSalesOrderExchangeRates({ year, month });
+      setExchangeRatesModal((previous) => ({
+        ...previous,
+        loading: false,
+        error: '',
+        data: response.data,
+      }));
+    } catch (error) {
+      setExchangeRatesModal((previous) => ({
+        ...previous,
+        loading: false,
+        error: getErrMsg(error, 'Failed to load exchange rates.'),
+        data: buildExchangeRatesFallbackData({
+          year,
+          month,
+          currencies: refData.currencies,
+          localCurrency: refData.local_currency,
+          documentCurrency: exchangeRatesModal.currency,
+        }),
+      }));
+    }
+  }, [exchangeRatesModal.currency, refData.currencies, refData.local_currency]);
+
+  const saveExchangeRateFromModal = useCallback(async ({ rates = [], currency, postingDate, rate }) => {
+    const entries = (Array.isArray(rates) && rates.length ? rates : [{ currency, postingDate, rate }])
+      .map((entry) => ({ ...entry, rate: Number(entry.rate) }));
+    const invalidEntry = entries.find((entry) => (
+      !String(entry.currency || '').trim()
+      || !String(entry.postingDate || '').trim()
+      || !Number.isFinite(entry.rate)
+      || entry.rate <= 0
+    ));
+    if (invalidEntry) {
+      setExchangeRatesModal((previous) => ({ ...previous, error: 'Enter a positive exchange rate.' }));
+      return;
+    }
+
+    setExchangeRatesModal((previous) => ({ ...previous, loading: true, error: '' }));
+    try {
+      const savedEntries = [];
+      for (const entry of entries) {
+        const saved = await saveSalesOrderExchangeRate(entry);
+        savedEntries.push({
+          ...entry,
+          rate: Number(saved.data?.rate) || entry.rate,
+        });
+      }
+      setHeader((previous) => {
+        const documentRate = savedEntries.find((entry) => (
+          String(entry.currency).toUpperCase() === String(previous.currency).toUpperCase()
+          && String(entry.postingDate) === String(previous.postingDate)
+        ));
+        return documentRate ? { ...previous, exchangeRate: String(documentRate.rate) } : previous;
+      });
+      setExchangeRatesModal((previous) => ({ ...previous, open: false, loading: false, error: '' }));
+      setPageState((previous) => ({ ...previous, error: '', success: '' }));
+    } catch (error) {
+      if (Number(error?.response?.status) === 404) {
+        setHeader((previous) => {
+          const documentRate = entries.find((entry) => (
+            String(entry.currency).toUpperCase() === String(previous.currency).toUpperCase()
+            && String(entry.postingDate) === String(previous.postingDate)
+          ));
+          return documentRate ? { ...previous, exchangeRate: String(documentRate.rate) } : previous;
+        });
+        setExchangeRatesModal((previous) => ({ ...previous, open: false, loading: false, error: '' }));
+        return;
+      }
+      setExchangeRatesModal((previous) => ({
+        ...previous,
+        loading: false,
+        error: getErrMsg(error, 'Failed to save exchange rates.'),
+      }));
+    }
+  }, []);
+
+  const refreshExchangeRate = useCallback((nextCurrency = header.currency, nextDate = header.postingDate) => {
+    const currency = String(nextCurrency || '').trim();
+    const postingDate = String(nextDate || '').trim();
+    const localCurrency = String(refData.local_currency || '').trim();
+    if (!currency || !postingDate || !localCurrency) {
+      return;
+    }
+    if (currency === localCurrency) {
+      setHeader((previous) => previous.exchangeRate ? { ...previous, exchangeRate: '' } : previous);
+      return;
+    }
+    if (!header.exchangeRate) {
+      // SAP B1 behavior: if the rate was carried from the source document (copy-to),
+      // don't prompt for it again. Only prompt when no rate exists at all.
+      if (copyFromRateAppliedRef.current) {
+        copyFromRateAppliedRef.current = false;
+        return;
+      }
+      openExchangeRatesModal({ currency, postingDate, initialRate: '' });
+    }
+  }, [header.currency, header.exchangeRate, header.postingDate, openExchangeRatesModal, refData.local_currency]);
+
+  useEffect(() => {
+    if (currentDocEntry || !header.vendor || !header.currency || !header.postingDate) return;
+    refreshExchangeRate(header.currency, header.postingDate);
+  }, [currentDocEntry, header.currency, header.postingDate, header.vendor, refreshExchangeRate]);
+
   const syncVendor = (code, hdr) => {
     const m = refData.vendors.find(v => String(v.CardCode || '') === String(code || ''));
     if (!m) return { nextHeader: hdr };
@@ -2285,6 +2377,7 @@ function Delivery() {
         paymentTerms: m.PayTermsGrpCode != null ? String(m.PayTermsGrpCode) : hdr.paymentTerms,
         paymentMethod: getDefaultPaymentMethod(m) || hdr.paymentMethod,
         currency: String(m.Currency || m.CardCurrency || '').trim() || refData.local_currency || hdr.currency,
+        exchangeRate: '',
         contactPerson: '',
       },
     };
@@ -2428,6 +2521,46 @@ function Delivery() {
         return nextHeader;
       });
       loadVendorDetails(value);
+      return;
+    }
+
+    if (name === 'currencyMode') {
+      setHeader((previous) => {
+        const nextCurrency = resolveDocumentCurrency({
+          mode: value,
+          cardCode: previous.vendor,
+          businessPartners: refData.vendors || [],
+          currentCurrency: previous.currency,
+          localCurrency: refData.local_currency || '',
+          systemCurrency: refData.system_currency || refData.local_currency || '',
+        });
+        return {
+          ...previous,
+          currencyMode: value,
+          currency: nextCurrency,
+          exchangeRate: nextCurrency === previous.currency ? previous.exchangeRate : '',
+        };
+      });
+      return;
+    }
+
+    if (name === 'currency') {
+      setHeader((previous) => ({
+        ...previous,
+        currency: String(value || '').trim(),
+        exchangeRate: '',
+      }));
+      return;
+    }
+
+    if (name === 'postingDate') {
+      setHeader((previous) => ({
+        ...previous,
+        postingDate: value,
+        exchangeRate: String(previous.currency || '').trim() === String(refData.local_currency || '').trim()
+          ? previous.exchangeRate
+          : '',
+      }));
       return;
     }
 
@@ -2852,14 +2985,20 @@ function Delivery() {
       return { ...l, ...mirroredUdf, udf: { ...(l.udf || {}), [k]: v } };
     }));
   };
-  const updateFormSetting = (g, k, prop, val) => setFormSettings(p => ({ ...p, [g]: { ...(p[g] || {}), [k]: { ...((p[g] || {})[k] || {}), [prop]: val } } }));
+  const updateFormSetting = (g, k, prop, val) => setFormSettings((previous) => (
+    updateFormSettingPreference(previous, g, k, prop, val)
+  ));
   const toggleHeaderUdfs = () => {
     setFormSettingsOpen(false);
     setSidebarOpen(p => !p);
   };
   const toggleFormSettings = () => {
     setSidebarOpen(false);
-    setFormSettingsOpen(p => !p);
+    if (formSettingsOpen) {
+      setFormSettingsOpen(false);
+      return;
+    }
+    setFormSettingsOpen(true);
   };
 
   // ── Address Modal handlers ────────────────────────────────────────────────
@@ -3108,15 +3247,10 @@ function Delivery() {
 
   // ── Item Selection Modal handlers ─────────────────────────────────────────
   const getPaymentTermsLookupOptions = () => {
-    const sourceTerms = refData.payment_terms.length
-      ? refData.payment_terms.map((term) => ({
-          code: String(term.GroupNum ?? ''),
-          name: term.PymntGroup || String(term.GroupNum ?? ''),
-        }))
-      : FALLBACK_PAYMENT_TERMS.map((term) => ({
-          code: term.value,
-          name: term.label,
-        }));
+    const sourceTerms = (refData.payment_terms || []).map((term) => ({
+      code: String(term.GroupNum ?? ''),
+      name: term.PymntGroup || String(term.GroupNum ?? ''),
+    }));
 
     return sourceTerms
       .filter((term) => term.name)
@@ -4082,7 +4216,7 @@ function Delivery() {
       sourceBranch: normHeader.branch || srcHeader.branch || srcHeader.BPL_IDAssignedToInvoice || srcHeader.BPLId,
       sourceWarehouse: srcHeader.warehouse,
       fallbackWarehouse: firstLineWarehouse,
-      warehouses: refData.warehouses.length ? refData.warehouses : FALLBACK_WAREHOUSES,
+      warehouses: refData.warehouses || [],
     });
 
     setHeader(prev => ({
@@ -4111,7 +4245,7 @@ function Delivery() {
       billToCode: srcHeader.billToCode || srcHeader.payToCode || srcHeader.PayToCode || '',
       billToAddress: srcHeader.billToAddress || srcHeader.payTo || srcHeader.Address2 || '',
     }));
-    setHeaderUdfs(normalizeUdfState(
+    setHeaderUdfs(normalizeCompanyUdfState(
       headerUdfDefinitions,
       mergeUdfValues(
         srcHeader.header_udfs,
@@ -4137,7 +4271,7 @@ function Delivery() {
         branch: normalizedLine.branch || copiedLocation.branch,
         loc: normalizedLine.loc || copiedLocation.branch,
         whse: normalizedLine.whse || line.whse || line.WarehouseCode || line.WhsCode || copiedLocation.warehouse,
-        udf: normalizeUdfState(
+        udf: normalizeCompanyUdfState(
           rowUdfDefinitions,
           mergeUdfValues(pickLineUdfValues(line), line.line_udfs, line.lineUdfs, line.udf)
         ),
@@ -4319,6 +4453,10 @@ function Delivery() {
   // ── submit ────────────────────────────────────────────────────────────────
   const handleSubmit = async (ev) => {
     ev.preventDefault();
+    if (!companyFormSettingsReady) {
+      setPageState(p => ({ ...p, error: 'Select a company and wait for its Form Settings to load before saving this document.', success: '' }));
+      return;
+    }
     if (!isDocumentEditable) {
       setPageState(p => ({ ...p, error: 'This document is closed and cannot be edited.', success: '' }));
       return;
@@ -4387,14 +4525,19 @@ function Delivery() {
         header: prep,
         lines: lines.map((line) => ({
           ...line,
-          udf: buildVisibleEnteredRowUdfPayload(rowUdfDefinitions, line.udf || {}, formSettings),
+          udf: buildVisibleEnteredRowUdfPayload(
+            rowUdfDefinitions,
+            line.udf || {},
+            formSettings,
+            { preserveUnmappedUdfs: false },
+          ),
         })),
         freightCharges: freightModal.freightCharges,
         eway_bill_details: eWayBillDetails,
         include_document_lines: !isUpdate || documentLinesChanged,
         reference_documents: referenceDocuments,
         reference_documents_changed: referenceDocumentsChanged && referenceDocuments.some(hasCompleteDeliveryReferenceDocument),
-        header_udfs: normalizeUdfState(headerUdfDefinitions, headerUdfs),
+        header_udfs: normalizeCompanyUdfState(headerUdfDefinitions, headerUdfs),
       };
       const r = currentDocEntry ? await updateDelivery(currentDocEntry, payload) : await submitDelivery(payload);
       const dn = r.data.doc_num ? ` Doc No: ${r.data.doc_num}.` : '';
@@ -4486,7 +4629,35 @@ function Delivery() {
   };
 
   const visibleHeaderUdfs = headerUdfDefinitions.filter(f => formSettings.headerUdfs?.[f.key]?.visible !== false);
-  const visibleRowUdfs = filterDeliveryRowUdfDefinitions(rowUdfDefinitions).filter(f => formSettings.rowUdfs?.[f.key]?.visible !== false);
+  const visibleRowUdfs = rowUdfDefinitions.filter(f => formSettings.rowUdfs?.[f.key]?.visible !== false);
+  const formSettingsMatrixFields = useMemo(() => {
+    const layoutColumns = refData.line_field_metadata?.imported_layout?.columns || [];
+    const existingLineNumberColumn = matrixColumnDefinitions.find((column) => (
+      String(column?.key || '').trim() === '__lineNumber'
+    ));
+    if (existingLineNumberColumn) return matrixColumnDefinitions;
+
+    const lineNumberColumn = layoutColumns.find((column) => {
+      const identity = String(
+        column.fieldName || column.columnUid || column.columnTitle || ''
+      ).trim().toLowerCase();
+      return identity === 'linenum' || identity === '#';
+    });
+
+    return [{
+      key: '__lineNumber',
+      label: '#',
+      visible: lineNumberColumn ? lineNumberColumn.visible !== false : true,
+      active: false,
+      order: lineNumberColumn && Number.isFinite(Number(lineNumberColumn.columnOrder))
+        ? Number(lineNumberColumn.columnOrder)
+        : -10000,
+      minWidth: Number(lineNumberColumn?.width) || 42,
+      width: Number(lineNumberColumn?.width) || 42,
+      sapControlled: true,
+      readOnly: true,
+    }, ...matrixColumnDefinitions];
+  }, [matrixColumnDefinitions, refData.line_field_metadata?.imported_layout?.columns]);
   const isRightSidebarOpen = sidebarOpen || formSettingsOpen;
 
   useEffect(() => {
@@ -4529,7 +4700,7 @@ function Delivery() {
         >
           {sidebarOpen ? 'Hide UDFs' : 'Show UDFs'}
         </button>
-        <button type="button" className="del-btn sap-document-toolbar__settings" onClick={toggleFormSettings}>
+        <button type="button" className="del-btn sap-document-toolbar__settings" onClick={toggleFormSettings} disabled={!companyFormSettingsReady} title={companyFormSettingsReady ? 'Choose document-line fields' : 'Loading company Form Settings'}>
           Form Settings
         </button>
         <PrintLayoutToolbar
@@ -4921,9 +5092,11 @@ function Delivery() {
                 onOpenQualityModal={openQualityModal}
                 onOpenPaymentTermsModal={openPaymentTermsModal}
                 formSettings={formSettings}
-                matrixFields={matrixColumnDefinitions}
+                formSettingsReady={companyFormSettingsReady}
+                matrixFields={formSettingsMatrixFields}
                 rowUdfFields={visibleRowUdfs}
                 onRowUdfChange={handleRowUdfChange}
+                onLoadLookupOptions={loadDynamicLineLookupOptions}
                 currency={header.currency || refData.local_currency || ''}
               />
             )}
@@ -5196,11 +5369,19 @@ function Delivery() {
             className="sap-header-udf-panel del-layout__sidebar"
             isOpen={formSettingsOpen}
             onClose={() => setFormSettingsOpen(false)}
-            matrixFields={matrixColumnDefinitions}
+            matrixFields={formSettingsMatrixFields}
             headerUdfFields={headerUdfDefinitions}
-            rowUdfFields={filterDeliveryRowUdfDefinitions(rowUdfDefinitions)}
+            rowUdfFields={rowUdfDefinitions}
             formSettings={formSettings}
             onSettingChange={updateFormSetting}
+            settingsLoaded={companyFormSettingsReady}
+            editablePropertiesByGroup={{ matrixColumns: ['visible'], rowUdfs: ['visible'] }}
+            editableSapControlledProperties={{ matrixColumns: ['visible'], headerUdfs: [], rowUdfs: ['visible'] }}
+            isSaving={formSettingsStatus.saving}
+            hasUnsavedChanges={formSettingsStatus.hasUnsavedChanges}
+            saveError={formSettingsStatus.error}
+            onSave={formSettingsStatus.save}
+            settingsScopeLabel={formSettingsStatus.scopeLabel}
           />
         </div>
       </fieldset>
@@ -5418,6 +5599,21 @@ function Delivery() {
         freightCharges={freightModal.freightCharges}
         taxCodes={effectiveTaxCodes}
         loading={freightModal.loading}
+        currency={header.currency || refData.local_currency || 'INR'}
+      />
+
+      <ExchangeRatesIndexesModal
+        isOpen={exchangeRatesModal.open}
+        currency={exchangeRatesModal.currency}
+        postingDate={exchangeRatesModal.postingDate}
+        initialRate={exchangeRatesModal.initialRate}
+        loading={exchangeRatesModal.loading}
+        error={exchangeRatesModal.error}
+        data={exchangeRatesModal.data}
+        documentLabel="delivery"
+        onLoad={loadExchangeRatesMonth}
+        onSave={saveExchangeRateFromModal}
+        onClose={() => setExchangeRatesModal((previous) => ({ ...previous, open: false }))}
       />
     </form>
   );

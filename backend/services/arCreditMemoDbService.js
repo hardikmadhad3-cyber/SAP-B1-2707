@@ -15,39 +15,29 @@ const {
   buildDocumentAddressComponents,
 } = require('./documentAddressDbUtils');
 const { selectSapEligibleSeries } = require('./documentSeriesDbUtils');
+const {
+  createTableColumnDetailsReader,
+  createTableFieldMetadataReader,
+} = require('./salesDocumentDbCompatibility');
+const { buildLineDeliveryDateFields } = require('./salesDocumentHydrationUtils');
+const { getRequestContext } = require('./requestContextService');
+const authDbService = require('./authDbService');
+const { selectEffectiveCprfRows } = require('./sapFormPreferenceUtils');
 
 const safe = async (promise) => {
   try {
     const r = await promise;
     return Array.isArray(r) ? r : (r.recordset || []);
   } catch (e) {
-    console.error('[AR Credit Memo DB] Error:', e);
+    console.warn('[AR Credit Memo DB] Query failed silently:', e.message);
     return [];
   }
 };
 
-const tableFieldMetadataPromises = new Map();
-
-const getTableFieldMetadata = async (tableName) => {
-  const normalizedTableName = String(tableName || '').trim();
-  if (!normalizedTableName) return {};
-
-  const databaseName = await db.resolveDatabaseName().catch(() => '');
-  const cacheKey = `${databaseName || 'default'}:${normalizedTableName}`;
-
-  if (!tableFieldMetadataPromises.has(cacheKey)) {
-    tableFieldMetadataPromises.set(cacheKey, safe(db.query(`
-      SELECT COLUMN_NAME, DATA_TYPE
-      FROM INFORMATION_SCHEMA.COLUMNS
-      WHERE TABLE_NAME = @tableName
-    `, { tableName: normalizedTableName })).then((rows) => rows.reduce((acc, row) => {
-      acc[row.COLUMN_NAME] = row.DATA_TYPE;
-      return acc;
-    }, {})));
-  }
-
-  return tableFieldMetadataPromises.get(cacheKey);
-};
+const getTableFieldMetadata = createTableFieldMetadataReader({ database: db });
+const getTableColumnDetails = createTableColumnDetailsReader({ database: db });
+const getARCreditMemoHeaderTableFieldMetadata = () => getTableFieldMetadata('ORIN');
+const getARCreditMemoLineTableFieldMetadata = () => getTableFieldMetadata('RIN1');
 
 const hasTableField = (metadata, columnName) => {
   const normalizedColumnName = String(columnName || '').trim().toLowerCase();
@@ -425,6 +415,7 @@ const getARCreditMemo = async (docEntry) => {
         T0.ItemCode,
         COALESCE(NULLIF(LTRIM(RTRIM(T0.Dscription)), ''), ITM.ItemName, '') AS ItemDescription,
         T0.Quantity,
+        ${optionalColumn(lineFieldMetadata, 'T0', 'ShipDate', 'ShipDate', 'NULL')},
         T0.Price AS UnitPrice,
         T0.DiscPrcnt AS DiscountPercent,
         ${lineTaxExpression} AS TaxCode,
@@ -466,6 +457,7 @@ const getARCreditMemo = async (docEntry) => {
         T0.ItemCode,
         T0.Dscription AS ItemDescription,
         T0.Quantity,
+        ${optionalColumn(lineFieldMetadata, 'T0', 'ShipDate', 'ShipDate', 'NULL')},
         T0.Price AS UnitPrice,
         T0.DiscPrcnt AS DiscountPercent,
         ${lineTaxExpression} AS TaxCode,
@@ -551,6 +543,7 @@ const getARCreditMemo = async (docEntry) => {
       SACCode: l.SACCode != null ? String(l.SACCode) : '',
       quantity: l.Quantity != null ? String(l.Quantity) : '',
       Quantity: l.Quantity != null ? String(l.Quantity) : '',
+      ...buildLineDeliveryDateFields(l),
       unitPrice: l.UnitPrice != null ? String(l.UnitPrice) : '',
       UnitPrice: l.UnitPrice != null ? String(l.UnitPrice) : '',
       stdDiscount: l.DiscountPercent != null ? String(l.DiscountPercent) : '',
@@ -1050,8 +1043,23 @@ const resolveSapUserSign = async () => {
   let sapUsername = '';
   try {
     const { getActiveCompanyConfig } = require('./companyConfigService');
-    const activeConfig = await getActiveCompanyConfig();
-    sapUsername = String(activeConfig.serviceLayer?.username || '').trim();
+    const company = await getActiveCompanyConfig();
+    const requestAuth = getRequestContext()?.req?.auth || {};
+    const applicationUser = requestAuth.username
+      ? { Username: requestAuth.username }
+      : Number.isInteger(Number(requestAuth.userId))
+        ? await authDbService.queryOne(`
+            SELECT Username
+            FROM Users
+            WHERE UserId = @userId
+          `, { userId: Number(requestAuth.userId) })
+        : null;
+    sapUsername = String(
+      company?.userMapping?.sapUserCode
+      || applicationUser?.Username
+      || company?.serviceLayer?.username
+      || '',
+    ).trim();
   } catch (_error) {
     sapUsername = '';
   }
@@ -1070,21 +1078,21 @@ const resolveSapUserSign = async () => {
 };
 
 const getARCreditMemoColumnPreferences = async () => {
-  const tableRows = await safe(db.query(`
-    SELECT TABLE_NAME
-    FROM INFORMATION_SCHEMA.TABLES
-    WHERE TABLE_NAME = 'CPRF'
-  `));
-  if (!tableRows.length) return { byKey: {}, rows: [], userSign: null };
+  let cprfColumnDetails;
+  try {
+    cprfColumnDetails = await getTableColumnDetails('CPRF');
+  } catch (_error) {
+    cprfColumnDetails = [];
+  }
+  if (!cprfColumnDetails.length) return { byKey: {}, rows: [], userSign: null };
 
-  const cprfColumns = await safe(db.query(`
-    SELECT COLUMN_NAME
-    FROM INFORMATION_SCHEMA.COLUMNS
-    WHERE TABLE_NAME = 'CPRF'
-  `));
-  const columnSet = new Set(cprfColumns.map((row) => String(row.COLUMN_NAME || '').trim()));
+  const columnSet = new Set(cprfColumnDetails.map((col) => String(col.columnName || '').trim()));
   const hasItemUid = columnSet.has('ItemUID');
   const hasTableName = columnSet.has('TableName');
+  const hasCaption = columnSet.has('Caption');
+  const hasTitle = columnSet.has('Title');
+  const hasDescr = columnSet.has('Descr');
+  const hasColAlias = columnSet.has('ColAlias');
   const userSign = await resolveSapUserSign();
   if (userSign == null) return { byKey: {}, rows: [], userSign: null };
 
@@ -1094,6 +1102,10 @@ const getARCreditMemoColumnPreferences = async () => {
       VisInExpnd, ExpandIndx, EditInEXP, UserSign, TPLId
       ${hasTableName ? ', TableName' : ", '' AS TableName"}
       ${hasItemUid ? ', ItemUID' : ", '' AS ItemUID"}
+      ${hasCaption ? ', Caption' : ", '' AS Caption"}
+      ${hasTitle ? ', Title' : ", '' AS Title"}
+      ${hasDescr ? ', Descr' : ", '' AS Descr"}
+      ${hasColAlias ? ', ColAlias' : ", '' AS ColAlias"}
     FROM CPRF
     WHERE FormID = @formId
       AND (
@@ -1105,7 +1117,6 @@ const getARCreditMemoColumnPreferences = async () => {
   `, {
     formId: AR_CREDIT_MEMO_FORM_ID,
     itemId: AR_CREDIT_MEMO_MATRIX_ITEM_ID,
-    tableName: 'RIN1',
     userSign,
   }));
 
@@ -1116,6 +1127,10 @@ const getARCreditMemoColumnPreferences = async () => {
         VisInExpnd, ExpandIndx, EditInEXP, UserSign, TPLId,
         TableName
         ${hasItemUid ? ', ItemUID' : ", '' AS ItemUID"}
+        ${hasCaption ? ', Caption' : ", '' AS Caption"}
+        ${hasTitle ? ', Title' : ", '' AS Title"}
+        ${hasDescr ? ', Descr' : ", '' AS Descr"}
+        ${hasColAlias ? ', ColAlias' : ", '' AS ColAlias"}
       FROM CPRF
       WHERE FormID = @formId
         AND TableName = @tableName
@@ -1128,10 +1143,13 @@ const getARCreditMemoColumnPreferences = async () => {
     }));
   }
 
+  rows = selectEffectiveCprfRows(rows);
+
   const byKey = rows.reduce((acc, row) => {
-    [row.ColID, row.TableName, row.ItemUID].map(normalizePreferenceKey).filter(Boolean).forEach((key) => {
-      if (!acc[key]) acc[key] = row;
-    });
+    [row.ColID, row.TableName, row.ItemUID, row.Caption, row.Title, row.Descr, row.ColAlias]
+      .map(normalizePreferenceKey).filter(Boolean).forEach((key) => {
+        if (!acc[key]) acc[key] = row;
+      });
     return acc;
   }, {});
 
@@ -1139,28 +1157,28 @@ const getARCreditMemoColumnPreferences = async () => {
 };
 
 const getARCreditMemoLineTableColumns = async () => {
-  const rows = await safe(db.query(`
-    SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION,
-           NUMERIC_SCALE, IS_NULLABLE, ORDINAL_POSITION
-    FROM INFORMATION_SCHEMA.COLUMNS
-    WHERE TABLE_NAME = 'RIN1'
-    ORDER BY ORDINAL_POSITION
-  `));
+  try {
+    const columnDetails = await getTableColumnDetails('RIN1');
+    if (!columnDetails.length) return {};
 
-  return rows.reduce((acc, row) => {
-    const columnName = String(row.COLUMN_NAME || '').trim();
-    if (!columnName) return acc;
-    acc[columnName.toUpperCase()] = {
-      name: columnName,
-      dataType: String(row.DATA_TYPE || '').trim().toLowerCase(),
-      maxLength: row.CHARACTER_MAXIMUM_LENGTH,
-      precision: row.NUMERIC_PRECISION,
-      scale: row.NUMERIC_SCALE,
-      nullable: String(row.IS_NULLABLE || '').toUpperCase() === 'YES',
-      ordinal: Number(row.ORDINAL_POSITION || 0),
-    };
-    return acc;
-  }, {});
+    return columnDetails.reduce((acc, col) => {
+      const columnName = String(col.columnName || '').trim();
+      if (!columnName) return acc;
+      acc[columnName.toUpperCase()] = {
+        name: columnName,
+        dataType: String(col.dataType || '').trim().toLowerCase(),
+        maxLength: col.maxLength ?? null,
+        precision: col.numericPrecision ?? null,
+        scale: col.numericScale ?? null,
+        nullable: Boolean(col.nullable),
+        ordinal: col.ordinal || 0,
+      };
+      return acc;
+    }, {});
+  } catch (error) {
+    console.warn('[AR Credit Memo DB] getARCreditMemoLineTableColumns failed:', error.message);
+    return {};
+  }
 };
 
 const findColumnPreference = (column, preferences = {}) => {
@@ -1200,7 +1218,6 @@ const getARCreditMemoLineFieldMetadata = async () => {
       if (!exists) return null;
 
       const preference = findColumnPreference(column, preferencesResult.byKey);
-      if (hasPreferences && !preference) return null;
       const visible = preference ? sapFlagToBoolean(preference.VisInForm, true) : true;
       const active = preference ? sapFlagToBoolean(preference.EditInForm, true) : true;
       const width = Number(preference?.Width);
@@ -1257,7 +1274,7 @@ const applyLineColumnPreferencesToUdfs = (udfMetadata = {}, preferences = {}) =>
       sapColumnIds: [field.key, field.aliasId, field.label],
     }, preferences);
 
-    if (!preference) return hasPreferences ? null : field;
+    if (!preference) return field;
 
     return {
       ...field,
@@ -1637,6 +1654,8 @@ const getDownPaymentForCopy = (docEntry) => safe(db.query(`
 `, { docEntry }));
 
 module.exports = {
+  getARCreditMemoHeaderTableFieldMetadata,
+  getARCreditMemoLineTableFieldMetadata,
   getReferenceData,
   getCustomerDetails,
   getARCreditMemoList,

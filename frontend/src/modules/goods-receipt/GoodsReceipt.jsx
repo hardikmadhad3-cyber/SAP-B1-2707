@@ -14,6 +14,7 @@ import ReferenceInformationModal, {
 import BatchAllocationModal from '../../components/BatchAllocationModal';
 import DistributionRuleAssignmentModal from '../../components/DistributionRuleAssignmentModal';
 import LineValueLookupModal from '../../components/sales-document/LineValueLookupModal';
+import InventoryPrintLayoutActions from '../../components/print-layout/InventoryPrintLayoutActions';
 import JournalEntryPreviewButton from '../../components/journal-entry/JournalEntryPreviewButton';
 import { useSapWindowTaskbarActions } from '../../components/SapWindowTaskbarContext';
 import {
@@ -1468,6 +1469,15 @@ function GoodsReceipt() {
         >
           Form Settings
         </button>
+        <InventoryPrintLayoutActions
+          documentKey="goodsReceipt"
+          docEntry={currentDocEntry}
+          docNumber={header.number}
+          series={header.series}
+          disabled={pageState.posting || pageState.loading}
+          onSuccess={(message) => setPageState((current) => ({ ...current, error: '', success: message }))}
+          onError={(message) => setPageState((current) => ({ ...current, success: '', error: message }))}
+        />
         <JournalEntryPreviewButton
           documentType="goodsReceipt"
           documentLabel="Goods Receipt"

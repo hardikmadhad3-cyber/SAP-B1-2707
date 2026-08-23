@@ -41,8 +41,8 @@ describe('ContentsTab dynamic UDF columns', () => {
       />,
     );
 
-    // column header should keep the fixed SAP B1 label while binding the UDF value
-    expect(screen.getByText(/Packing-Type/i)).toBeInTheDocument();
+    // The live schema label and the UDF-backed value are both rendered.
+    expect(screen.getByText('Packing Type')).toBeInTheDocument();
     // cell value should render in first row
     expect(screen.getByDisplayValue('Box')).toBeInTheDocument();
   });

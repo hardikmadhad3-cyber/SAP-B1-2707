@@ -56,6 +56,65 @@ test('serializes Company B date and checkbox fields without carrying Company A U
   assert.equal(payload.DocumentLines[0].U_TotalPackage, undefined);
 });
 
+test('validates and serializes an A/R Invoice using its live OINV/INV1 schema tables', async () => {
+  const schema = {
+    documentType: 'AR_INVOICE',
+    headerTable: 'OINV',
+    lineTable: 'INV1',
+    headerFields: [{
+      id: 'OINV.CardCode',
+      tableName: 'OINV',
+      stateKey: 'customerCode',
+      sapField: 'CardCode',
+      databaseField: 'CardCode',
+      type: 'text',
+      storage: 'standard',
+      required: true,
+    }],
+    lineFields: [{
+      id: 'INV1.ItemCode',
+      tableName: 'INV1',
+      stateKey: 'itemNo',
+      sapField: 'ItemCode',
+      databaseField: 'ItemCode',
+      type: 'text',
+      storage: 'standard',
+      required: true,
+    }, {
+      id: 'INV1.U_LiveInvoiceField',
+      tableName: 'INV1',
+      stateKey: 'U_LiveInvoiceField',
+      sapField: 'U_LiveInvoiceField',
+      databaseField: 'U_LiveInvoiceField',
+      type: 'text',
+      storage: 'udf',
+    }],
+  };
+  const canonicalFormData = await assertValidNewSalesOrderForm({
+    schema,
+    formData: {
+      header: { values: { customerCode: 'C00001' }, udf: {} },
+      lines: [{ values: { itemNo: 'ITEM001' }, udf: { U_LiveInvoiceField: 'LIVE' } }],
+    },
+  });
+  const payload = buildNewSalesOrderPayload({ schema, canonicalFormData });
+
+  assert.deepEqual(payload, {
+    CardCode: 'C00001',
+    DocumentLines: [{ ItemCode: 'ITEM001', U_LiveInvoiceField: 'LIVE' }],
+  });
+});
+
+test('rejects schema tables that do not match the active document profile', async () => {
+  await assert.rejects(
+    validateNewSalesOrderForm({
+      schema: { ...companyASchema, documentType: 'AR_INVOICE' },
+      formData: companyAFormData,
+    }),
+    (error) => error.statusCode === 500 && error.code === 'INVALID_SCHEMA',
+  );
+});
+
 test('rejects an arbitrary UDF that is absent from the current company schema', async () => {
   const formData = structuredClone(companyBFormData);
   formData.lines[0].udf.U_GrossWt = '99.5';

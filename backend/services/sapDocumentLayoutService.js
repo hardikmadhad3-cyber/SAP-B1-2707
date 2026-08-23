@@ -1,6 +1,14 @@
 const authDbService = require('./authDbService');
 const db = require('./dbService');
 const { getUdfDefinitions } = require('./udfMetadataService');
+const {
+  findCprfStandardDefinition,
+  findCprfUdfDefinition,
+  getSalesDocumentCprfDefinitions,
+  getLayoutColumnDedupeKey,
+  mergeDuplicateCprfLayoutColumns,
+  selectEffectiveCprfRows,
+} = require('./sapFormPreferenceUtils');
 const salesOrderDbService = require('./salesOrderDbService');
 const salesQuotationDbService = require('./salesQuotationDbService');
 const deliveryDbService = require('./deliveryDbService');
@@ -23,9 +31,10 @@ const createCommonFallbackColumns = () => [
   { columnUid: 'HsnCode', fieldName: 'HsnCode', columnTitle: 'HSN', columnOrder: 6, width: 95, dataType: 'string', isUdf: false },
   { columnUid: 'Price', fieldName: 'Price', columnTitle: 'Unit Price', columnOrder: 7, width: 110, dataType: 'number', isUdf: false },
   { columnUid: 'VatGroup', fieldName: 'VatGroup', columnTitle: 'Tax Code', columnOrder: 8, width: 110, dataType: 'string', isUdf: false },
-  { columnUid: 'LineTotal', fieldName: 'LineTotal', columnTitle: 'Total', columnOrder: 9, width: 115, dataType: 'number', isUdf: false },
-  { columnUid: 'DiscPrcnt', fieldName: 'DiscPrcnt', columnTitle: 'Discount %', columnOrder: 10, width: 95, dataType: 'number', isUdf: false },
-  { columnUid: 'WhsCode', fieldName: 'WhsCode', columnTitle: 'Whse', columnOrder: 11, width: 80, dataType: 'string', isUdf: false },
+  { columnUid: 'LineTotal', fieldName: 'LineTotal', columnTitle: 'Total (LC)', columnOrder: 9, width: 115, dataType: 'number', isUdf: false },
+  { columnUid: 'TotalFrgn', fieldName: 'TotalFrgn', columnTitle: 'Total (Doc)', columnOrder: 10, width: 115, dataType: 'number', isUdf: false },
+  { columnUid: 'DiscPrcnt', fieldName: 'DiscPrcnt', columnTitle: 'Discount %', columnOrder: 11, width: 95, dataType: 'number', isUdf: false },
+  { columnUid: 'WhsCode', fieldName: 'WhsCode', columnTitle: 'Whse', columnOrder: 12, width: 80, dataType: 'string', isUdf: false },
 ];
 
 const createServiceFallbackColumns = () => [
@@ -58,14 +67,13 @@ const DOCUMENT_TYPES = {
       { columnUid: 'HsnCode', fieldName: 'HsnCode', columnTitle: 'HSN', columnOrder: 6, width: 95, dataType: 'string', isUdf: false },
       { columnUid: 'Price', fieldName: 'Price', columnTitle: 'Unit Price', columnOrder: 7, width: 110, dataType: 'number', isUdf: false },
       { columnUid: 'VatGroup', fieldName: 'VatGroup', columnTitle: 'Tax Code', columnOrder: 8, width: 110, dataType: 'string', isUdf: false },
-      { columnUid: 'LineTotal', fieldName: 'LineTotal', columnTitle: 'Total', columnOrder: 9, width: 115, dataType: 'number', isUdf: false },
-      { columnUid: 'U_PackingType', fieldName: 'U_PackingType', columnTitle: 'Packing-Type', columnOrder: 10, width: 140, dataType: 'string', isUdf: true },
-      { columnUid: 'U_GrossWt', fieldName: 'U_GrossWt', columnTitle: 'GrossWt', columnOrder: 11, width: 110, dataType: 'number', isUdf: true },
-      { columnUid: 'U_TotalPackage', fieldName: 'U_TotalPackage', columnTitle: 'Total-Package', columnOrder: 12, width: 130, dataType: 'number', isUdf: true },
+      { columnUid: 'LineTotal', fieldName: 'LineTotal', columnTitle: 'Total (LC)', columnOrder: 9, width: 115, dataType: 'number', isUdf: false },
+      { columnUid: 'TotalFrgn', fieldName: 'TotalFrgn', columnTitle: 'Total (Doc)', columnOrder: 10, width: 115, dataType: 'number', isUdf: false },
       { columnUid: 'DiscPrcnt', fieldName: 'DiscPrcnt', columnTitle: 'Discount %', columnOrder: 13, width: 95, dataType: 'number', isUdf: false },
       { columnUid: 'DelivrdQty', fieldName: 'DelivrdQty', columnTitle: 'Delivered Qty', columnOrder: 14, width: 120, dataType: 'number', isUdf: false },
       { columnUid: 'WhsCode', fieldName: 'WhsCode', columnTitle: 'Whse', columnOrder: 15, width: 80, dataType: 'string', isUdf: false },
     ],
+    getReferenceData: () => salesOrderDbService.getReferenceData(),
   },
   SALES_QUOTATION: {
     documentType: 'SALES_QUOTATION',
@@ -93,10 +101,8 @@ const DOCUMENT_TYPES = {
       { columnUid: 'HsnCode', fieldName: 'HsnCode', columnTitle: 'HSN', columnOrder: 6, width: 95, dataType: 'string', isUdf: false },
       { columnUid: 'Price', fieldName: 'Price', columnTitle: 'Unit Price', columnOrder: 7, width: 110, dataType: 'number', isUdf: false },
       { columnUid: 'VatGroup', fieldName: 'VatGroup', columnTitle: 'Tax Code', columnOrder: 8, width: 110, dataType: 'string', isUdf: false },
-      { columnUid: 'LineTotal', fieldName: 'LineTotal', columnTitle: 'Total', columnOrder: 9, width: 115, dataType: 'number', isUdf: false },
-      { columnUid: 'U_PackingType', fieldName: 'U_PackingType', columnTitle: 'Packing-Type', columnOrder: 10, width: 140, dataType: 'string', isUdf: true },
-      { columnUid: 'U_GrossWt', fieldName: 'U_GrossWt', columnTitle: 'GrossWt', columnOrder: 11, width: 110, dataType: 'number', isUdf: true },
-      { columnUid: 'U_TotalPackage', fieldName: 'U_TotalPackage', columnTitle: 'Total-Package', columnOrder: 12, width: 130, dataType: 'number', isUdf: true },
+      { columnUid: 'LineTotal', fieldName: 'LineTotal', columnTitle: 'Total (LC)', columnOrder: 9, width: 115, dataType: 'number', isUdf: false },
+      { columnUid: 'TotalFrgn', fieldName: 'TotalFrgn', columnTitle: 'Total (Doc)', columnOrder: 10, width: 115, dataType: 'number', isUdf: false },
       { columnUid: 'DiscPrcnt', fieldName: 'DiscPrcnt', columnTitle: 'Discount %', columnOrder: 13, width: 95, dataType: 'number', isUdf: false },
       { columnUid: 'WhsCode', fieldName: 'WhsCode', columnTitle: 'Whse', columnOrder: 14, width: 80, dataType: 'string', isUdf: false },
     ],
@@ -362,15 +368,7 @@ const sanitizeLayoutColumns = (columns = []) => {
   return (columns || [])
     .filter((column) => column && !isUnmatchedNumericLayoutColumn(column))
     .filter((column) => {
-      const fieldKey = normalizeLayoutMatchToken(column.fieldName);
-      const titleKey = normalizeLayoutMatchToken(column.columnTitle);
-      const rawFieldKey = String(column.fieldName || column.columnUid || '')
-        .trim()
-        .toUpperCase()
-        .replace(/[^A-Z0-9_]+/g, '');
-      const dedupeKey = column.isUdf
-        ? `UDF|${rawFieldKey || fieldKey || titleKey}|${titleKey || fieldKey}`
-        : `STD|${fieldKey || titleKey}|${titleKey || fieldKey}`;
+      const dedupeKey = getLayoutColumnDedupeKey(column);
       if (!dedupeKey || dedupeKey === '|') return true;
       if (usedKeys.has(dedupeKey)) return false;
       usedKeys.add(dedupeKey);
@@ -426,7 +424,9 @@ const SALES_ORDER_STRICT_LAYOUT_FIELDS = [
   { title: 'HSN', fieldNames: ['HsnCode', 'HsnEntry', 'hsnCode'], aliases: ['HSN', 'HSN/SAC'], width: 95, dataType: 'string', isUdf: false },
   { title: 'Unit Price', fieldNames: ['Price', 'PriceBefDi', 'UnitPrice'], aliases: ['Unit Price'], width: 110, dataType: 'number', forceFieldName: 'Price', forceColumnUid: 'Price', forceStandard: true },
   { title: 'Tax Code', fieldNames: ['VatGroup', 'TaxCode'], aliases: ['Tax Code'], width: 110, dataType: 'string', forceFieldName: 'TaxCode', forceColumnUid: 'TaxCode', forceStandard: true },
-  { title: 'Total', fieldNames: ['LineTotal', 'GTotal', 'Total'], aliases: ['Total', 'Total (LC)'], width: 115, dataType: 'number', isUdf: false },
+  { title: 'Total (LC)', fieldNames: ['LineTotal'], aliases: ['Total (LC)', 'Total LC', 'Total'], width: 115, dataType: 'number', isUdf: false },
+  { title: 'Total (Doc)', fieldNames: ['TotalFrgn'], aliases: ['Total (Doc)', 'Total Doc', 'Total (FC)'], width: 115, dataType: 'number', isUdf: false },
+  { title: 'Gross Total', fieldNames: ['GTotal'], aliases: ['Gross Total', 'GrossTotal'], width: 120, dataType: 'number', isUdf: false },
   { title: 'Packing-Type', fieldNames: ['U_PackingType'], aliases: ['Packing-Type', 'PackingType'], width: 140, dataType: 'string', isUdf: true },
   { title: 'GrossWt', fieldNames: ['U_GrossWt'], aliases: ['GrossWt', 'Gross Weight'], width: 110, dataType: 'number', isUdf: true },
   { title: 'Total-Package', fieldNames: ['U_TotalPackage'], aliases: ['Total-Package', 'TotalPackage'], width: 130, dataType: 'number', isUdf: true },
@@ -473,20 +473,24 @@ const COMMON_MARKETING_COLUMN_DEFS = [
   { title: 'Item Description', fieldName: 'Dscription', aliases: ['Item Description', 'Description'], sapColumnIds: ['3', 'Dscription', 'ItemDescription', 'Item Description'], width: 240, dataType: 'string' },
   { title: 'Quantity', fieldName: 'Quantity', aliases: ['Quantity', 'Qty'], sapColumnIds: ['11', 'Quantity', 'Qty'], width: 90, dataType: 'number' },
   { title: 'Required Date', fieldName: 'ReqDate', aliases: ['Required Date'], sapColumnIds: ['5', 'ReqDate', 'Required Date'], width: 125, dataType: 'date' },
-  { title: 'Quoted Date', fieldName: 'ShipDate', aliases: ['Quoted Date', 'Delivery Date'], sapColumnIds: ['ShipDate', 'Delivery Date', 'Quoted Date'], width: 125, dataType: 'date' },
+  { title: 'Delivery Date', fieldName: 'ShipDate', aliases: ['Delivery Date', 'Quoted Date'], sapColumnIds: ['ShipDate', 'Delivery Date', 'Quoted Date'], width: 125, dataType: 'date' },
   { title: 'Unit Price', fieldName: 'Price', aliases: ['Unit Price'], sapColumnIds: ['14', 'Price', 'PriceBefDi', 'UnitPrice', 'Unit Price'], width: 110, dataType: 'number' },
   { title: 'Discount %', fieldName: 'DiscPrcnt', aliases: ['Discount %', 'Disc%'], sapColumnIds: ['15', 'DiscPrcnt', 'Discount %', 'Disc%'], width: 95, dataType: 'number' },
   { title: 'Tax Code', fieldName: 'TaxCode', aliases: ['Tax Code'], sapColumnIds: ['234000377', 'VatGroup', 'TaxCode', 'Tax Code'], width: 115, dataType: 'string' },
-  { title: 'Total', fieldName: 'LineTotal', aliases: ['Total', 'Total (LC)'], sapColumnIds: ['160', '17', 'LineTotal', 'GTotal', 'Total', 'Total (LC)'], width: 115, dataType: 'number' },
+  { title: 'Total (LC)', fieldName: 'LineTotal', aliases: ['Total (LC)', 'Total LC', 'Total'], sapColumnIds: ['17', 'LineTotal', 'Total', 'Total (LC)', 'Total LC'], width: 115, dataType: 'number' },
+  { title: 'Total (Doc)', fieldName: 'TotalFrgn', aliases: ['Total (Doc)', 'Total Doc', 'Total (FC)'], sapColumnIds: ['TotalFrgn', 'Total (Doc)', 'Total Doc', 'Total (FC)'], width: 115, dataType: 'number' },
+  { title: 'Gross Total', fieldName: 'GTotal', aliases: ['Gross Total', 'GrossTotal'], sapColumnIds: ['GTotal', 'GrossTotal', 'Gross Total'], width: 120, dataType: 'number' },
   { title: 'Whse', fieldName: 'WhsCode', aliases: ['Whse', 'Warehouse'], sapColumnIds: ['174', 'WhsCode', 'Warehouse', 'Whse'], width: 90, dataType: 'string' },
   { title: 'G/L Account', fieldName: 'AcctCode', aliases: ['G/L Account', 'GLAccount'], sapColumnIds: ['234001512', 'AcctCode', 'G/L Account', 'GLAccount'], width: 135, dataType: 'string' },
   { title: 'Distr. Rule', fieldName: 'OcrCode', aliases: ['Distr. Rule', 'Distribution Rule'], sapColumnIds: ['21', 'OcrCode', 'Distr. Rule', 'DistributionRule'], width: 105, dataType: 'string' },
   { title: 'Tax Liable', fieldName: 'TaxOnly', aliases: ['Tax Liable'], sapColumnIds: ['22', 'TaxOnly', 'Tax Liable'], width: 95, dataType: 'yesNo' },
   { title: 'WTax Liable', fieldName: 'WTLiable', aliases: ['WTax Liable'], sapColumnIds: ['18', 'WTLiable', 'WtLiable', 'WTax Liable'], width: 100, dataType: 'yesNo' },
-  { title: 'Weight', fieldName: 'Weight1', aliases: ['Weight'], sapColumnIds: ['23', 'Weight1', 'Weight'], width: 95, dataType: 'number' },
-  { title: 'Tax Amount (LC)', fieldName: 'VatSum', aliases: ['Tax Amount (LC)'], sapColumnIds: ['24', 'VatSum', 'Tax Amount (LC)'], width: 125, dataType: 'number' },
-  { title: 'UoM Code', fieldName: 'UomCode', aliases: ['UoM Code', 'UoM'], sapColumnIds: ['1470002149', '1470002145', 'UomCode', 'unitMsr', 'UoM Code', 'UoM'], width: 105, dataType: 'string' },
+  { title: 'Weight', fieldName: 'Weight1', aliases: ['Weight'], sapColumnIds: ['Weight1', 'Weight'], width: 95, dataType: 'number' },
+  { title: 'Tax Amount (LC)', fieldName: 'VatSum', aliases: ['Tax Amount (LC)', 'Tax Amount (Doc)'], sapColumnIds: ['83', 'VatSum', 'Tax Amount (LC)', 'Tax Amount (Doc)'], width: 125, dataType: 'number' },
+  { title: 'UoM Code', fieldName: 'UomCode', aliases: ['UoM Code', 'UoM'], sapColumnIds: ['1470002149', 'UomCode', 'UoMCode', 'UoM Code', 'UoM'], width: 105, dataType: 'string' },
   { title: 'UoM Name', fieldName: 'unitMsr', aliases: ['UoM Name'], sapColumnIds: ['1470002145', 'unitMsr', 'UomName', 'UoM Name'], width: 120, dataType: 'string' },
+  { title: 'In Stock', fieldName: 'OnHand', aliases: ['In Stock', 'InStock'], sapColumnIds: ['OnHand', 'In Stock', 'InStock'], width: 105, dataType: 'number' },
+  { title: 'Qty in Whse', fieldName: 'WhsQty', aliases: ['Qty in Whse', 'Qty in Warehouse', 'WhsQty'], sapColumnIds: ['WhsQty', 'Qty in Whse', 'Qty in Warehouse'], width: 115, dataType: 'number' },
   { title: 'COGS Distr. Rule', fieldName: 'CogsOcrCod', aliases: ['COGS Distr. Rule'], sapColumnIds: ['29', 'CogsOcrCod', 'COGS Distr. Rule'], width: 135, dataType: 'string' },
   { title: 'Country/Region of Origin', fieldName: 'CountryOrg', aliases: ['Country/Region of Origin'], sapColumnIds: ['10002037', 'CountryOrg', 'Country/Region of Origin'], width: 185, dataType: 'string' },
   { title: 'Loc.', fieldName: 'LocCode', aliases: ['Loc.', 'Location'], sapColumnIds: ['10002047', 'LocCode', 'Location', 'Loc.'], width: 115, dataType: 'string' },
@@ -710,9 +714,26 @@ const normalizeAuth = async (auth = {}, requestedCompanyDb, requestedUserCode) =
     throw createHttpError(403, 'companyDb does not match the selected company session.');
   }
 
+  // Form Settings in CPRF are owned by the SAP B1 user, not by the technical
+  // Service Layer account. A UserCompanies mapping is therefore preferred
+  // whenever it exists; the technical account remains a compatibility
+  // fallback for installations without mapped SAP users.
+  const assignedSapUserCode = normalizeText(
+    assignedCompany.AssignedSapUserCode,
+    'Assigned SAP user code',
+    { required: false, maxLength: 150 },
+  );
   const adminPanelSapUsername = normalizeText(assignedCompany.SapUsername, 'Admin panel SAP username', { required: false, maxLength: 150 });
-  const preferredUserCode = adminPanelSapUsername || username;
-  const allowedUserCodes = new Set([username.toUpperCase(), preferredUserCode.toUpperCase()]);
+  // Without an explicit UserCompanies mapping, the signed-in application
+  // user is the closest SAP B1 user identity. The shared Service Layer login
+  // is only a final compatibility fallback; using it first loads another
+  // user's CPRF settings on multi-user installations.
+  const preferredUserCode = assignedSapUserCode || username || adminPanelSapUsername;
+  const allowedUserCodes = new Set(
+    [username, assignedSapUserCode, adminPanelSapUsername]
+      .filter(Boolean)
+      .map((value) => value.toUpperCase()),
+  );
 
   const normalizedRequestedUserCode = requestedUserCode
     ? normalizeText(requestedUserCode, 'userCode', { required: true, maxLength: 150 })
@@ -971,6 +992,37 @@ const getTableColumnMetadata = async (tableName) => {
   }, {});
 };
 
+const getAssignedFormTemplateIds = async ({ formType, userSign }) => {
+  if (userSign == null) return [];
+
+  const tableRows = await queryRowsSafe(`
+    SELECT TABLE_NAME
+    FROM INFORMATION_SCHEMA.TABLES
+    WHERE TABLE_NAME = 'UIC4'
+  `);
+  if (!tableRows.length) return [];
+
+  const columnRows = await queryRowsSafe(`
+    SELECT COLUMN_NAME
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_NAME = 'UIC4'
+  `);
+  const columns = new Set(columnRows.map((row) => String(row.COLUMN_NAME || '').trim().toUpperCase()));
+  if (!columns.has('TPLID') || !columns.has('FORMID') || !columns.has('USERID')) return [];
+
+  const rows = await queryRowsSafe(`
+    SELECT TPLId
+    FROM UIC4
+    WHERE FormId = @formType
+      AND UserID = @userSign
+    ORDER BY TPLId
+  `, { formType, userSign });
+
+  return unique(rows
+    .map((row) => Number(row.TPLId))
+    .filter((value) => Number.isFinite(value) && value > 0));
+};
+
 const getCprfRows = async ({ formType, matrixId, tableName, userCode }) => {
   const tableRows = await queryRowsSafe(`
     SELECT TABLE_NAME
@@ -993,6 +1045,7 @@ const getCprfRows = async ({ formType, matrixId, tableName, userCode }) => {
   const hasColAlias = columnSet.has('ColAlias');
   const userSign = await resolveSapUserSign(userCode);
   if (userSign == null) return { rows: [], userSign: null };
+  const assignedTemplateIds = await getAssignedFormTemplateIds({ formType, userSign });
 
   let rows = await queryRowsSafe(`
     SELECT
@@ -1053,55 +1106,60 @@ const getCprfRows = async ({ formType, matrixId, tableName, userCode }) => {
     `, { formType, tableName, userSign });
   }
 
-  return { rows, userSign };
+  return {
+    rows: selectEffectiveCprfRows(rows, { assignedTemplateIds }),
+    userSign,
+  };
 };
 
-const findGenericColumnDefinition = (row = {}) => {
-  const tokens = unique([
-    row.ColID,
-    row.ItemUID,
-    row.Caption,
-    row.Title,
-    row.Descr,
-    row.ColAlias,
-  ].map(normalizeLayoutMatchToken));
+const buildReferenceColumnDefinitions = (matrixColumns = []) => (matrixColumns || [])
+  .map((column) => {
+    const fieldName = String(column?.sapField || column?.fieldName || column?.key || '').trim();
+    const isUdf = Boolean(
+      column?.isUdf
+      || column?.isUdfBacked
+      || fieldName.toUpperCase().startsWith('U_')
+    );
+    if (!fieldName || isUdf) return null;
 
-  return COMMON_MARKETING_COLUMN_DEFS.find((definition) => {
-    const definitionTokens = unique([
-      definition.title,
-      definition.fieldName,
-      ...(definition.aliases || []),
-      ...(definition.sapColumnIds || []),
-    ].map(normalizeLayoutMatchToken));
-    return tokens.some((token) => definitionTokens.includes(token));
-  }) || null;
-};
+    return {
+      title: column.label || fieldName,
+      fieldName,
+      aliases: unique([
+        column.key,
+        column.label,
+        column.fieldName,
+        ...(column.alternativeFields || []),
+        ...(column.additionalPreferenceKeys || []),
+      ]),
+      sapColumnIds: unique([
+        column.sapColumnId,
+        ...(column.sapColumnIds || []),
+      ]),
+      width: column.minWidth || column.width || 120,
+      dataType: column.type || (column.numeric ? 'number' : column.dataType || 'string'),
+    };
+  })
+  .filter(Boolean);
 
-const findUdfDefinitionForPreference = (row = {}, udfDefinitions = []) => {
-  const tokens = unique([
-    row.ColID,
-    row.ItemUID,
-    row.Caption,
-    row.Title,
-    row.Descr,
-    row.ColAlias,
-  ].map(normalizeLayoutMatchToken));
+const findGenericColumnDefinition = (row = {}, mapping = {}, referenceDefinitions = []) => (
+  findCprfStandardDefinition({
+    row,
+    preferredDefinitions: [
+      ...getSalesDocumentCprfDefinitions(mapping.documentType),
+      ...(referenceDefinitions || []),
+    ],
+    fallbackDefinitions: COMMON_MARKETING_COLUMN_DEFS,
+  })
+);
 
-  return (udfDefinitions || []).find((field) => {
-    const fieldTokens = unique([
-      field.key,
-      field.sapField,
-      field.aliasId,
-      field.fieldId,
-      field.label,
-      field.description,
-    ].map(normalizeLayoutMatchToken));
-    return tokens.some((token) => fieldTokens.includes(token));
-  }) || null;
-};
+// CUFD FieldID is a numeric metadata ordinal, not a matrix column identity.
+// The pure resolver intentionally uses only U_ aliases or descriptive CPRF
+// metadata so standard ColIDs cannot become unrelated UDFs by ordinal.
+const findUdfDefinitionForPreference = findCprfUdfDefinition;
 
 const buildGenericLiveLayoutColumnsFromCprf = async (mapping, scope) => {
-  const [{ rows: preferenceRows }, lineColumns, udfDefinitions] = await Promise.all([
+  const [{ rows: preferenceRows }, lineColumns, udfDefinitions, referenceData] = await Promise.all([
     getCprfRows({
       formType: mapping.formType,
       matrixId: mapping.matrixId,
@@ -1110,41 +1168,65 @@ const buildGenericLiveLayoutColumnsFromCprf = async (mapping, scope) => {
     }),
     getTableColumnMetadata(mapping.tableName),
     getUdfDefinitions(mapping.tableName),
+    typeof mapping.getReferenceData === 'function'
+      ? mapping.getReferenceData().catch(() => null)
+      : Promise.resolve(null),
   ]);
 
   if (!preferenceRows.length) return [];
+  const referenceDefinitions = buildReferenceColumnDefinitions(
+    referenceData?.line_field_metadata?.matrix_columns || []
+  );
 
-  return sanitizeLayoutColumns(preferenceRows
+  return sanitizeLayoutColumns(mergeDuplicateCprfLayoutColumns(preferenceRows
     .map((row, index) => {
-      const standardDefinition = findGenericColumnDefinition(row);
+      const standardDefinition = findGenericColumnDefinition(row, mapping, referenceDefinitions);
       const udfDefinition = findUdfDefinitionForPreference(row, udfDefinitions);
-      if (!standardDefinition && !udfDefinition && isNumericOnly(row.ColID || row.ItemUID)) {
+      const hasDescriptiveIdentity = [row.Caption, row.Title, row.Descr, row.ColAlias]
+        .some((value) => String(value || '').trim());
+      if (
+        !standardDefinition
+        && !udfDefinition
+        && !hasDescriptiveIdentity
+        && isNumericOnly(row.ColID || row.ItemUID)
+      ) {
         return null;
       }
-      const fieldName = udfDefinition?.key || standardDefinition?.fieldName || String(row.ColID || row.ItemUID || `column_${index + 1}`).trim();
+      // A standard SAP caption takes precedence over a same-named UDF. This
+      // prevents a legacy `U_Unit_Price` definition from turning the actual
+      // SAP Unit Price column into an unrelated renderer.
+      const fieldName = standardDefinition?.fieldName || udfDefinition?.key || String(row.ColID || row.ItemUID || `column_${index + 1}`).trim();
       const metadata = lineColumns[String(fieldName || '').toUpperCase()];
       const width = Number(row.Width);
+      const sapCaption = [row.Caption, row.Title, row.Descr, row.ColAlias]
+        .map((value) => String(value || '').trim())
+        .find(Boolean);
 
       return normalizeColumnInput({
         columnUid: String(row.ColID || row.ItemUID || fieldName || `column_${index + 1}`).trim(),
         fieldName,
-        columnTitle: standardDefinition?.title || udfDefinition?.label || fieldName,
+        columnTitle: sapCaption || standardDefinition?.title || udfDefinition?.label || fieldName,
         visible: normalizeBooleanFlag(row.VisInForm, true),
         editable: normalizeBooleanFlag(row.EditInForm, true),
         columnOrder: Number.isFinite(Number(row.VisualIndx)) ? Number(row.VisualIndx) : index + 1,
         width: Number.isFinite(width) && width > 0
           ? width
           : (standardDefinition?.width || (udfDefinition?.type === 'textarea' ? 180 : 120)),
-        dataType: udfDefinition?.type || standardDefinition?.dataType || metadata?.dataType || 'string',
-        isUdf: Boolean(udfDefinition || String(fieldName || '').trim().toUpperCase().startsWith('U_')),
+        dataType: standardDefinition?.dataType || udfDefinition?.type || metadata?.dataType || 'string',
+        isUdf: Boolean((!standardDefinition && udfDefinition) || String(fieldName || '').trim().toUpperCase().startsWith('U_')),
         source: LIVE_LAYOUT_SOURCE,
       }, index);
     })
-    .filter(Boolean))
+    .filter(Boolean)))
     .sort((left, right) => (left.columnOrder || 0) - (right.columnOrder || 0));
 };
 
-const getLiveDerivedLayoutColumns = async (mapping, scope) => {
+const getLiveDerivedLayoutColumns = async (mapping, scope, { preferCprf = false } = {}) => {
+  if (preferCprf) {
+    const cprfColumns = await buildGenericLiveLayoutColumnsFromCprf(mapping, scope);
+    if (cprfColumns.length) return cprfColumns;
+  }
+
   const referenceData = typeof mapping.getReferenceData === 'function'
     ? await mapping.getReferenceData()
     : null;
@@ -1185,12 +1267,14 @@ const getLiveDerivedLayoutColumns = async (mapping, scope) => {
 const getDocumentLayout = async (auth, input = {}) => {
   const mapping = normalizeDocumentType(input);
   const scope = await normalizeAuth(auth, input.companyDb, input.userCode);
+  const refreshLive = normalizeBooleanFlag(input.refresh, false);
   const layoutBuildKey = [
     scope.companyDb,
     scope.userCode,
     mapping.documentType,
     mapping.formType,
     mapping.matrixId,
+    refreshLive ? 'refresh' : 'cached',
   ].join('|').toUpperCase();
 
   const rows = await getAuthoritativeLayoutRows({
@@ -1201,7 +1285,7 @@ const getDocumentLayout = async (auth, input = {}) => {
     matrixId: mapping.matrixId,
   });
 
-  if (rows.length) {
+  if (!refreshLive && rows.length) {
     return buildResponse({
       scope,
       mapping,
@@ -1221,7 +1305,7 @@ const getDocumentLayout = async (auth, input = {}) => {
   const savedLiveRowsMissingUdfs = LIVE_MARKETING_LAYOUT_WITH_UDFS.has(mapping.documentType)
     && savedLiveRows.length;
 
-  if (savedLiveRows.length && !savedLiveRowsMissingUdfs) {
+  if (!refreshLive && savedLiveRows.length && !savedLiveRowsMissingUdfs) {
     const sanitizedSavedLiveRows = sanitizeLayoutColumns(savedLiveRows.map(mapRowToColumn));
     if (sanitizedSavedLiveRows.length !== savedLiveRows.length) {
       await saveLayoutRows({
@@ -1249,7 +1333,9 @@ const getDocumentLayout = async (auth, input = {}) => {
   }
 
   const buildPromise = (async () => {
-    const liveDerivedColumns = await getLiveDerivedLayoutColumns(mapping, scope);
+    const liveDerivedColumns = await getLiveDerivedLayoutColumns(mapping, scope, {
+      preferCprf: refreshLive,
+    });
     if (liveDerivedColumns.length) {
       await saveLayoutRows({
         companyDb: scope.companyDb,
@@ -1267,6 +1353,32 @@ const getDocumentLayout = async (auth, input = {}) => {
         columns: liveDerivedColumns,
         source: LIVE_LAYOUT_SOURCE,
       });
+    }
+
+    // A forced live read is allowed to fall back safely when the selected SAP
+    // user has no CPRF records or the company does not expose CPRF. Do not
+    // discard the last known layout in that case.
+    if (rows.length) {
+      return buildResponse({
+        scope,
+        mapping,
+        columns: rows.map(mapRowToColumn),
+        source: 'imported-layout',
+        warning: `Live SAP Form Settings were unavailable; using the saved ${mapping.documentType} layout.`,
+      });
+    }
+
+    if (savedLiveRows.length) {
+      const sanitizedSavedLiveRows = sanitizeLayoutColumns(savedLiveRows.map(mapRowToColumn));
+      if (sanitizedSavedLiveRows.length) {
+        return buildResponse({
+          scope,
+          mapping,
+          columns: sanitizedSavedLiveRows,
+          source: LIVE_LAYOUT_SOURCE,
+          warning: `Live SAP Form Settings were unavailable; using the last synchronized ${mapping.documentType} layout.`,
+        });
+      }
     }
 
     const warning = `No imported layout found for ${mapping.documentType} (${scope.companyDb}/${scope.userCode}). Using fallback layout.`;

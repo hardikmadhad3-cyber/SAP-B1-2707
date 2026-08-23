@@ -18,12 +18,21 @@ const {
   getUdfDefinitions,
 } = require('./udfMetadataService');
 const { getMarketingDocumentSeries } = require('./documentSeriesDbUtils');
+const {
+  createTableColumnDetailsReader,
+  createTableFieldMetadataReader,
+  resolveDatabaseScope,
+} = require('./salesDocumentDbCompatibility');
+const authDbService = require('./authDbService');
+const { getRequestContext } = require('./requestContextService');
+const { selectEffectiveCprfRows } = require('./sapFormPreferenceUtils');
 
 const safe = async (promise) => {
   try {
     const r = await promise;
     return r.recordset || [];
   } catch (e) {
+    console.warn('[Delivery DB] Query failed silently:', e.message);
     return [];
   }
 };
@@ -34,11 +43,8 @@ const referenceDataCache = new Map();
 const cloneReferenceData = (data) => JSON.parse(JSON.stringify(data || {}));
 
 const getReferenceDataCacheKey = async () => {
-  try {
-    return String(await db.resolveDatabaseName() || 'default');
-  } catch (_error) {
-    return 'default';
-  }
+  const scope = await resolveDatabaseScope(db);
+  return scope.cacheKey;
 };
 
 const getCachedReferenceData = async (loadData) => {
@@ -472,34 +478,245 @@ const getBaseSalesOrderLineItemCode = async (docEntry, lineNum) => {
   return String(rows[0]?.ItemCode || '').trim();
 };
 
-const tableFieldMetadataPromises = new Map();
-
-const getTableFieldMetadata = async (tableName) => {
-  const normalizedTableName = String(tableName || '').trim();
-  if (!normalizedTableName) return {};
-
-  const databaseName = await db.resolveDatabaseName();
-  const cacheKey = `${databaseName || 'default'}:${normalizedTableName}`;
-
-  if (!tableFieldMetadataPromises.has(cacheKey)) {
-    tableFieldMetadataPromises.set(cacheKey, safe(db.query(`
-      SELECT COLUMN_NAME, DATA_TYPE
-      FROM INFORMATION_SCHEMA.COLUMNS
-      WHERE TABLE_NAME = @tableName
-      ORDER BY ORDINAL_POSITION
-    `, { tableName: normalizedTableName })).then((rows) => rows.reduce((acc, row) => {
-      const columnName = String(row.COLUMN_NAME || '').trim();
-      if (!columnName) return acc;
-      acc[columnName] = String(row.DATA_TYPE || '').trim().toLowerCase();
-      return acc;
-    }, {})));
-  }
-
-  return tableFieldMetadataPromises.get(cacheKey);
-};
+const getTableFieldMetadata = createTableFieldMetadataReader({ database: db });
+const getTableColumnDetails = createTableColumnDetailsReader({ database: db });
 
 const getDeliveryLineFieldMetadata = () => getTableFieldMetadata('DLN1');
 const getDeliveryHeaderFieldMetadata = () => getTableFieldMetadata('ODLN');
+
+const DELIVERY_FORM_ID = '140';
+const DELIVERY_MATRIX_ITEM_ID = '38';
+
+const truthySapFlag = (value) => ['Y', 'YES', 'TRUE', '1', 'TYES'].includes(
+  String(value ?? '').trim().toUpperCase(),
+);
+const falsySapFlag = (value) => ['N', 'NO', 'FALSE', '0', 'TNO'].includes(
+  String(value ?? '').trim().toUpperCase(),
+);
+const sapFlagToBoolean = (value, fallback = true) => {
+  if (truthySapFlag(value)) return true;
+  if (falsySapFlag(value)) return false;
+  return fallback;
+};
+
+const normalizePreferenceKey = (value) =>
+  String(value || '')
+    .trim()
+    .toUpperCase()
+    .replace(/^U_/, '')
+    .replace(/[^A-Z0-9]/g, '');
+
+const shouldReplaceColumnPreference = (current, next) => {
+  if (!current) return true;
+  const currentVisible = sapFlagToBoolean(current.VisInForm, false);
+  const nextVisible = sapFlagToBoolean(next.VisInForm, false);
+  if (currentVisible !== nextVisible) return nextVisible;
+  const currentWidth = Number(current.Width);
+  const nextWidth = Number(next.Width);
+  if (Number.isFinite(currentWidth) && Number.isFinite(nextWidth) && currentWidth !== nextWidth) {
+    return nextWidth > currentWidth;
+  }
+  return false;
+};
+
+const resolveSapUserSign = async () => {
+  let sapUsername = '';
+
+  try {
+    const { getActiveCompanyConfig } = require('./companyConfigService');
+    const company = await getActiveCompanyConfig();
+    const requestAuth = getRequestContext()?.req?.auth || {};
+    const applicationUser = requestAuth.username
+      ? { Username: requestAuth.username }
+      : Number.isInteger(Number(requestAuth.userId))
+        ? await authDbService.queryOne(`
+            SELECT Username
+            FROM Users
+            WHERE UserId = @userId
+          `, { userId: Number(requestAuth.userId) })
+        : null;
+    sapUsername = String(
+      company?.userMapping?.sapUserCode
+      || applicationUser?.Username
+      || company?.serviceLayer?.username
+      || '',
+    ).trim();
+  } catch (_error) {
+    sapUsername = '';
+  }
+
+  if (!sapUsername) return null;
+
+  const rows = await safe(db.query(`
+    SELECT TOP 1 USERID
+    FROM OUSR
+    WHERE USER_CODE = @sapUsername
+       OR U_NAME = @sapUsername
+    ORDER BY
+      CASE WHEN USER_CODE = @sapUsername THEN 0 ELSE 1 END,
+      USERID
+  `, { sapUsername }));
+
+  const userSign = Number(rows[0]?.USERID);
+  return Number.isFinite(userSign) ? userSign : null;
+};
+
+const getDeliveryColumnPreferences = async () => {
+  let cprfColumnDetails;
+  try {
+    cprfColumnDetails = await getTableColumnDetails('CPRF');
+  } catch (_error) {
+    cprfColumnDetails = [];
+  }
+
+  if (!cprfColumnDetails.length) return { byKey: {}, rows: [], userSign: null };
+
+  const columnSet = new Set(cprfColumnDetails.map((col) => String(col.columnName || '').trim()));
+  const hasItemUid = columnSet.has('ItemUID');
+  const hasTableName = columnSet.has('TableName');
+  const hasCaption = columnSet.has('Caption');
+  const hasTitle = columnSet.has('Title');
+  const hasDescr = columnSet.has('Descr');
+  const hasColAlias = columnSet.has('ColAlias');
+  const userSign = await resolveSapUserSign();
+  if (userSign == null) return { byKey: {}, rows: [], userSign: null };
+
+  let rows = await safe(db.query(`
+    SELECT
+      FormID,
+      ItemID,
+      ColID,
+      Width,
+      VisInForm,
+      VisualIndx,
+      EditInForm,
+      VisInExpnd,
+      ExpandIndx,
+      EditInEXP,
+      UserSign,
+      TPLId
+      ${hasTableName ? ', TableName' : ", '' AS TableName"}
+      ${hasItemUid ? ', ItemUID' : ", '' AS ItemUID"}
+      ${hasCaption ? ', Caption' : ", '' AS Caption"}
+      ${hasTitle ? ', Title' : ", '' AS Title"}
+      ${hasDescr ? ', Descr' : ", '' AS Descr"}
+      ${hasColAlias ? ', ColAlias' : ", '' AS ColAlias"}
+    FROM CPRF
+    WHERE FormID = @formId
+      AND (
+        ItemID = @itemId
+        ${hasItemUid ? 'OR ItemUID = @itemId' : ''}
+      )
+      AND UserSign = @userSign
+    ORDER BY
+      CASE WHEN TPLId = 0 THEN 0 ELSE 1 END,
+      VisualIndx,
+      ColID
+  `, {
+    formId: DELIVERY_FORM_ID,
+    itemId: DELIVERY_MATRIX_ITEM_ID,
+    userSign,
+  }));
+
+  if (!rows.length && hasTableName) {
+    rows = await safe(db.query(`
+      SELECT
+        FormID,
+        ItemID,
+        ColID,
+        Width,
+        VisInForm,
+        VisualIndx,
+        EditInForm,
+        VisInExpnd,
+        ExpandIndx,
+        EditInEXP,
+        UserSign,
+        TPLId,
+        TableName
+        ${hasItemUid ? ', ItemUID' : ", '' AS ItemUID"}
+        ${hasCaption ? ', Caption' : ", '' AS Caption"}
+        ${hasTitle ? ', Title' : ", '' AS Title"}
+        ${hasDescr ? ', Descr' : ", '' AS Descr"}
+        ${hasColAlias ? ', ColAlias' : ", '' AS ColAlias"}
+      FROM CPRF
+      WHERE FormID = @formId
+        AND TableName = @tableName
+        AND UserSign = @userSign
+      ORDER BY
+        CASE WHEN TPLId = 0 THEN 0 ELSE 1 END,
+        VisualIndx,
+        ColID
+    `, {
+      formId: DELIVERY_FORM_ID,
+      tableName: 'DLN1',
+      userSign,
+    }));
+  }
+
+  rows = selectEffectiveCprfRows(rows);
+
+  const byKey = rows.reduce((acc, row) => {
+    [row.ColID, row.TableName, row.ItemUID, row.Caption, row.Title, row.Descr, row.ColAlias]
+      .map(normalizePreferenceKey)
+      .filter(Boolean)
+      .forEach((key) => {
+        if (shouldReplaceColumnPreference(acc[key], row)) acc[key] = row;
+      });
+    return acc;
+  }, {});
+
+  return { byKey, rows, userSign };
+};
+
+const findColumnPreference = (column, preferences = {}) => {
+  const candidates = [
+    ...(column.sapColumnIds || []),
+    column.sapField,
+    ...(column.alternativeFields || []),
+    column.key,
+    column.label,
+  ].map(normalizePreferenceKey).filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (preferences[candidate]) return preferences[candidate];
+  }
+
+  return null;
+};
+
+const getDeliverySacLookupSqlParts = (
+  lineAlias,
+  sacAlias,
+  sacFieldMetadata = {},
+  lineFieldMetadata = {},
+) => {
+  const sacEntryColumn = resolveColumnName(lineFieldMetadata, 'SACEntry');
+  const sacAbsEntryColumn = resolveColumnName(sacFieldMetadata, 'AbsEntry');
+  const canJoin = Boolean(sacEntryColumn && sacAbsEntryColumn);
+  const serviceNameColumn = resolveColumnName(sacFieldMetadata, 'ServName')
+    || resolveColumnName(sacFieldMetadata, 'ServiceName');
+  const serviceCodeColumn = resolveColumnName(sacFieldMetadata, 'ServCode')
+    || resolveColumnName(sacFieldMetadata, 'ServiceCode');
+  const serviceNameExpression = canJoin && serviceNameColumn
+    ? `${sacAlias}.${quoteSqlIdentifier(serviceNameColumn)}`
+    : "''";
+  const serviceCodeExpression = canJoin && serviceCodeColumn
+    ? `${sacAlias}.${quoteSqlIdentifier(serviceCodeColumn)}`
+    : "''";
+  const sacEntryExpression = sacEntryColumn
+    ? `CAST(${lineAlias}.${quoteSqlIdentifier(sacEntryColumn)} AS NVARCHAR(50))`
+    : "''";
+
+  return {
+    joinSql: canJoin
+      ? `LEFT JOIN OSAC ${sacAlias} ON ${sacAlias}.${quoteSqlIdentifier(sacAbsEntryColumn)} = ${lineAlias}.${quoteSqlIdentifier(sacEntryColumn)}`
+      : '',
+    serviceNameExpression,
+    serviceCodeExpression,
+    displayExpression: `COALESCE(NULLIF(LTRIM(RTRIM(${serviceNameExpression})), ''), NULLIF(LTRIM(RTRIM(${serviceCodeExpression})), ''), ${sacEntryExpression}, '')`,
+  };
+};
 
 const DELIVERY_MATRIX_COLUMN_DEFS = [
   { key: 'itemNo', label: 'Item No.', minWidth: 160, sapField: 'ItemCode', sapColumnIds: ['1', 'ItemCode', 'Item No.', 'ItemNo'] },
@@ -508,7 +725,7 @@ const DELIVERY_MATRIX_COLUMN_DEFS = [
   { key: 'uomName', label: 'UoM Name', minWidth: 120, readOnly: true, sapField: 'unitMsr', alternativeFields: ['UomCode', 'UomEntry'], sapColumnIds: ['1470002145', 'unitMsr', 'UomName', 'UoM Name'] },
   { key: 'hsnCode', label: 'HSN', minWidth: 95, readOnly: true, source: 'OITM', sapColumnIds: ['254000391', 'HsnEntry', 'HsnCode', 'HSN', 'HSN/SAC'] },
   { key: 'unitPrice', label: 'Unit Price', minWidth: 110, numeric: true, sapField: 'Price', alternativeFields: ['PriceBefDi'], sapColumnIds: ['14', 'Price', 'PriceBefDi', 'Unit Price'] },
-  { key: 'taxCode', label: 'Tax Code', minWidth: 110, sapField: 'TaxCode', sapColumnIds: ['160', '234000377', 'TaxCode', 'Tax Code'] },
+  { key: 'taxCode', label: 'Tax Code', minWidth: 110, sapField: 'TaxCode', alternativeFields: ['VatGroup'], sapColumnIds: ['160', '234000377', 'TaxCode', 'VatGroup', 'Tax Code'] },
   { key: 'U_PackingType', label: 'Packing-Type', minWidth: 140, sapField: 'U_PackingType', sapColumnIds: ['U_PackingType', 'U_PACKINGTYPE', 'U_PACKING_TYPE', 'Packing-Type'], isUdf: true },
   { key: 'U_GrossWt', label: 'GrossWt', minWidth: 110, numeric: true, sapField: 'U_GrossWt', sapColumnIds: ['U_GrossWt', 'U_GROSSWT', 'U_GROSS_WT', 'GrossWt'], isUdf: true },
   { key: 'U_TotalPackage', label: 'Total-Package', minWidth: 130, numeric: true, sapField: 'U_TotalPackage', sapColumnIds: ['U_TotalPackage', 'U_TOTALPACKAGE', 'U_TOTAL_PACKAGE', 'Total-Package'], isUdf: true },
@@ -545,7 +762,7 @@ const DELIVERY_MATRIX_COLUMN_DEFS = [
   { key: 'taxAmount', label: 'Tax Amount (LC)', minWidth: 125, readOnly: true, numeric: true, sapField: 'VatSum', visible: false },
   { key: 'deliveredQty', label: 'Qty to Ship', minWidth: 110, readOnly: true, sapField: 'DelivrdQty', visible: false },
   { key: 'openQty', label: 'Ordered Qty', minWidth: 95, readOnly: true, sapField: 'OpenQty', visible: false },
-  { key: 'uomCode', label: 'UoM', minWidth: 105, sapField: 'UomCode', alternativeFields: ['unitMsr', 'UomEntry'], visible: false },
+  { key: 'uomCode', label: 'UoM Code', minWidth: 105, sapField: 'UomCode', alternativeFields: ['unitMsr', 'UomEntry'], sapColumnIds: ['1470002149', 'UomCode', 'UoMCode', 'UoM Code'], visible: false },
   { key: 'distRule', label: 'Distr. Rule', minWidth: 105, sapField: 'OcrCode', visible: false },
   { key: 'countryOfOrigin', label: 'Country/Region of Origin', minWidth: 185, sapField: 'CountryOrg', visible: false },
   { key: 'loc', label: 'Loc.', minWidth: 115, readOnly: true, sapField: 'LocCode', visible: false },
@@ -568,13 +785,15 @@ const getColumnMetadata = (column, columns = {}) => {
 };
 
 const buildDeliveryLineUiMetadata = async (rowUdfDefinitions = []) => {
-  const [lineFieldMetadata] = await Promise.all([
+  const [lineFieldMetadata, preferencesResult] = await Promise.all([
     getDeliveryLineFieldMetadata(),
+    getDeliveryColumnPreferences(),
   ]);
   const lineColumns = Object.entries(lineFieldMetadata || {}).reduce((acc, [name, dataType]) => {
     acc[String(name || '').toUpperCase()] = { name, dataType };
     return acc;
   }, {});
+  const hasPreferences = preferencesResult.rows.length > 0;
   const rowUdfByKey = new Map((rowUdfDefinitions || []).map((field) => [normalizeUdfNameForMatch(field.key || field.sapField), field]));
   const findUdfFieldForColumn = (column = {}) => {
     const candidates = [
@@ -594,6 +813,18 @@ const buildDeliveryLineUiMetadata = async (rowUdfDefinitions = []) => {
     if (!exists) return null;
     const effectiveKey = column.isUdf && udfField?.key ? udfField.key : column.key;
 
+    const preference = findColumnPreference(column, preferencesResult.byKey);
+    const visible = preference
+      ? sapFlagToBoolean(preference.VisInForm, column.visible !== false)
+      : column.visible !== false;
+    const active = preference
+      ? sapFlagToBoolean(preference.EditInForm, udfField?.active !== false)
+      : udfField?.active !== false;
+    const width = Number(preference?.Width);
+    const order = Number.isFinite(Number(preference?.VisualIndx))
+      ? Number(preference.VisualIndx)
+      : index + 1;
+
     return {
       ...column,
       key: effectiveKey,
@@ -604,26 +835,33 @@ const buildDeliveryLineUiMetadata = async (rowUdfDefinitions = []) => {
       dataType: metadata?.dataType || udfField?.dataType || '',
       required: column.key === 'whse',
       readOnly: Boolean(column.readOnly || udfField?.readOnly),
-      visible: column.visible !== false,
-      active: udfField?.active !== false,
-      order: index + 1,
+      visible,
+      active,
+      minWidth: Number.isFinite(width) && width > 0
+        ? Math.max(width, column.minWidth || 125)
+        : (column.minWidth || 125),
+      order,
       type: udfField?.type || column.type,
       options: udfField?.options || undefined,
       lookupSource: udfField?.lookupSource || undefined,
       lookupTable: udfField?.lookupTable || undefined,
       isUdf: Boolean(column.isUdf),
       field: column.isUdf ? (udfField || undefined) : undefined,
-      sapControlled: true,
+      sapControlled: hasPreferences,
+      hasPreference: Boolean(preference),
+      sapColumnId: preference?.ColID || '',
     };
-  }).filter(Boolean);
+  }).filter(Boolean)
+    .sort((left, right) => (left.order || 0) - (right.order || 0));
 
   return {
     matrix_columns: matrixColumns,
     row_udfs: rowUdfDefinitions,
     sap_form: {
-      formId: '140',
-      matrixItemId: '38',
-      preferenceRows: 0,
+      formId: DELIVERY_FORM_ID,
+      matrixItemId: DELIVERY_MATRIX_ITEM_ID,
+      userSign: preferencesResult.userSign,
+      preferenceRows: preferencesResult.rows.length,
     },
   };
 };
@@ -1107,11 +1345,13 @@ const getArReserveInvoiceForCopy = async (docEntry) => {
     error.statusCode = 422;
     throw error;
   }
+  const invoiceBranchColumn = resolveColumnName(invoiceMetadata, 'BPLId')
+    || resolveColumnName(invoiceMetadata, 'BPL_IDAssignedToInvoice');
   const headers = await safe(db.query(`
     SELECT
       T0.DocEntry, T0.DocNum, T0.CardCode, T0.CardName,
       T0.DocDate, T0.DocDueDate, T0.TaxDate, T0.CntctCode,
-      T0.NumAtCard, T0.Comments, T0.BPLId, T0.GroupNum,
+      T0.NumAtCard, T0.Comments, ${invoiceBranchColumn ? `T0.${quoteSqlIdentifier(invoiceBranchColumn)}` : 'NULL'} AS BPLId, T0.GroupNum,
       T0.SlpCode, T0.DiscPrcnt, T0.DocCur, T0.DocRate,
       T0.ShipToCode, T0.PayToCode, T0.Address, T0.Address2
     FROM OINV T0
@@ -1153,14 +1393,19 @@ const getArReserveInvoiceForCopy = async (docEntry) => {
 
 const getDeliveryForCopy = async (docEntry) => {
   const headerFieldMetadata = await getTableFieldMetadata('ODLN');
+  const branchColumn = resolveColumnName(headerFieldMetadata, 'BPLId')
+    || resolveColumnName(headerFieldMetadata, 'BPL_IDAssignedToInvoice');
   const branchAssignedExpression = hasTableField(headerFieldMetadata, 'BPL_IDAssignedToInvoice')
-    ? 'T0.BPL_IDAssignedToInvoice'
-    : 'T0.BPLId';
+    ? `T0.${quoteSqlIdentifier(resolveColumnName(headerFieldMetadata, 'BPL_IDAssignedToInvoice'))}`
+    : branchColumn
+      ? `T0.${quoteSqlIdentifier(branchColumn)}`
+      : 'NULL';
+  const branchExpression = branchColumn ? `T0.${quoteSqlIdentifier(branchColumn)}` : 'NULL';
 
   const h = await db.query(`
     SELECT T0.DocEntry, T0.DocNum, T0.DocDate, T0.DocDueDate, T0.TaxDate,
       T0.CardCode, T0.CardName, T0.CntctCode, T0.NumAtCard, T0.Comments,
-      T0.BPLId, ${branchAssignedExpression} AS BPL_IDAssignedToInvoice, T0.GroupNum, T0.SlpCode,
+      ${branchExpression} AS BPLId, ${branchAssignedExpression} AS BPL_IDAssignedToInvoice, T0.GroupNum, T0.SlpCode,
       T0.DiscPrcnt, T0.TotalExpns AS Freight
     FROM ODLN T0 WHERE T0.DocEntry = @DocEntry
   `, { DocEntry: docEntry });
@@ -1200,6 +1445,9 @@ const getDeliveryForCopy = async (docEntry) => {
 // ── GET DELIVERY FOR COPY TO CREDIT MEMO ──────────────────────────────────────
 
 const getDeliveryForCopyToCreditMemo = async (docEntry) => {
+  const headerFieldMetadata = await getTableFieldMetadata('ODLN');
+  const branchColumn = resolveColumnName(headerFieldMetadata, 'BPLId')
+    || resolveColumnName(headerFieldMetadata, 'BPL_IDAssignedToInvoice');
   // Get delivery header
   const headerRows = await safe(db.query(`
     SELECT 
@@ -1213,7 +1461,7 @@ const getDeliveryForCopyToCreditMemo = async (docEntry) => {
       T0.DocDate AS PostingDate,
       T0.DocDueDate AS DeliveryDate,
       T0.TaxDate AS DocumentDate,
-      T0.BPLId AS Branch,
+      ${branchColumn ? `T0.${quoteSqlIdentifier(branchColumn)}` : 'NULL'} AS Branch,
       T0.DocCur AS Currency,
       T0.DocRate AS ExchangeRate,
       T0.GroupNum AS PaymentTerms,
@@ -1524,6 +1772,7 @@ const getDelivery = async (docEntry) => {
   const resolvedDocEntry = resolvedDocument.DocEntry;
   const odlnFieldMetadata = await getTableFieldMetadata('ODLN');
   const addressExtensionFieldMetadata = await getTableFieldMetadata('DLN12');
+  const eDocFormatFieldMetadata = await getTableFieldMetadata('OLLF');
   const addressExtensionSelectFields = buildAddressExtensionSelectFields({
     fieldMetadata: addressExtensionFieldMetadata,
     tableAlias: 'T12',
@@ -1536,6 +1785,14 @@ const getDelivery = async (docEntry) => {
       ? `T0.${quoteSqlIdentifier(columnName)} AS ${quoteSqlIdentifier(alias)}`
       : `${fallback} AS ${quoteSqlIdentifier(alias)}`;
   };
+  const eDocExportFormatColumn = resolveColumnName(odlnFieldMetadata, 'EDocExpFrm');
+  const eDocFormatAbsEntryColumn = resolveColumnName(eDocFormatFieldMetadata, 'AbsEntry');
+  const eDocFormatTypeColumn = resolveColumnName(eDocFormatFieldMetadata, 'Type');
+  const eDocFormatNameColumn = resolveColumnName(eDocFormatFieldMetadata, 'Name');
+  const canJoinEDocFormat = Boolean(eDocExportFormatColumn && eDocFormatAbsEntryColumn);
+  const eDocFormatJoinSql = canJoinEDocFormat
+    ? `LEFT JOIN OLLF EDF ON EDF.${quoteSqlIdentifier(eDocFormatAbsEntryColumn)} = T0.${quoteSqlIdentifier(eDocExportFormatColumn)}`
+    : '';
   const headerRows = await safe(db.query(`
     SELECT 
       T0.DocEntry,
@@ -1551,7 +1808,7 @@ const getDelivery = async (docEntry) => {
       T0.DocDate AS PostingDate,
       T0.DocDueDate AS DeliveryDate,
       T0.TaxDate AS DocumentDate,
-      T0.BPLId AS Branch,
+      ${optionalHeaderColumn(['BPLId', 'BPL_IDAssignedToInvoice'], 'Branch', 'NULL')},
       T0.DocCur AS Currency,
       T0.DocRate AS ExchangeRate,
       T0.GroupNum AS PaymentTerms,
@@ -1569,11 +1826,11 @@ const getDelivery = async (docEntry) => {
       T0.Address,
       T0.Address2,
       ${addressExtensionSelectFields.join(',\n      ')},
-      T0.EDocGenTyp AS EDocGenerationType,
-      T0.EDocExpFrm AS EDocExportFormat,
-      T0.EDocStatus,
-      EDF.Type AS EDocExportFormatType,
-      EDF.Name AS EDocExportFormatName,
+      ${optionalHeaderColumn(['EDocGenTyp'], 'EDocGenerationType')},
+      ${optionalHeaderColumn(['EDocExpFrm'], 'EDocExportFormat', 'NULL')},
+      ${optionalHeaderColumn(['EDocStatus'], 'EDocStatus')},
+      ${canJoinEDocFormat && eDocFormatTypeColumn ? `EDF.${quoteSqlIdentifier(eDocFormatTypeColumn)}` : "''"} AS EDocExportFormatType,
+      ${canJoinEDocFormat && eDocFormatNameColumn ? `EDF.${quoteSqlIdentifier(eDocFormatNameColumn)}` : "''"} AS EDocExportFormatName,
       ${optionalHeaderColumn(['TrnspCode'], 'ShippingType', 'NULL')},
       ${optionalHeaderColumn(['Confirmed'], 'Confirmed')},
       ${optionalHeaderColumn(['LangCode'], 'LanguageCode', 'NULL')},
@@ -1612,7 +1869,7 @@ const getDelivery = async (docEntry) => {
     LEFT JOIN DLN12 T12 ON T12.DocEntry = T0.DocEntry
     LEFT JOIN OSLP SLP ON SLP.SlpCode = T0.SlpCode
     LEFT JOIN NNM1 NNM ON NNM.ObjectCode = '15' AND NNM.Series = T0.Series
-    LEFT JOIN OLLF EDF ON EDF.AbsEntry = T0.EDocExpFrm
+    ${eDocFormatJoinSql}
     LEFT JOIN OHEM EMP ON EMP.empID = ${hasTableField(odlnFieldMetadata, 'OwnerCode') ? 'T0.OwnerCode' : 'NULL'}
     WHERE T0.DocEntry = @docEntry
   `, { docEntry: resolvedDocEntry }));
@@ -1636,18 +1893,64 @@ const getDelivery = async (docEntry) => {
 
   const dln1FieldMetadata = await getDeliveryLineFieldMetadata();
   const hasDln1Column = (columnName) => hasTableField(dln1FieldMetadata, columnName);
+  const taxCodeColumn = resolveColumnName(dln1FieldMetadata, 'TaxCode')
+    || resolveColumnName(dln1FieldMetadata, 'VatGroup');
+  const commissionColumn = resolveColumnName(dln1FieldMetadata, 'CommPercent')
+    || resolveColumnName(dln1FieldMetadata, 'Commission');
+  const uomEntryColumn = resolveColumnName(dln1FieldMetadata, 'UomEntry');
+  const unitMeasureColumn = resolveColumnName(dln1FieldMetadata, 'unitMsr');
+  const unitMeasureExpression = unitMeasureColumn
+    ? `NULLIF(LTRIM(RTRIM(T0.${quoteSqlIdentifier(unitMeasureColumn)})), '')`
+    : 'NULL';
+  const uomCodeExpression = uomEntryColumn
+    ? `COALESCE(UOM.UomCode, ${unitMeasureExpression}, '')`
+    : `COALESCE(${unitMeasureExpression}, '')`;
+  const uomNameExpression = `COALESCE(${unitMeasureExpression}${uomEntryColumn ? ', UOM.UomCode' : ''}, '')`;
+  const uomJoinSql = uomEntryColumn
+    ? `LEFT JOIN OUOM UOM ON UOM.UomEntry = T0.${quoteSqlIdentifier(uomEntryColumn)}`
+    : '';
+  const sacFieldMetadata = await getTableFieldMetadata('OSAC');
+  const sacSql = getDeliverySacLookupSqlParts('T0', 'SAC', sacFieldMetadata, dln1FieldMetadata);
 
   const optionalLineSelects = [
     hasDln1Column('OpenQty') ? 'T0.OpenQty AS OpenQuantity' : 'CAST(NULL AS DECIMAL(19, 6)) AS OpenQuantity',
-    hasDln1Column('TaxCode') ? 'T0.TaxCode' : "'' AS TaxCode",
+    taxCodeColumn ? `T0.${quoteSqlIdentifier(taxCodeColumn)} AS TaxCode` : "'' AS TaxCode",
     hasDln1Column('VatSum') ? 'ISNULL(T0.VatSum, 0) AS LineTaxAmount' : 'CAST(0 AS DECIMAL(19, 6)) AS LineTaxAmount',
     hasDln1Column('NumPerMsr') ? 'T0.NumPerMsr AS UomFactor' : 'CAST(1 AS DECIMAL(19, 6)) AS UomFactor',
-    hasDln1Column('UomEntry') ? 'T0.UomEntry AS UoMEntry' : 'NULL AS UoMEntry',
-    hasDln1Column('unitMsr') ? "COALESCE(UOM.UomCode, NULLIF(LTRIM(RTRIM(T0.unitMsr)), ''), '') AS UoMCode" : "COALESCE(UOM.UomCode, '') AS UoMCode",
-    hasDln1Column('unitMsr') ? "COALESCE(NULLIF(LTRIM(RTRIM(T0.unitMsr)), ''), UOM.UomCode, '') AS UoMName" : "COALESCE(UOM.UomCode, '') AS UoMName",
+    uomEntryColumn ? `T0.${quoteSqlIdentifier(uomEntryColumn)} AS UoMEntry` : 'NULL AS UoMEntry',
+    `${uomCodeExpression} AS UoMCode`,
+    `${uomNameExpression} AS UoMName`,
     hasDln1Column('OcrCode') ? 'T0.OcrCode AS DistributionRule' : "'' AS DistributionRule",
+    hasDln1Column('OcrCode2') ? 'T0.OcrCode2 AS DistributionRule2' : "'' AS DistributionRule2",
+    hasDln1Column('OcrCode3') ? 'T0.OcrCode3 AS DistributionRule3' : "'' AS DistributionRule3",
+    hasDln1Column('OcrCode4') ? 'T0.OcrCode4 AS DistributionRule4' : "'' AS DistributionRule4",
+    hasDln1Column('OcrCode5') ? 'T0.OcrCode5 AS DistributionRule5' : "'' AS DistributionRule5",
+    hasDln1Column('CogsOcrCod') ? 'T0.CogsOcrCod AS COGSDistributionRule' : "'' AS COGSDistributionRule",
+    hasDln1Column('CogsOcrCo2') ? 'T0.CogsOcrCo2 AS COGSDistributionRule2' : "'' AS COGSDistributionRule2",
+    hasDln1Column('CogsOcrCo3') ? 'T0.CogsOcrCo3 AS COGSDistributionRule3' : "'' AS COGSDistributionRule3",
+    hasDln1Column('CogsOcrCo4') ? 'T0.CogsOcrCo4 AS COGSDistributionRule4' : "'' AS COGSDistributionRule4",
+    hasDln1Column('CogsOcrCo5') ? 'T0.CogsOcrCo5 AS COGSDistributionRule5' : "'' AS COGSDistributionRule5",
+    hasDln1Column('AcctCode') ? 'T0.AcctCode AS GLAccount' : "'' AS GLAccount",
     hasDln1Column('FreeTxt') ? 'T0.FreeTxt AS [FreeText]' : "'' AS [FreeText]",
     hasDln1Column('CountryOrg') ? 'T0.CountryOrg AS CountryOfOrigin' : "'' AS CountryOfOrigin",
+    hasDln1Column('HsnEntry') ? 'T0.HsnEntry AS HSNEntry' : 'NULL AS HSNEntry',
+    hasDln1Column('SACEntry') ? 'T0.SACEntry AS SACEntry' : 'NULL AS SACEntry',
+    `${sacSql.displayExpression} AS SACCode`,
+    `${sacSql.serviceNameExpression} AS SACServiceName`,
+    `${sacSql.serviceCodeExpression} AS SACServiceCode`,
+    hasDln1Column('LocCode') ? 'T0.LocCode AS Loc' : "'' AS Loc",
+    hasDln1Column('ShipDate') ? 'T0.ShipDate AS LineDeliveryDate' : 'NULL AS LineDeliveryDate',
+    hasDln1Column('TrnsCode') ? 'T0.TrnsCode AS LineShippingType' : 'NULL AS LineShippingType',
+    hasDln1Column('WtLiable') ? 'T0.WtLiable AS WTaxLiable' : "'' AS WTaxLiable",
+    hasDln1Column('TaxOnly') ? 'T0.TaxOnly AS TaxLiable' : "'' AS TaxLiable",
+    hasDln1Column('AgrNo') ? 'T0.AgrNo AS BlanketAgreementNo' : 'NULL AS BlanketAgreementNo',
+    hasDln1Column('AgrLnNum') ? 'T0.AgrLnNum AS BlanketAgreementLine' : 'NULL AS BlanketAgreementLine',
+    hasDln1Column('GTotal') ? 'T0.GTotal AS GrossTotal' : 'NULL AS GrossTotal',
+    commissionColumn ? `T0.${quoteSqlIdentifier(commissionColumn)} AS CommissionPercent` : 'NULL AS CommissionPercent',
+    hasDln1Column('NoInvtryMv') ? 'T0.NoInvtryMv AS WithoutQtyPosting' : "'' AS WithoutQtyPosting",
+    hasDln1Column('EnSetCost') ? 'T0.EnSetCost AS EnableSettingCost' : "'' AS EnableSettingCost",
+    hasDln1Column('RetCost') ? 'T0.RetCost AS ReturnCost' : 'NULL AS ReturnCost',
+    'COALESCE(ITW.OnHand, 0) AS QuantityInWarehouse',
     hasDln1Column('BaseEntry') ? 'T0.BaseEntry' : 'NULL AS BaseEntry',
     hasDln1Column('BaseType') ? 'T0.BaseType' : 'NULL AS BaseType',
     hasDln1Column('BaseLine') ? 'T0.BaseLine' : 'NULL AS BaseLine',
@@ -1667,15 +1970,17 @@ const getDelivery = async (docEntry) => {
         T0.DiscPrcnt AS DiscountPercent,
         T0.LineTotal,
         T0.WhsCode AS Warehouse,
+        COALESCE(ITM.OnHand, 0) AS InStock,
         ${optionalLineSelects.join(',\n        ')},
         CHP.ChapterID AS HSNCode,
         ITM.ManBtchNum AS BatchManaged,
-        '' AS Branch,
-        '' AS Loc
+        '' AS Branch
       FROM DLN1 T0
       LEFT JOIN OITM ITM ON ITM.ItemCode = T0.ItemCode
-      LEFT JOIN OCHP CHP ON CHP.AbsEntry = ITM.ChapterID
-      LEFT JOIN OUOM UOM ON UOM.UomEntry = T0.UomEntry
+      LEFT JOIN OITW ITW ON ITW.ItemCode = T0.ItemCode AND ITW.WhsCode = T0.WhsCode
+      LEFT JOIN OCHP CHP ON CHP.AbsEntry = ${hasDln1Column('HsnEntry') ? 'COALESCE(T0.HsnEntry, ITM.ChapterID)' : 'ITM.ChapterID'}
+      ${uomJoinSql}
+      ${sacSql.joinSql}
       WHERE T0.DocEntry = @docEntry
       ORDER BY T0.LineNum
     `;
@@ -1691,21 +1996,28 @@ const getDelivery = async (docEntry) => {
         T0.ItemCode,
         COALESCE(NULLIF(LTRIM(RTRIM(T0.Dscription)), ''), ITM.ItemName, '') AS ItemDescription,
         T0.Quantity,
-        T0.OpenQty AS OpenQuantity,
+        ${hasDln1Column('OpenQty') ? 'T0.OpenQty' : 'CAST(NULL AS DECIMAL(19, 6))'} AS OpenQuantity,
         COALESCE(T0.PriceBefDi, T0.Price) AS UnitPrice,
         T0.DiscPrcnt AS DiscountPercent,
         T0.LineTotal,
         T0.WhsCode AS Warehouse,
-        T0.NumPerMsr AS UomFactor,
-        T0.UomEntry AS UoMEntry,
-        COALESCE(UOM.UomCode, NULLIF(LTRIM(RTRIM(T0.unitMsr)), ''), '') AS UoMCode,
+        COALESCE(ITM.OnHand, 0) AS InStock,
+        COALESCE(ITW.OnHand, 0) AS QuantityInWarehouse,
+        ${hasDln1Column('NumPerMsr') ? 'T0.NumPerMsr' : 'CAST(1 AS DECIMAL(19, 6))'} AS UomFactor,
+        ${uomEntryColumn ? `T0.${quoteSqlIdentifier(uomEntryColumn)}` : 'NULL'} AS UoMEntry,
+        ${uomCodeExpression} AS UoMCode,
+        ${uomNameExpression} AS UoMName,
         CAST(NULL AS DECIMAL(19, 6)) AS DiscountAmount,
-        '' AS TaxCode,
+        ${taxCodeColumn ? `T0.${quoteSqlIdentifier(taxCodeColumn)}` : "''"} AS TaxCode,
         CAST(0 AS DECIMAL(19, 6)) AS LineTaxAmount,
         '' AS DistributionRule,
         '' AS [FreeText],
         '' AS CountryOfOrigin,
         CHP.ChapterID AS HSNCode,
+        ${hasDln1Column('SACEntry') ? 'T0.SACEntry' : 'NULL'} AS SACEntry,
+        ${sacSql.displayExpression} AS SACCode,
+        ${sacSql.serviceNameExpression} AS SACServiceName,
+        ${sacSql.serviceCodeExpression} AS SACServiceCode,
         ITM.ManBtchNum AS BatchManaged,
         ITM.AvgPrice AS ItemCost,
         NULL AS BaseEntry,
@@ -1715,8 +2027,10 @@ const getDelivery = async (docEntry) => {
         '' AS Loc
       FROM DLN1 T0
       LEFT JOIN OITM ITM ON ITM.ItemCode = T0.ItemCode
+      LEFT JOIN OITW ITW ON ITW.ItemCode = T0.ItemCode AND ITW.WhsCode = T0.WhsCode
       LEFT JOIN OCHP CHP ON CHP.AbsEntry = ITM.ChapterID
-      LEFT JOIN OUOM UOM ON UOM.UomEntry = T0.UomEntry
+      ${uomJoinSql}
+      ${sacSql.joinSql}
       WHERE T0.DocEntry = @docEntry
       ORDER BY T0.LineNum
     `, { docEntry: resolvedDocEntry }));
@@ -2019,11 +2333,13 @@ const getDelivery = async (docEntry) => {
           baseLine: l.BaseLine || null,
           itemNo: l.ItemCode || '',
           itemDescription: l.ItemDescription || '',
-          hsnCode: l.HSNCode || itemInfo.hsnCode || '',
+          hsnCode: l.HSNCode || (l.HSNEntry != null ? String(l.HSNEntry) : '') || itemInfo.hsnCode || '',
           quantity: l.Quantity != null ? String(l.Quantity) : '',
           openQty: l.OpenQuantity != null ? String(l.OpenQuantity) : '',
           unitPrice: l.UnitPrice != null ? String(l.UnitPrice) : '',
           uomName: l.UoMName || l.UoMCode || '',
+          inStock: l.InStock != null ? String(l.InStock) : '',
+          qtyInWhse: l.QuantityInWarehouse != null ? String(l.QuantityInWarehouse) : '',
           price: l.UnitPrice != null ? String(l.UnitPrice) : '',
           priceAfterDiscount: discountPercent != null && l.UnitPrice != null
             ? String(Number(l.UnitPrice || 0) * (1 - (Number(discountPercent || 0) / 100)))
@@ -2074,12 +2390,39 @@ const getDelivery = async (docEntry) => {
           uomEntry: l.UoMEntry != null ? Number(l.UoMEntry) : null,
           uomFactor: l.UomFactor != null && l.UomFactor !== '' ? Number(l.UomFactor) : 1,
           distRule: l.DistributionRule || '',
+          distRule2: l.DistributionRule2 || '',
+          distRule3: l.DistributionRule3 || '',
+          distRule4: l.DistributionRule4 || '',
+          distRule5: l.DistributionRule5 || '',
+          cogsDistRule: l.COGSDistributionRule || '',
+          cogsDistRule2: l.COGSDistributionRule2 || '',
+          cogsDistRule3: l.COGSDistributionRule3 || '',
+          cogsDistRule4: l.COGSDistributionRule4 || '',
+          cogsDistRule5: l.COGSDistributionRule5 || '',
+          glAccount: l.GLAccount || '',
           freeText: l.FreeText || '',
           countryOfOrigin: l.CountryOfOrigin || '',
+          sacCode: l.SACCode || l.SACServiceName || l.SACServiceCode || (l.SACEntry != null ? String(l.SACEntry) : ''),
+          sacEntry: l.SACEntry != null ? String(l.SACEntry) : '',
+          sacServiceName: l.SACServiceName || '',
+          sacServiceCode: l.SACServiceCode || '',
+          blanketAgreementNo: l.BlanketAgreementNo != null ? String(l.BlanketAgreementNo) : '',
+          blanketAgreementLine: l.BlanketAgreementLine != null ? String(l.BlanketAgreementLine) : '',
+          commPercent: l.CommissionPercent != null ? String(l.CommissionPercent) : '',
+          grossTotal: l.GrossTotal != null ? String(l.GrossTotal) : '',
+          lineShippingType: l.LineShippingType != null ? String(l.LineShippingType) : '',
+          lineDeliveryDate: l.LineDeliveryDate instanceof Date
+            ? l.LineDeliveryDate.toISOString().split('T')[0]
+            : (l.LineDeliveryDate || ''),
+          wTaxLiable: l.WTaxLiable || '',
+          taxLiable: l.TaxLiable || '',
+          withoutQtyPosting: l.WithoutQtyPosting || '',
+          enableSettingCost: l.EnableSettingCost || '',
+          returnCost: l.ReturnCost != null ? String(l.ReturnCost) : '',
           deliveredQty: l.Quantity != null && l.OpenQuantity != null ? String(Number(l.Quantity || 0) - Number(l.OpenQuantity || 0)) : '',
           documentCreated: header.DocumentCreated ? header.DocumentCreated.toISOString().split('T')[0] : '',
           branch: l.Branch ? String(l.Branch) : '',
-          loc: l.Loc ? String(l.Loc) : '',
+          loc: l.Loc != null && l.Loc !== '' ? String(l.Loc) : '',
           batchManaged: String(l.BatchManaged || '').toUpperCase() === 'Y' || itemInfo.batchManaged,
           batches: batchesByLine[l.LineNum] || [],
           udf: {

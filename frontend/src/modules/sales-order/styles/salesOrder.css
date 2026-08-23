@@ -1467,6 +1467,7 @@
 
 .so-grid__input {
   width: 100%;
+  min-width: 0;
   height: 20px;
   padding: 0 3px;
   font-size: 11px;
@@ -1476,6 +1477,7 @@
   text-align: right;
   position: relative;
   z-index: 1;
+  box-sizing: border-box;
 }
 .so-grid__input:focus {
   outline: none;
@@ -1485,7 +1487,7 @@
 }
 
 select.so-grid__input {
-  min-width: 120px;
+  min-width: 0;
   text-align: left;
 }
 .so-grid__input--sm { width: 60px; }

@@ -15,6 +15,7 @@ function ExchangeRatesIndexesModal({
   loading = false,
   error = '',
   data = null,
+  documentLabel = 'sales order',
   onLoad,
   onSave,
   onClose,
@@ -163,7 +164,7 @@ function ExchangeRatesIndexesModal({
 
             {activeTab === 'indexes' ? (
               <div className="so-exchange-rates-modal__empty">
-                Indexes use the same SAP window. Exchange-rate entry is active for this sales order.
+                Indexes use the same SAP window. Exchange-rate entry is active for this {documentLabel}.
               </div>
             ) : (
               <div className="so-exchange-rates-modal__grid-wrap">

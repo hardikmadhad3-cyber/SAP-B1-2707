@@ -1,4 +1,6 @@
-const escapeLike = (value) => String(value || '').replace(/[%_[\]]/g, (match) => `[${match}]`);
+const { escapeLikeValue, LIKE_ESCAPE_SQL } = require('./salesDocumentDbCompatibility');
+
+const escapeLike = escapeLikeValue;
 
 const normalizeSearchValue = (value) =>
   String(value ?? '')
@@ -44,12 +46,12 @@ const appendSapSearchCondition = (whereClauses, params, expressions, rawValue, p
   const searchableSql = buildConcatExpression(expressions);
   const compactSearchableSql = compactSqlExpression(searchableSql);
   const tokenConditions = tokens
-    .map((_, index) => `${compactSearchableSql} LIKE @${paramPrefix}Token${index}`)
+    .map((_, index) => `${compactSearchableSql} LIKE @${paramPrefix}Token${index} ${LIKE_ESCAPE_SQL}`)
     .join(' AND ');
 
   whereClauses.push(`(
-    UPPER(${searchableSql}) LIKE @${paramPrefix}Like
-    OR ${compactSearchableSql} LIKE @${paramPrefix}CompactLike
+    UPPER(${searchableSql}) LIKE @${paramPrefix}Like ${LIKE_ESCAPE_SQL}
+    OR ${compactSearchableSql} LIKE @${paramPrefix}CompactLike ${LIKE_ESCAPE_SQL}
     ${tokenConditions ? `OR (${tokenConditions})` : ''}
     ${additionalClauses.length ? `OR ${additionalClauses.join('\n    OR ')}` : ''}
   )`);

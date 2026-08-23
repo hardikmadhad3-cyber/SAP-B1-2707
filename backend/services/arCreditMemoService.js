@@ -5,6 +5,14 @@ const { buildDocumentAdditionalExpenses } = require('./freightPayloadUtils');
 const { buildMarketingDocumentAddressPayload } = require('./documentAddressPayloadUtils');
 const { getUdfDefinitions } = require('./udfMetadataService');
 const { applyUdfValues } = require('./udfPayloadUtils');
+const hsnCodeDbService = require('./hsnCodeDbService');
+const {
+  buildMetadataValidatedStandardLine,
+  filterMetadataValidatedUdfDefinitions,
+  filterMetadataValidatedUdfs,
+  intersectPhysicalUdfKeys,
+  resolveMetadataUdfKey,
+} = require('./salesDocumentLinePayloadUtils');
 
 const normalizeBranchId = (branch) => {
   const normalized = String(branch || '').trim();
@@ -87,12 +95,18 @@ const resolveARCreditMemoSeries = async (header = {}, lines = [], options = {}) 
 };
 
 const getAllowedUdfKeys = async (tableId) => {
-  const definitions = await getUdfDefinitions(tableId);
+  const definitions = await getUdfDefinitions(tableId).catch((error) => {
+    console.warn(`[ARCreditMemoService] Live ${tableId} UDF metadata is unavailable; UDFs will be omitted.`, error.message);
+    return [];
+  });
   return new Set(definitions.map((field) => field.key));
 };
 
 const getUdfDefinitionsByKey = async (tableId) => {
-  const definitions = await getUdfDefinitions(tableId);
+  const definitions = await getUdfDefinitions(tableId).catch((error) => {
+    console.warn(`[ARCreditMemoService] Live ${tableId} UDF metadata is unavailable; UDFs will be omitted.`, error.message);
+    return [];
+  });
   return new Map(definitions.map((field) => [field.key, field]));
 };
 
@@ -208,7 +222,7 @@ const AR_CREDIT_MEMO_LINE_UDF_MAPPINGS = [
 
 const setAllowedLineUdf = (target, allowedLineUdfs, aliases, value) => {
   if (!hasValue(value)) return;
-  const key = aliases.find((alias) => allowedLineUdfs.has(alias));
+  const key = resolveMetadataUdfKey(allowedLineUdfs, aliases);
   if (key) target[key] = value;
 };
 
@@ -218,6 +232,40 @@ const buildLineUdfPayload = (line = {}, allowedLineUdfs = new Set()) => {
     setAllowedLineUdf(udfs, allowedLineUdfs, mapping.aliases, mapping.getValue(line));
   });
   return udfs;
+};
+
+const buildARCreditMemoStandardLine = async ({
+  line: sourceLine = {},
+  fieldMetadata = {},
+  allowedLineUdfs = new Set(),
+  includeLineNum = false,
+  documentLineIndex = 0,
+  defaultDiscountPercent,
+} = {}) => {
+  const line = await buildMetadataValidatedStandardLine({
+    line: {
+      ...sourceLine,
+      cogsDistRule: sourceLine.cogsDistRule || sourceLine.distRule,
+    },
+    fieldMetadata,
+    includeLineNum,
+    defaultDiscountPercent,
+    resolveUomEntry: salesOrderDb.resolveSalesOrderLineUomEntry,
+    resolveHsnEntry: hsnCodeDbService.resolveHSNCodeToAbsEntry,
+    resolveSacEntry: hsnCodeDbService.resolveSACCodeToAbsEntry,
+  });
+
+  const batchNumbers = buildBatchNumbersForCreditQuantity(sourceLine, documentLineIndex);
+  if (batchNumbers.length > 0) line.BatchNumbers = batchNumbers;
+
+  const physicalUdfKeys = intersectPhysicalUdfKeys(allowedLineUdfs, fieldMetadata);
+  const udfValues = filterMetadataValidatedUdfs(
+    buildLineUdfPayload(sourceLine, physicalUdfKeys),
+    physicalUdfKeys,
+    fieldMetadata,
+  );
+  applyUdfValues(line, udfValues, physicalUdfKeys);
+  return line;
 };
 
 // ───────── REFERENCE DATA (USING ODBC) ─────────
@@ -416,11 +464,31 @@ const submitARCreditMemo = async (payload) => {
     const documentAdditionalExpenses = buildDocumentAdditionalExpenses(payload.freightCharges);
     const submittedLines = await hydrateMissingCreditMemoBatches(payload.lines || []);
     const resolvedSeries = await resolveARCreditMemoSeries(payload.header, submittedLines);
-    const [allowedHeaderUdfs, allowedLineUdfs, headerUdfDefinitionsByKey] = await Promise.all([
-      getAllowedUdfKeys('ORIN'),
+    const [allowedLineUdfs, headerUdfDefinitionsByKey, headerFieldMetadata, lineFieldMetadata] = await Promise.all([
       getAllowedUdfKeys('RIN1'),
       getUdfDefinitionsByKey('ORIN'),
+      arCreditMemoDb.getARCreditMemoHeaderTableFieldMetadata().catch((error) => {
+        console.warn('[ARCreditMemoService] Live ORIN field metadata is unavailable; header UDFs will be omitted.', error.message);
+        return {};
+      }),
+      arCreditMemoDb.getARCreditMemoLineTableFieldMetadata().catch((error) => {
+        console.warn('[ARCreditMemoService] Live RIN1 field metadata is unavailable; using SAP-standard line fields only.', error.message);
+        return {};
+      }),
     ]);
+    const documentLines = await Promise.all(submittedLines.map((line, index) => (
+      buildARCreditMemoStandardLine({
+        line,
+        fieldMetadata: lineFieldMetadata,
+        allowedLineUdfs,
+        documentLineIndex: index,
+      })
+    )));
+    const physicalHeaderUdfDefinitions = filterMetadataValidatedUdfDefinitions(
+      headerUdfDefinitionsByKey,
+      headerFieldMetadata,
+    );
+    const physicalHeaderUdfs = new Set(physicalHeaderUdfDefinitions.keys());
 
     // Transform payload to SAP format
     const sapPayload = {
@@ -458,59 +526,20 @@ const submitARCreditMemo = async (payload) => {
       Rounding: yesNo(payload.header.rounding),
       ...buildMarketingDocumentAddressPayload(payload.header),
 
-      DocumentLines: submittedLines.map((l, index) => {
-        console.log(`🔍 [ARCreditMemoService] Processing line ${index}:`, l);
-        
-        const rawBaseType = l.baseType ?? l.BaseType;
-        const rawBaseEntry = l.baseEntry ?? l.BaseEntry;
-        const rawBaseLine = l.baseLine ?? l.BaseLine;
-        const hasBaseDocument =
-          rawBaseType !== undefined && rawBaseType !== null && String(rawBaseType).trim() !== '' &&
-          rawBaseEntry !== undefined && rawBaseEntry !== null && String(rawBaseEntry).trim() !== '' &&
-          rawBaseLine !== undefined && rawBaseLine !== null && String(rawBaseLine).trim() !== '';
-
-        const line = {
-          ...(l.itemNo ? { ItemCode: l.itemNo } : {}),
-          Quantity: Number(l.quantity),
-          UnitPrice: Number(l.unitPrice),
-          TaxCode: l.taxCode || undefined,
-          MeasureUnit: l.uomCode || undefined,
-          WTLiable: yesNo(l.wTaxLiable ?? l.wtaxLiable),
-          AccountCode: l.glAccount || undefined,
-          CostingCode: l.distRule || undefined,
-          COGSCostingCode: l.cogsDistRule || l.distRule || undefined,
-          CountryOrg: l.countryOfOrigin || undefined,
-        };
-
-        const warehouseCode = String(l.whse || l.warehouse || '').trim();
-        if (warehouseCode) {
-          line.WarehouseCode = warehouseCode;
-        }
-
-        const lineDiscountPercent = getLineDiscountPercent(l);
-        if (lineDiscountPercent !== undefined) line.DiscountPercent = lineDiscountPercent;
-
-        // Base document integration
-        if (hasBaseDocument) {
-          line.BaseType = Number(rawBaseType);
-          line.BaseEntry = Number(rawBaseEntry);
-          line.BaseLine = Number(rawBaseLine);
-        }
-        const batchNumbers = buildBatchNumbersForCreditQuantity(l, index);
-        if (batchNumbers.length > 0) {
-          line.BatchNumbers = batchNumbers;
-        }
-
-        console.log(`🔍 [ARCreditMemoService] Transformed line ${index}:`, line);
-        applyUdfValues(line, buildLineUdfPayload(l, allowedLineUdfs), allowedLineUdfs);
-        return line;
-      })
+      DocumentLines: documentLines,
     };
     lastSapPayload = sapPayload;
 
     console.log("🔥 [ARCreditMemoService] SAP AR CREDIT MEMO PAYLOAD:", JSON.stringify(sapPayload, null, 2));
 
-    applyUdfValues(sapPayload, payload.header_udfs, allowedHeaderUdfs, headerUdfDefinitionsByKey);
+    const placeOfSupplyKey = resolveMetadataUdfKey(
+      physicalHeaderUdfDefinitions,
+      ['U_PlaceOfSupply', 'U_PLACE_OF_SUPPLY'],
+    );
+    if (placeOfSupplyKey && hasValue(payload.header.placeOfSupply)) {
+      sapPayload[placeOfSupplyKey] = payload.header.placeOfSupply;
+    }
+    applyUdfValues(sapPayload, payload.header_udfs, physicalHeaderUdfs, physicalHeaderUdfDefinitions);
 
     let response;
     try {
@@ -610,11 +639,33 @@ const updateARCreditMemo = async (docEntry, payload) => {
     const customerCode = payload.header.vendor || payload.header.customerCode || payload.header.customer;
     const documentAdditionalExpenses = buildDocumentAdditionalExpenses(payload.freightCharges);
     const submittedLines = await hydrateMissingCreditMemoBatches(payload.lines || []);
-    const [allowedHeaderUdfs, allowedLineUdfs, headerUdfDefinitionsByKey] = await Promise.all([
-      getAllowedUdfKeys('ORIN'),
+    const [allowedLineUdfs, headerUdfDefinitionsByKey, headerFieldMetadata, lineFieldMetadata] = await Promise.all([
       getAllowedUdfKeys('RIN1'),
       getUdfDefinitionsByKey('ORIN'),
+      arCreditMemoDb.getARCreditMemoHeaderTableFieldMetadata().catch((error) => {
+        console.warn('[ARCreditMemoService] Live ORIN field metadata is unavailable; header UDFs will be omitted.', error.message);
+        return {};
+      }),
+      arCreditMemoDb.getARCreditMemoLineTableFieldMetadata().catch((error) => {
+        console.warn('[ARCreditMemoService] Live RIN1 field metadata is unavailable; using SAP-standard line fields only.', error.message);
+        return {};
+      }),
     ]);
+    const documentLines = await Promise.all(submittedLines.map((line, index) => (
+      buildARCreditMemoStandardLine({
+        line,
+        fieldMetadata: lineFieldMetadata,
+        allowedLineUdfs,
+        includeLineNum: true,
+        documentLineIndex: index,
+        defaultDiscountPercent: 0,
+      })
+    )));
+    const physicalHeaderUdfDefinitions = filterMetadataValidatedUdfDefinitions(
+      headerUdfDefinitionsByKey,
+      headerFieldMetadata,
+    );
+    const physicalHeaderUdfs = new Set(physicalHeaderUdfDefinitions.keys());
 
     // Transform payload to SAP format (similar to submit)
     const sapPayload = {
@@ -636,48 +687,17 @@ const updateARCreditMemo = async (docEntry, payload) => {
       Rounding: yesNo(payload.header.rounding),
       ...buildMarketingDocumentAddressPayload(payload.header),
 
-      DocumentLines: submittedLines.map((l, index) => {
-        const lineNum = l.lineNum ?? l.LineNum;
-        const rawBaseType = l.baseType ?? l.BaseType;
-        const rawBaseEntry = l.baseEntry ?? l.BaseEntry;
-        const rawBaseLine = l.baseLine ?? l.BaseLine;
-        const hasBaseDocument =
-          rawBaseType !== undefined && rawBaseType !== null && String(rawBaseType).trim() !== '' &&
-          rawBaseEntry !== undefined && rawBaseEntry !== null && String(rawBaseEntry).trim() !== '' &&
-          rawBaseLine !== undefined && rawBaseLine !== null && String(rawBaseLine).trim() !== '';
-        const line = {
-          ...(lineNum !== undefined && lineNum !== null && lineNum !== '' ? { LineNum: Number(lineNum) } : {}),
-          ...(l.itemNo ? { ItemCode: l.itemNo } : {}),
-          Quantity: Number(l.quantity),
-          UnitPrice: Number(l.unitPrice),
-          TaxCode: l.taxCode || undefined,
-          MeasureUnit: l.uomCode || undefined,
-          WTLiable: yesNo(l.wTaxLiable ?? l.wtaxLiable),
-          AccountCode: l.glAccount || undefined,
-          CostingCode: l.distRule || undefined,
-          COGSCostingCode: l.cogsDistRule || l.distRule || undefined,
-          CountryOrg: l.countryOfOrigin || undefined,
-          DiscountPercent: getLineDiscountPercent(l) ?? 0,
-        };
-        const warehouseCode = String(l.whse || l.warehouse || '').trim();
-        if (warehouseCode) {
-          line.WarehouseCode = warehouseCode;
-        }
-        if (hasBaseDocument) {
-          line.BaseType = Number(rawBaseType);
-          line.BaseEntry = Number(rawBaseEntry);
-          line.BaseLine = Number(rawBaseLine);
-        }
-        const batchNumbers = buildBatchNumbersForCreditQuantity(l, index);
-        if (batchNumbers.length > 0) {
-          line.BatchNumbers = batchNumbers;
-        }
-        applyUdfValues(line, buildLineUdfPayload(l, allowedLineUdfs), allowedLineUdfs);
-        return line;
-      })
+      DocumentLines: documentLines,
     };
 
-    applyUdfValues(sapPayload, payload.header_udfs, allowedHeaderUdfs, headerUdfDefinitionsByKey);
+    const placeOfSupplyKey = resolveMetadataUdfKey(
+      physicalHeaderUdfDefinitions,
+      ['U_PlaceOfSupply', 'U_PLACE_OF_SUPPLY'],
+    );
+    if (placeOfSupplyKey && hasValue(payload.header.placeOfSupply)) {
+      sapPayload[placeOfSupplyKey] = payload.header.placeOfSupply;
+    }
+    applyUdfValues(sapPayload, payload.header_udfs, physicalHeaderUdfs, physicalHeaderUdfDefinitions);
 
     // Use Service Layer for PATCH operations
     const response = await sapService.request({

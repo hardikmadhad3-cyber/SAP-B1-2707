@@ -9,11 +9,24 @@ const {
   LOOKUP_QUERY_KEYS,
   LOOKUP_SOURCE_SET,
   LINKED_TABLE_COLUMN_CANDIDATES,
+  resolveSalesDocument,
 } = require('./newSalesOrderConstants');
 const { rowValue, normalizeSapIdentifier } = require('./newSalesOrderMetadataRepository');
+const {
+  aliased,
+  columnReference,
+  normalizeSqlDialect,
+  paginationClause,
+  quoteIdentifier,
+} = require('./newSalesOrderSqlDialect');
+const {
+  escapeLikeValue,
+  LIKE_ESCAPE_SQL,
+} = require('../../services/salesDocumentDbCompatibility');
 
 const text = (value) => String(value ?? '').trim();
 const upper = (value) => text(value).toUpperCase();
+const literalLike = (expression) => `${expression} LIKE @like ${LIKE_ESCAPE_SQL}`;
 
 const createHttpError = (statusCode, message, code, details) => {
   const error = new Error(message);
@@ -23,151 +36,119 @@ const createHttpError = (statusCode, message, code, details) => {
   return error;
 };
 
-const STANDARD_LOOKUP_SQL = Object.freeze({
-  items: `
-    SELECT
-      T0.ItemCode AS value,
-      T0.ItemName AS label,
-      T0.ItemName AS description
-    FROM OITM T0
-    WHERE T0.SellItem = 'Y'
-      AND COALESCE(T0.validFor, 'Y') <> 'N'
-      AND (@search = '' OR T0.ItemCode LIKE @like OR COALESCE(T0.ItemName, '') LIKE @like)
-    ORDER BY T0.ItemCode
-    OFFSET @offset ROWS FETCH NEXT @fetchLimit ROWS ONLY
-  `,
-  'business-partners': `
-    SELECT
-      T0.CardCode AS value,
-      T0.CardName AS label,
-      T0.CardName AS description
-    FROM OCRD T0
-    WHERE T0.CardType = 'C'
-      AND COALESCE(T0.validFor, 'Y') <> 'N'
-      AND COALESCE(T0.frozenFor, 'N') <> 'Y'
-      AND (@search = '' OR T0.CardCode LIKE @like OR COALESCE(T0.CardName, '') LIKE @like)
-    ORDER BY T0.CardCode
-    OFFSET @offset ROWS FETCH NEXT @fetchLimit ROWS ONLY
-  `,
-  warehouses: `
-    SELECT
-      T0.WhsCode AS value,
-      T0.WhsName AS label,
-      T0.WhsName AS description
-    FROM OWHS T0
-    WHERE COALESCE(T0.Inactive, 'N') <> 'Y'
-      AND (@search = '' OR T0.WhsCode LIKE @like OR COALESCE(T0.WhsName, '') LIKE @like)
-    ORDER BY T0.WhsCode
-    OFFSET @offset ROWS FETCH NEXT @fetchLimit ROWS ONLY
-  `,
-  'tax-codes': `
-    SELECT
-      T0.Code AS value,
-      T0.Name AS label,
-      T0.Name AS description
-    FROM OSTC T0
-    WHERE COALESCE(T0.Lock, 'N') <> 'Y'
-      AND (@search = '' OR T0.Code LIKE @like OR COALESCE(T0.Name, '') LIKE @like)
-    ORDER BY T0.Code
-    OFFSET @offset ROWS FETCH NEXT @fetchLimit ROWS ONLY
-  `,
-  'shipping-types': `
-    SELECT
-      T0.TrnspCode AS value,
-      T0.TrnspName AS label,
-      T0.TrnspName AS description
-    FROM OSHP T0
-    WHERE @search = ''
-      OR CAST(T0.TrnspCode AS NVARCHAR(50)) LIKE @like
-      OR COALESCE(T0.TrnspName, '') LIKE @like
-    ORDER BY T0.TrnspName, T0.TrnspCode
-    OFFSET @offset ROWS FETCH NEXT @fetchLimit ROWS ONLY
-  `,
-  'distribution-rules': `
-    SELECT
-      T0.OcrCode AS value,
-      T0.OcrName AS label,
-      T0.OcrName AS description
-    FROM OOCR T0
-    WHERE COALESCE(T0.Active, 'Y') <> 'N'
-      AND (@search = '' OR T0.OcrCode LIKE @like OR COALESCE(T0.OcrName, '') LIKE @like)
-    ORDER BY T0.OcrCode
-    OFFSET @offset ROWS FETCH NEXT @fetchLimit ROWS ONLY
-  `,
-  'hsn-codes': `
-    SELECT
-      T0.AbsEntry AS value,
-      T0.ChapterID AS label,
-      T0.Dscription AS description
-    FROM OCHP T0
-    WHERE @search = ''
-      OR CAST(T0.AbsEntry AS NVARCHAR(50)) LIKE @like
-      OR T0.ChapterID LIKE @like
-      OR COALESCE(T0.Dscription, '') LIKE @like
-      OR COALESCE(T0.Heading, '') LIKE @like
-      OR COALESCE(T0.SubHeading, '') LIKE @like
-    ORDER BY T0.ChapterID
-    OFFSET @offset ROWS FETCH NEXT @fetchLimit ROWS ONLY
-  `,
-  countries: `
-    SELECT
-      T0.Code AS value,
-      T0.Name AS label,
-      T0.Name AS description
-    FROM OCRY T0
-    WHERE @search = '' OR T0.Code LIKE @like OR COALESCE(T0.Name, '') LIKE @like
-    ORDER BY T0.Name, T0.Code
-    OFFSET @offset ROWS FETCH NEXT @fetchLimit ROWS ONLY
-  `,
-  'sales-employees': `
-    SELECT
-      T0.SlpCode AS value,
-      T0.SlpName AS label,
-      T0.Memo AS description
-    FROM OSLP T0
-    WHERE COALESCE(T0.Active, 'Y') = 'Y'
-      AND (@search = '' OR CAST(T0.SlpCode AS NVARCHAR(50)) LIKE @like OR COALESCE(T0.SlpName, '') LIKE @like)
-    ORDER BY T0.SlpName, T0.SlpCode
-    OFFSET @offset ROWS FETCH NEXT @fetchLimit ROWS ONLY
-  `,
-  owners: `
-    SELECT
-      T0.empID AS value,
-      T0.firstName AS firstName,
-      T0.lastName AS lastName
-    FROM OHEM T0
-    WHERE @search = ''
-      OR CAST(T0.empID AS NVARCHAR(50)) LIKE @like
-      OR COALESCE(T0.firstName, '') LIKE @like
-      OR COALESCE(T0.lastName, '') LIKE @like
-    ORDER BY T0.firstName, T0.lastName, T0.empID
-    OFFSET @offset ROWS FETCH NEXT @fetchLimit ROWS ONLY
-  `,
-  'uom-codes': `
-    SELECT
-      T0.UomCode AS value,
-      T0.UomName AS label,
-      T0.UomName AS description
-    FROM OUOM T0
-    WHERE @search = '' OR T0.UomCode LIKE @like OR COALESCE(T0.UomName, '') LIKE @like
-    ORDER BY T0.UomCode
-    OFFSET @offset ROWS FETCH NEXT @fetchLimit ROWS ONLY
-  `,
-});
-
-const ITEM_UOM_LOOKUP_SQL = `
+const buildLookupSelect = ({ dialect, tableName, select, where, orderBy }) => `
   SELECT
-    U.UomCode AS value,
-    U.UomName AS label,
-    U.UomName AS description
-  FROM OITM I
-  INNER JOIN UGP1 G ON G.UgpEntry = I.UgpEntry
-  INNER JOIN OUOM U ON U.UomEntry = G.UomEntry
-  WHERE I.ItemCode = @itemCode
-    AND (@search = '' OR U.UomCode LIKE @like OR COALESCE(U.UomName, '') LIKE @like)
-  ORDER BY G.LineNum, U.UomCode
-  OFFSET @offset ROWS FETCH NEXT @fetchLimit ROWS ONLY
+    ${select.map(([expression, alias]) => aliased(expression, alias, dialect)).join(',\n    ')}
+  FROM ${quoteIdentifier(tableName, dialect)} T0
+  WHERE ${where}
+  ORDER BY ${orderBy.join(', ')}
+  ${paginationClause(dialect)}
 `;
+
+const buildStandardLookupSql = (rawSource, rawDialect = 'sqlserver') => {
+  const source = text(rawSource).toLowerCase();
+  const dialect = normalizeSqlDialect(rawDialect);
+  const c = (name) => columnReference('T0', name, dialect);
+  const textValue = (name, fallback = "''") => `COALESCE(${c(name)}, ${fallback})`;
+  const textCast = (name, length = 50) => `CAST(${c(name)} AS NVARCHAR(${length}))`;
+  const common = (definition) => buildLookupSelect({ dialect, ...definition });
+
+  const definitions = {
+    items: {
+      tableName: 'OITM',
+      select: [[c('ItemCode'), 'value'], [c('ItemName'), 'label'], [c('ItemName'), 'description']],
+      where: `${c('SellItem')} = 'Y'\n    AND ${textValue('validFor', "'Y'")} <> 'N'\n    AND (@search = '' OR ${literalLike(c('ItemCode'))} OR ${literalLike(textValue('ItemName'))})`,
+      orderBy: [c('ItemCode')],
+    },
+    'business-partners': {
+      tableName: 'OCRD',
+      select: [[c('CardCode'), 'value'], [c('CardName'), 'label'], [c('CardName'), 'description']],
+      where: `${c('CardType')} = 'C'\n    AND ${textValue('validFor', "'Y'")} <> 'N'\n    AND ${textValue('frozenFor', "'N'")} <> 'Y'\n    AND (@search = '' OR ${literalLike(c('CardCode'))} OR ${literalLike(textValue('CardName'))})`,
+      orderBy: [c('CardCode')],
+    },
+    warehouses: {
+      tableName: 'OWHS',
+      select: [[c('WhsCode'), 'value'], [c('WhsName'), 'label'], [c('WhsName'), 'description']],
+      where: `${textValue('Inactive', "'N'")} <> 'Y'\n    AND (@search = '' OR ${literalLike(c('WhsCode'))} OR ${literalLike(textValue('WhsName'))})`,
+      orderBy: [c('WhsCode')],
+    },
+    'tax-codes': {
+      tableName: 'OSTC',
+      select: [[c('Code'), 'value'], [c('Name'), 'label'], [c('Name'), 'description']],
+      where: `${textValue('Lock', "'N'")} <> 'Y'\n    AND (@search = '' OR ${literalLike(c('Code'))} OR ${literalLike(textValue('Name'))})`,
+      orderBy: [c('Code')],
+    },
+    'shipping-types': {
+      tableName: 'OSHP',
+      select: [[c('TrnspCode'), 'value'], [c('TrnspName'), 'label'], [c('TrnspName'), 'description']],
+      where: `@search = ''\n    OR ${literalLike(textCast('TrnspCode'))}\n    OR ${literalLike(textValue('TrnspName'))}`,
+      orderBy: [c('TrnspName'), c('TrnspCode')],
+    },
+    'distribution-rules': {
+      tableName: 'OOCR',
+      select: [[c('OcrCode'), 'value'], [c('OcrName'), 'label'], [c('OcrName'), 'description']],
+      where: `${textValue('Active', "'Y'")} <> 'N'\n    AND (@search = '' OR ${literalLike(c('OcrCode'))} OR ${literalLike(textValue('OcrName'))})`,
+      orderBy: [c('OcrCode')],
+    },
+    'hsn-codes': {
+      tableName: 'OCHP',
+      select: [[c('AbsEntry'), 'value'], [c('ChapterID'), 'label'], [c('Dscription'), 'description']],
+      where: `@search = ''\n    OR ${literalLike(textCast('AbsEntry'))}\n    OR ${literalLike(c('ChapterID'))}\n    OR ${literalLike(textValue('Dscription'))}\n    OR ${literalLike(textValue('Heading'))}\n    OR ${literalLike(textValue('SubHeading'))}`,
+      orderBy: [c('ChapterID')],
+    },
+    countries: {
+      tableName: 'OCRY',
+      select: [[c('Code'), 'value'], [c('Name'), 'label'], [c('Name'), 'description']],
+      where: `@search = '' OR ${literalLike(c('Code'))} OR ${literalLike(textValue('Name'))}`,
+      orderBy: [c('Name'), c('Code')],
+    },
+    'sales-employees': {
+      tableName: 'OSLP',
+      select: [[c('SlpCode'), 'value'], [c('SlpName'), 'label'], [c('Memo'), 'description']],
+      where: `${textValue('Active', "'Y'")} = 'Y'\n    AND (@search = '' OR ${literalLike(textCast('SlpCode'))} OR ${literalLike(textValue('SlpName'))})`,
+      orderBy: [c('SlpName'), c('SlpCode')],
+    },
+    owners: {
+      tableName: 'OHEM',
+      select: [[c('empID'), 'value'], [c('firstName'), 'firstName'], [c('lastName'), 'lastName']],
+      where: `@search = ''\n    OR ${literalLike(textCast('empID'))}\n    OR ${literalLike(textValue('firstName'))}\n    OR ${literalLike(textValue('lastName'))}`,
+      orderBy: [c('firstName'), c('lastName'), c('empID')],
+    },
+    'uom-codes': {
+      tableName: 'OUOM',
+      select: [[c('UomCode'), 'value'], [c('UomName'), 'label'], [c('UomName'), 'description']],
+      where: `@search = '' OR ${literalLike(c('UomCode'))} OR ${literalLike(textValue('UomName'))}`,
+      orderBy: [c('UomCode')],
+    },
+  };
+
+  return definitions[source] ? common(definitions[source]) : '';
+};
+
+const buildItemUomLookupSql = (rawDialect = 'sqlserver') => {
+  const dialect = normalizeSqlDialect(rawDialect);
+  const c = (alias, name) => columnReference(alias, name, dialect);
+  return `
+    SELECT
+      ${aliased(c('U', 'UomCode'), 'value', dialect)},
+      ${aliased(c('U', 'UomName'), 'label', dialect)},
+      ${aliased(c('U', 'UomName'), 'description', dialect)}
+    FROM ${quoteIdentifier('OITM', dialect)} I
+    INNER JOIN ${quoteIdentifier('UGP1', dialect)} G ON ${c('G', 'UgpEntry')} = ${c('I', 'UgpEntry')}
+    INNER JOIN ${quoteIdentifier('OUOM', dialect)} U ON ${c('U', 'UomEntry')} = ${c('G', 'UomEntry')}
+    WHERE ${c('I', 'ItemCode')} = @itemCode
+      AND (@search = '' OR ${literalLike(c('U', 'UomCode'))} OR ${literalLike(`COALESCE(${c('U', 'UomName')}, '')`)})
+    ORDER BY ${c('G', 'LineNum')}, ${c('U', 'UomCode')}
+    ${paginationClause(dialect)}
+  `;
+};
+
+const STANDARD_LOOKUP_SQL = Object.freeze(Object.fromEntries(
+  [...LOOKUP_SOURCE_SET]
+    .map((source) => [source, buildStandardLookupSql(source, 'sqlserver')])
+    .filter(([, sql]) => sql),
+));
+const ITEM_UOM_LOOKUP_SQL = buildItemUomLookupSql('sqlserver');
 
 const parsePaging = (input = {}) => {
   const rawPage = input.page;
@@ -213,7 +194,7 @@ const normalizeLookupInput = (input = {}) => {
   return {
     ...parsePaging(input),
     search,
-    like: `%${search}%`,
+    like: `%${escapeLikeValue(search)}%`,
     itemCode,
     fieldId: text(input.fieldId),
     schemaVersion: text(input.schemaVersion),
@@ -258,8 +239,6 @@ const pageOptions = ({ source, rows, page, limit, schemaVersion }) => {
   };
 };
 
-const quoteIdentifier = (value) => `[${normalizeSapIdentifier(value, 'SAP identifier').replace(/]/g, ']]')}]`;
-
 const findColumn = (columns, candidates) => {
   for (const candidate of candidates) {
     const match = (columns || []).find((column) => upper(column.columnName) === upper(candidate));
@@ -268,27 +247,50 @@ const findColumn = (columns, candidates) => {
   return '';
 };
 
-const buildLinkedTableSql = ({ tableName, codeColumn, labelColumn, descriptionColumn }) => {
-  const table = quoteIdentifier(tableName);
-  const code = quoteIdentifier(codeColumn);
-  const label = quoteIdentifier(labelColumn || codeColumn);
-  const description = quoteIdentifier(descriptionColumn || labelColumn || codeColumn);
+const buildLinkedTableSql = ({
+  tableName,
+  codeColumn,
+  labelColumn,
+  descriptionColumn,
+  dialect: rawDialect = 'sqlserver',
+}) => {
+  const dialect = normalizeSqlDialect(rawDialect);
+  const table = quoteIdentifier(normalizeSapIdentifier(tableName, 'Linked table'), dialect);
+  const code = quoteIdentifier(normalizeSapIdentifier(codeColumn, 'Lookup code column'), dialect);
+  const label = quoteIdentifier(
+    normalizeSapIdentifier(labelColumn || codeColumn, 'Lookup label column'),
+    dialect,
+  );
+  const description = quoteIdentifier(
+    normalizeSapIdentifier(descriptionColumn || labelColumn || codeColumn, 'Lookup description column'),
+    dialect,
+  );
   return `
     SELECT
-      CAST(${code} AS NVARCHAR(254)) AS value,
-      CAST(${label} AS NVARCHAR(254)) AS label,
-      CAST(${description} AS NVARCHAR(254)) AS description
+      ${aliased(`CAST(${code} AS NVARCHAR(254))`, 'value', dialect)},
+      ${aliased(`CAST(${label} AS NVARCHAR(254))`, 'label', dialect)},
+      ${aliased(`CAST(${description} AS NVARCHAR(254))`, 'description', dialect)}
     FROM ${table}
     WHERE @search = ''
-      OR CAST(${code} AS NVARCHAR(254)) LIKE @like
-      OR CAST(${label} AS NVARCHAR(254)) LIKE @like
+      OR ${literalLike(`CAST(${code} AS NVARCHAR(254))`)}
+      OR ${literalLike(`CAST(${label} AS NVARCHAR(254))`)}
     ORDER BY ${label}, ${code}
-    OFFSET @offset ROWS FETCH NEXT @fetchLimit ROWS ONLY
+    ${paginationClause(dialect)}
   `;
 };
 
 const findSchemaField = (schema, fieldId) => {
-  if (!/^(ORDR|RDR1|ODLN|DLN1)\.[A-Za-z0-9_]+$/i.test(fieldId)) {
+  const match = text(fieldId).match(/^([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)$/);
+  let document;
+  try {
+    document = resolveSalesDocument(schema?.documentType);
+  } catch (_error) {
+    document = null;
+  }
+  const allowedTables = new Set(
+    document ? [document.headerTable, document.lineTable].map(upper) : [],
+  );
+  if (!match || !allowedTables.has(upper(match[1]))) {
     throw createHttpError(400, 'A valid allowlisted sales-document fieldId is required.', 'INVALID_LOOKUP_FIELD');
   }
   const fields = [...(schema.headerFields || []), ...(schema.lineFields || [])];
@@ -304,6 +306,14 @@ const createNewSalesOrderLookupService = ({
   metadata = metadataRepository,
   schemas = schemaService,
 } = {}) => {
+  const getDialect = async (context) => normalizeSqlDialect(
+    typeof metadata.getDialect === 'function'
+      ? await metadata.getDialect(context)
+      : (typeof readOnlyDb.getDialect === 'function'
+        ? await readOnlyDb.getDialect(context)
+        : context?.dbDialect),
+  );
+
   const queryRows = async (context, source, sql, paging, extraParams = {}) => readOnlyDb.select({
     context,
     queryId: `lookup.${source}`,
@@ -317,8 +327,8 @@ const createNewSalesOrderLookupService = ({
     },
   });
 
-  const getSacOptions = async (context, paging) => {
-    const columns = await metadata.getTableColumns(context, 'OSAC');
+  const getSacOptions = async (context, paging, dialect) => {
+    const columns = await metadata.getTableColumns(context, 'OSAC', { dialect });
     const entryColumn = findColumn(columns, ['AbsEntry']);
     const codeColumn = findColumn(columns, ['ServCode', 'ServiceCode']);
     const nameColumn = findColumn(columns, ['ServName', 'ServiceName']) || codeColumn;
@@ -330,11 +340,12 @@ const createNewSalesOrderLookupService = ({
       codeColumn: entryColumn || codeColumn,
       labelColumn: codeColumn,
       descriptionColumn: nameColumn,
+      dialect,
     });
     return queryRows(context, 'sac-codes', sql, paging);
   };
 
-  const getDynamicOptions = async (context, source, paging, suppliedSchema) => {
+  const getDynamicOptions = async (context, source, paging, suppliedSchema, dialect) => {
     const schema = suppliedSchema || await schemas.getSchema(context, paging.documentType);
     if (paging.schemaVersion && paging.schemaVersion !== schema.schemaVersion) {
       throw createHttpError(409, 'The document field schema changed. Reload the page.', 'STALE_SCHEMA_VERSION', {
@@ -373,16 +384,16 @@ const createNewSalesOrderLookupService = ({
     }
 
     const approvedTable = normalizeSapIdentifier(tableName, 'Linked table');
-    if (!await metadata.tableExists(context, approvedTable)) {
+    if (!await metadata.tableExists(context, approvedTable, { dialect })) {
       throw createHttpError(422, 'The linked lookup table does not exist in the current company.', 'LINKED_TABLE_UNAVAILABLE');
     }
-    const columns = await metadata.getTableColumns(context, approvedTable);
+    const columns = await metadata.getTableColumns(context, approvedTable, { dialect });
     const codeColumn = findColumn(columns, LINKED_TABLE_COLUMN_CANDIDATES.code);
     const labelColumn = findColumn(columns, LINKED_TABLE_COLUMN_CANDIDATES.label) || codeColumn;
     if (!codeColumn) {
       throw createHttpError(422, 'The linked table has no approved lookup code column.', 'LINKED_TABLE_COLUMNS_UNAVAILABLE');
     }
-    const sql = buildLinkedTableSql({ tableName: approvedTable, codeColumn, labelColumn });
+    const sql = buildLinkedTableSql({ tableName: approvedTable, codeColumn, labelColumn, dialect });
     const rows = await queryRows(context, source, sql, paging);
     return { rows, schema };
   };
@@ -393,19 +404,20 @@ const createNewSalesOrderLookupService = ({
       throw createHttpError(404, 'Lookup source is not allowed.', 'LOOKUP_SOURCE_NOT_ALLOWED');
     }
     const paging = normalizeLookupInput(input);
+    const dialect = await getDialect(context);
     let rows;
     let currentSchemaVersion = '';
 
     if (['udf-valid-values', 'udf-linked-table', 'udo'].includes(source)) {
-      const dynamic = await getDynamicOptions(context, source, paging, options.schema);
+      const dynamic = await getDynamicOptions(context, source, paging, options.schema, dialect);
       rows = dynamic.rows;
       currentSchemaVersion = dynamic.schema.schemaVersion;
     } else if (source === 'sac-codes') {
-      rows = await getSacOptions(context, paging);
+      rows = await getSacOptions(context, paging, dialect);
     } else {
       const sql = source === 'uom-codes' && paging.itemCode
-        ? ITEM_UOM_LOOKUP_SQL
-        : STANDARD_LOOKUP_SQL[source];
+        ? buildItemUomLookupSql(dialect)
+        : buildStandardLookupSql(source, dialect);
       if (!sql) {
         throw createHttpError(404, 'Lookup source is not implemented.', 'LOOKUP_SOURCE_NOT_IMPLEMENTED');
       }
@@ -459,7 +471,9 @@ const defaultService = createNewSalesOrderLookupService();
 module.exports = defaultService;
 module.exports.ITEM_UOM_LOOKUP_SQL = ITEM_UOM_LOOKUP_SQL;
 module.exports.STANDARD_LOOKUP_SQL = STANDARD_LOOKUP_SQL;
+module.exports.buildItemUomLookupSql = buildItemUomLookupSql;
 module.exports.buildLinkedTableSql = buildLinkedTableSql;
+module.exports.buildStandardLookupSql = buildStandardLookupSql;
 module.exports.createNewSalesOrderLookupService = createNewSalesOrderLookupService;
 module.exports.findSchemaField = findSchemaField;
 module.exports.normalizeLookupInput = normalizeLookupInput;

@@ -40,6 +40,7 @@ function DocumentCurrencySelect({
   disabled = false,
   localCurrency = DEFAULT_LOCAL_CURRENCY,
   systemCurrency = '',
+  fallbackLocalCurrency = DEFAULT_LOCAL_CURRENCY,
   hideLabel = false,
   includeSapB1CommonCurrencies = false,
 }) {
@@ -54,6 +55,7 @@ function DocumentCurrencySelect({
     currentCurrency,
     localCurrency,
     systemCurrency,
+    fallbackLocalCurrency,
   });
   const modeOptions = mode === 'CUSTOM'
     ? [...CURRENCY_MODES, { value: 'CUSTOM', label: 'Document Currency' }]

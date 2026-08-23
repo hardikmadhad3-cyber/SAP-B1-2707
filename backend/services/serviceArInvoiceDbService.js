@@ -3,28 +3,30 @@ const arInvoiceDb = require('./arInvoiceDbService');
 const masterDataDbService = require('./masterDataDbService');
 const hsnCodeDbService = require('./hsnCodeDbService');
 const { getHeaderUdfValues, getLineUdfValues, getMarketingDocumentUdfs } = require('./udfMetadataService');
+const { createTableColumnDetailsReader } = require('./salesDocumentDbCompatibility');
 
 const safe = async (promise) => {
   try {
     const result = await promise;
     return result.recordset || [];
   } catch (error) {
-    console.error('[Service AR Invoice DB] Query error:', error.message);
+    console.warn('[Service AR Invoice DB] Query failed silently:', error.message);
     return [];
   }
 };
 
-const getTableColumns = async (tableName) => {
-  const rows = await safe(db.query(`
-    SELECT COLUMN_NAME
-    FROM INFORMATION_SCHEMA.COLUMNS
-    WHERE TABLE_NAME = @tableName
-  `, { tableName }));
+const getTableColumnDetailsReader = createTableColumnDetailsReader({ database: db });
 
-  return new Map(rows
-    .map((row) => String(row.COLUMN_NAME || '').trim())
-    .filter(Boolean)
-    .map((columnName) => [columnName.toUpperCase(), columnName]));
+const getTableColumns = async (tableName) => {
+  try {
+    const columnDetails = await getTableColumnDetailsReader(String(tableName || '').trim());
+    return new Map(columnDetails
+      .map((col) => String(col.columnName || '').trim())
+      .filter(Boolean)
+      .map((columnName) => [columnName.toUpperCase(), columnName]));
+  } catch (_error) {
+    return new Map();
+  }
 };
 
 const getColumnName = (columns, columnName) => (
@@ -45,14 +47,14 @@ const queryRowsWithFallback = async ({ primarySql, fallbackSql, params = {}, lab
     const result = await db.query(primarySql, params);
     return result.recordset || [];
   } catch (error) {
-    console.error(`[Service AR Invoice DB] ${label} query error:`, error.message);
+    console.warn(`[Service AR Invoice DB] ${label} primary query failed:`, error.message);
   }
 
   try {
     const fallbackResult = await db.query(fallbackSql, params);
     return fallbackResult.recordset || [];
   } catch (fallbackError) {
-    console.error(`[Service AR Invoice DB] ${label} fallback query error:`, fallbackError.message);
+    console.warn(`[Service AR Invoice DB] ${label} fallback query failed:`, fallbackError.message);
     return [];
   }
 };

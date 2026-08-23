@@ -1170,8 +1170,15 @@
 }
 
 .del-grid.del-grid--contents {
-  table-layout: auto;
-  width: max-content;
+  table-layout: fixed;
+}
+
+.del-grid__disabled-fieldset {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
 }
 
 .del-grid th {
@@ -1215,6 +1222,7 @@
 
 .del-grid__input {
   width: 100%;
+  min-width: 0;
   height: 20px;
   padding: 0 3px;
   font-size: 11px;
@@ -1224,6 +1232,7 @@
   text-align: right;
   position: relative;
   z-index: 1;
+  box-sizing: border-box;
 }
 .del-grid__input:focus {
   outline: none;
@@ -1232,6 +1241,10 @@
   z-index: 9;
 }
 .del-grid__input--sm { width: 60px; }
+
+select.del-grid__input {
+  min-width: 0;
+}
 
 /* ── Section titles ── */
 .del-section-title {
@@ -1554,9 +1567,9 @@
   overflow-y: auto !important;
 }
 
-/* Ensure table can expand beyond container */
+/* The component supplies the sum of the visible column widths. */
 .del-grid--contents {
-  min-width: 3900px !important;
+  min-width: 100% !important;
 }
 
 /* SAP B1 Electronic Documents / E-Way Bill */
@@ -2157,5 +2170,193 @@
 @media (max-width: 640px) {
   .del-tax-info-modal__grid .del-field {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* SAP B1 exchange-rate window used by the standard Delivery page. */
+.del-page ~ .so-exchange-rates-modal__overlay,
+.app-shell__content > .so-exchange-rates-modal__overlay,
+.page-window-frame .so-exchange-rates-modal__overlay,
+body > .so-exchange-rates-modal__overlay,
+.so-exchange-rates-modal__overlay {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 21050;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+
+.so-exchange-rates-modal {
+  width: min(600px, calc(100vw - 36px));
+  min-height: 0;
+  max-height: min(440px, calc(100vh - 36px));
+}
+
+.so-exchange-rates-modal__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 10px 12px 0;
+  overflow: hidden;
+}
+
+.so-exchange-rates-modal__tabs {
+  display: flex;
+}
+
+.so-exchange-rates-modal__tab {
+  flex: 1 1 0;
+  min-height: 28px;
+  border: 1px solid var(--sap-border);
+  border-bottom: 0;
+  background: var(--sap-toolbar-bg);
+  color: var(--sap-heading);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.so-exchange-rates-modal__tab.is-active {
+  background: var(--sap-surface);
+}
+
+.so-exchange-rates-modal__panel {
+  border: 1px solid var(--sap-border);
+  background: var(--sap-surface);
+  padding: 8px;
+}
+
+.so-exchange-rates-modal__selectors {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.so-exchange-rates-modal__select {
+  height: 24px;
+  min-width: 82px;
+  border: 1px solid var(--sap-border-strong);
+  border-radius: var(--sap-radius-xs);
+  background: var(--sap-surface);
+  color: var(--sap-text);
+  font-size: 12px;
+}
+
+.so-exchange-rates-modal__grid-wrap {
+  max-height: min(205px, calc(100vh - 235px));
+  overflow: auto;
+  border: 1px solid var(--sap-border-soft);
+}
+
+.so-exchange-rates-modal__grid {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--sap-text);
+  font-family: var(--sap-font-family);
+  font-size: 12px;
+}
+
+.so-exchange-rates-modal__grid th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  min-width: 92px;
+  height: 24px;
+  padding: 3px 6px;
+  border: 1px solid var(--sap-border);
+  background: var(--sap-toolbar-bg);
+  color: var(--sap-heading);
+  text-align: left;
+  font-weight: 700;
+}
+
+.so-exchange-rates-modal__grid th.so-exchange-rates-modal__day-heading,
+.so-exchange-rates-modal__day {
+  width: 48px;
+  min-width: 48px;
+}
+
+.so-exchange-rates-modal__grid td {
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--sap-border-soft);
+  background: var(--sap-surface);
+}
+
+.so-exchange-rates-modal__grid tr:nth-child(even) td:not(.is-active):not(.so-exchange-rates-modal__day) {
+  background: var(--sap-row-even);
+}
+
+.so-exchange-rates-modal__day {
+  padding-left: 6px !important;
+  background: var(--sap-toolbar-bg) !important;
+  color: var(--sap-heading);
+  font-weight: 500;
+}
+
+.so-exchange-rates-modal__day.is-active,
+.so-exchange-rates-modal__grid td.is-active {
+  background: var(--sap-row-hover) !important;
+}
+
+.so-exchange-rates-modal__grid td.is-active {
+  box-shadow: inset 0 0 0 2px var(--sap-primary);
+}
+
+.so-exchange-rates-modal__rate-input {
+  width: 100%;
+  height: 21px;
+  border: 0;
+  background: transparent;
+  color: var(--sap-text);
+  padding: 0 6px;
+  text-align: right;
+  font-size: 12px;
+}
+
+.so-exchange-rates-modal__rate-input.is-selected-rate {
+  background: #fff;
+  font-weight: 700;
+}
+
+.so-exchange-rates-modal__rate-input.is-selected-rate::placeholder {
+  color: var(--sap-text-muted);
+  font-weight: 500;
+  opacity: 1;
+}
+
+.so-exchange-rates-modal__rate-input:focus {
+  outline: 1px solid var(--sap-primary);
+  outline-offset: -1px;
+  background: var(--sap-surface);
+}
+
+.so-exchange-rates-modal__empty,
+.so-exchange-rates-modal__loading {
+  padding: 28px 12px;
+  color: var(--sap-text-muted);
+  text-align: center;
+  font-size: 12px;
+}
+
+.so-exchange-rates-modal__error {
+  margin-top: 8px;
+  color: var(--sap-danger, #b42318);
+  font-size: 12px;
+}
+
+.so-exchange-rates-modal__footer {
+  margin-top: 0;
+}
+
+@media (max-width: 900px) {
+  .so-exchange-rates-modal__overlay {
+    padding: 12px;
+  }
+
+  .so-exchange-rates-modal {
+    width: min(600px, calc(100vw - 24px));
+    max-height: calc(100vh - 24px);
   }
 }

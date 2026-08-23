@@ -7,12 +7,120 @@ const {
   buildSalesOrderSchema,
   createNewSalesOrderSchemaService,
 } = require('../modules/newSalesOrder/newSalesOrderSchemaService');
-const { DELIVERY_DOCUMENT } = require('../modules/newSalesOrder/newSalesOrderConstants');
+const {
+  AR_CREDIT_MEMO_DOCUMENT,
+  AR_INVOICE_DOCUMENT,
+  DELIVERY_DOCUMENT,
+  SALES_ORDER_DOCUMENT,
+  SALES_QUOTATION_DOCUMENT,
+  resolveSalesDocument,
+} = require('../modules/newSalesOrder/newSalesOrderConstants');
 const companyA = require('./fixtures/newSalesOrderCompanyA');
 const companyB = require('./fixtures/newSalesOrderCompanyB');
 
 const getField = (schema, id) => [...schema.headerFields, ...schema.lineFields]
   .find((field) => field.id === id);
+
+test('resolves the five standard Sales-A/R document profiles', () => {
+  const profiles = [
+    [SALES_QUOTATION_DOCUMENT, '23', '149', 'OQUT', 'QUT1'],
+    [SALES_ORDER_DOCUMENT, '17', '139', 'ORDR', 'RDR1'],
+    [DELIVERY_DOCUMENT, '15', '140', 'ODLN', 'DLN1'],
+    [AR_INVOICE_DOCUMENT, '13', '133', 'OINV', 'INV1'],
+    [AR_CREDIT_MEMO_DOCUMENT, '14', '179', 'ORIN', 'RIN1'],
+  ];
+
+  for (const [profile, objectType, formType, headerTable, lineTable] of profiles) {
+    assert.equal(resolveSalesDocument(profile.documentType), profile);
+    assert.equal(profile.objectType, objectType);
+    assert.equal(profile.formType, formType);
+    assert.equal(profile.headerTable, headerTable);
+    assert.equal(profile.lineTable, lineTable);
+  }
+});
+
+test('builds live standard and UDF fields against every document profile table pair', () => {
+  const profiles = [
+    SALES_QUOTATION_DOCUMENT,
+    SALES_ORDER_DOCUMENT,
+    DELIVERY_DOCUMENT,
+    AR_INVOICE_DOCUMENT,
+    AR_CREDIT_MEMO_DOCUMENT,
+  ];
+
+  for (const profile of profiles) {
+    const metadata = {
+      dialect: 'hana',
+      physical: {
+        [profile.headerTable]: [{ columnName: 'CardCode', databaseType: 'nvarchar', ordinal: 1 }],
+        [profile.lineTable]: [
+          { columnName: 'ItemCode', databaseType: 'nvarchar', ordinal: 1 },
+          { columnName: 'U_LiveLine', databaseType: 'nvarchar', ordinal: 2 },
+        ],
+      },
+      udfs: {
+        [profile.headerTable]: [],
+        [profile.lineTable]: [{
+          tableName: profile.lineTable,
+          fieldId: 1,
+          aliasId: 'LiveLine',
+          sapField: 'U_LiveLine',
+          label: 'Live Line',
+          typeId: 'A',
+          options: [],
+        }],
+      },
+      layout: [],
+    };
+    const schema = buildDocumentSchema({ context: companyA.context, metadata, rawDocument: profile });
+    assert.equal(schema.headerTable, profile.headerTable);
+    assert.equal(schema.lineTable, profile.lineTable);
+    assert.ok(getField(schema, `${profile.lineTable}.U_LiveLine`));
+    assert.equal(schema.lineFields.some((field) => field.id.startsWith('RDR1.')),
+      profile.lineTable === 'RDR1');
+  }
+});
+
+test('QUT1 ReqDate is an editable RequiredDate field only when physically present', () => {
+  const metadata = {
+    dialect: 'sqlserver',
+    physical: {
+      OQUT: [{ columnName: 'CardCode', databaseType: 'nvarchar', ordinal: 1 }],
+      QUT1: [
+        { columnName: 'ItemCode', databaseType: 'nvarchar', ordinal: 1 },
+        { columnName: 'ReqDate', databaseType: 'date', ordinal: 2 },
+      ],
+      OINV: [{ columnName: 'CardCode', databaseType: 'nvarchar', ordinal: 1 }],
+      INV1: [{ columnName: 'ItemCode', databaseType: 'nvarchar', ordinal: 1 }],
+    },
+    udfs: { OQUT: [], QUT1: [], OINV: [], INV1: [] },
+    layout: [],
+  };
+  const quotation = buildDocumentSchema({
+    context: companyA.context,
+    metadata,
+    rawDocument: SALES_QUOTATION_DOCUMENT,
+  });
+  const invoice = buildDocumentSchema({
+    context: companyA.context,
+    metadata,
+    rawDocument: AR_INVOICE_DOCUMENT,
+  });
+  const requiredDate = getField(quotation, 'QUT1.ReqDate');
+
+  assert.deepEqual({
+    stateKey: requiredDate.stateKey,
+    sapField: requiredDate.sapField,
+    renderer: requiredDate.renderer,
+    editable: requiredDate.editable,
+  }, {
+    stateKey: 'requiredDate',
+    sapField: 'RequiredDate',
+    renderer: 'date',
+    editable: true,
+  });
+  assert.equal(invoice.lineFields.some((field) => field.sapField === 'RequiredDate'), false);
+});
 
 test('builds an isolated Delivery schema from ODLN and DLN1 metadata', () => {
   const context = { ...companyA.context, companyDb: 'DELIVERY_COMPANY', companyId: 303 };
@@ -135,6 +243,35 @@ test('a newly added physical CUFD field appears without a registry or JSX change
   assert.equal(field.type, 'text');
 });
 
+test('stale layout UDF rows are dropped unless the current company table confirms them', () => {
+  const metadata = structuredClone(companyA.metadata);
+  metadata.layout.push(
+    {
+      tableName: 'RDR1',
+      columnUid: 'U_DeletedCompanyField',
+      fieldName: 'U_DeletedCompanyField',
+      columnTitle: 'Deleted Company Field',
+      visible: 1,
+      editable: 1,
+      isUdf: 1,
+      columnOrder: 900,
+    },
+    {
+      tableName: 'RDR1',
+      columnUid: 'LegacyDisplayOnly',
+      fieldName: 'LegacyDisplayOnly',
+      columnTitle: 'Legacy Display Only',
+      visible: 1,
+      editable: 0,
+      columnOrder: 901,
+    },
+  );
+
+  const schema = buildSalesOrderSchema({ context: companyA.context, metadata });
+  assert.equal(schema.lineFields.some((field) => field.sapField === 'U_DeletedCompanyField'), false);
+  assert.ok(schema.lineFields.find((field) => field.sapField === 'LegacyDisplayOnly'));
+});
+
 test('standard semantic mappings use Service Layer properties but retain physical DB columns', () => {
   const schema = buildSalesOrderSchema({ context: companyA.context, metadata: companyA.metadata });
   const itemDescription = getField(schema, 'RDR1.Dscription');
@@ -145,6 +282,23 @@ test('standard semantic mappings use Service Layer properties but retain physica
   assert.equal(itemDescription.databaseField, 'Dscription');
   assert.equal(warehouse.sapField, 'WarehouseCode');
   assert.equal(warehouse.lookup.source, 'warehouses');
+});
+
+test('maps the SAP TotalFrgn database column as a calculated document-currency total', () => {
+  const metadata = structuredClone(companyA.metadata);
+  metadata.physical.RDR1.push({
+    columnName: 'TotalFrgn',
+    databaseType: 'decimal',
+    precision: 19,
+    scale: 6,
+    ordinal: 12,
+  });
+  const schema = buildSalesOrderSchema({ context: companyA.context, metadata });
+  const total = getField(schema, 'RDR1.TotalFrgn');
+  assert.ok(total);
+  assert.equal(total.sapField, 'RowTotalFC');
+  assert.equal(total.storage, 'calculated');
+  assert.equal(total.readOnly, true);
 });
 
 test('RDR1 schema preserves SAP matrix layout order for standard layout-only fields', () => {

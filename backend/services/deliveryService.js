@@ -1,11 +1,12 @@
 const sapService = require('./sapService');
 const deliveryDb = require('./deliveryDbService');
 const salesOrderDb = require('./salesOrderDbService');
+const hsnCodeDbService = require('./hsnCodeDbService');
 const { buildDocumentAdditionalExpenses } = require('./freightPayloadUtils');
 const { buildMarketingDocumentAddressPayload } = require('./documentAddressPayloadUtils');
 const { applyDocumentCurrency } = require('./documentCurrencyUtils');
 const { buildDocumentReferencesPayload, normalizeReferenceDocType } = require('./documentReferencesPayloadUtils');
-const { getUdfDefinitions } = require('./udfMetadataService');
+const { getUdfDefinitionsOrEmpty } = require('./udfMetadataService');
 const { getActiveCompanyConfig } = require('./companyConfigService');
 const { isBlankUdfValue, normalizeUdfValue } = require('./udfPayloadUtils');
 const {
@@ -113,7 +114,14 @@ const toRequiredString = (value, fallback = '') => {
 
 const toBoolean = (value) => {
   if (typeof value === 'boolean') return value;
-  return ['true', '1', 'yes', 'y'].includes(String(value || '').trim().toLowerCase());
+  return ['true', '1', 'yes', 'y', 'tyes'].includes(String(value || '').trim().toLowerCase());
+};
+
+const toSapYesNo = (value) => (toBoolean(value) ? 'tYES' : 'tNO');
+
+const hasDeliveryLineColumn = (fieldMetadata = {}, ...columnNames) => {
+  const availableColumns = new Set(Object.keys(fieldMetadata || {}).map((key) => String(key).toUpperCase()));
+  return columnNames.some((columnName) => availableColumns.has(String(columnName || '').toUpperCase()));
 };
 
 const normalizeEWayBillToken = (value) =>
@@ -350,12 +358,12 @@ const applyUdfs = (target, udfValues = {}, allowedKeys = null, fieldMetadata = n
 };
 
 const getAllowedUdfKeys = async (tableId) => {
-  const definitions = await getUdfDefinitions(tableId);
+  const definitions = await getUdfDefinitionsOrEmpty(tableId);
   return new Set(definitions.map((field) => field.key));
 };
 
 const getUdfDefinitionsByKey = async (tableId) => {
-  const definitions = await getUdfDefinitions(tableId);
+  const definitions = await getUdfDefinitionsOrEmpty(tableId);
   return new Map(definitions.map((field) => [field.key, field]));
 };
 
@@ -513,23 +521,29 @@ const coerceValueForSqlType = (value, sqlDataType) => {
 };
 
 const setValidatedDeliveryField = (target, fieldMetadata, fieldName, value) => {
-  const sqlDataType = fieldMetadata?.[fieldName];
+  const resolvedFieldName = Object.keys(fieldMetadata || {}).find(
+    (candidate) => String(candidate).trim().toLowerCase() === String(fieldName).trim().toLowerCase(),
+  );
+  const sqlDataType = fieldMetadata?.[resolvedFieldName];
   if (!sqlDataType) return;
 
   const coercedValue = coerceValueForSqlType(value, sqlDataType);
   if (coercedValue !== undefined) {
-    target[fieldName] = coercedValue;
+    target[resolvedFieldName] = coercedValue;
   }
 };
 
 const setValidatedDeliveryUdf = (target, fieldMetadata, fieldName, value) => {
-  if (!fieldMetadata?.[fieldName]) return;
+  const resolvedFieldName = Object.keys(fieldMetadata || {}).find(
+    (candidate) => String(candidate).trim().toLowerCase() === String(fieldName).trim().toLowerCase(),
+  );
+  if (!resolvedFieldName) return;
 
   if (isBlankUdfValue(value)) {
     return;
   }
 
-  setValidatedDeliveryField(target, fieldMetadata, fieldName, value);
+  setValidatedDeliveryField(target, fieldMetadata, resolvedFieldName, value);
 };
 
 const normalizeLookupToken = (value) => String(value || '').trim().toLowerCase();
@@ -629,6 +643,10 @@ const buildDocumentLinePayload = async (line = {}, fieldMetadata = {}, includeLi
     documentLine.WarehouseCode = toRequiredString(line.whse, '');
   }
 
+  if (hasValue(line.itemDescription)) {
+    documentLine.ItemDescription = String(line.itemDescription).trim();
+  }
+
   if (!isBaseDocumentLine) {
     const rawUomValue = getDeliveryLineRawUomValue(line);
     const uomValue = getDeliveryLineUomValue(line);
@@ -650,14 +668,120 @@ const buildDocumentLinePayload = async (line = {}, fieldMetadata = {}, includeLi
   if (hasValue(line.distRule)) {
     documentLine.CostingCode = String(line.distRule).trim();
   }
+  [2, 3, 4, 5].forEach((dimension) => {
+    const value = line[`distRule${dimension}`];
+    if (hasValue(value) && hasDeliveryLineColumn(fieldMetadata, `OcrCode${dimension}`)) {
+      documentLine[`CostingCode${dimension}`] = String(value).trim();
+    }
+  });
+
+  if (hasValue(line.cogsDistRule) && hasDeliveryLineColumn(fieldMetadata, 'CogsOcrCod')) {
+    documentLine.COGSCostingCode = String(line.cogsDistRule).trim();
+  }
+
+  [2, 3, 4, 5].forEach((dimension) => {
+    const value = line[`cogsDistRule${dimension}`];
+    if (hasValue(value) && hasDeliveryLineColumn(fieldMetadata, `CogsOcrCo${dimension}`)) {
+      documentLine[`COGSCostingCode${dimension}`] = String(value).trim();
+    }
+  });
+
+  if (hasValue(line.glAccount) && hasDeliveryLineColumn(fieldMetadata, 'AcctCode')) {
+    documentLine.AccountCode = String(line.glAccount).trim();
+  }
 
   if (hasValue(line.freeText)) {
     documentLine.FreeText = String(line.freeText).trim();
   }
 
-  const sacEntry = toOptionalNumber(line.sacCode);
-  if (sacEntry !== undefined && fieldMetadata?.SACEntry) {
-    documentLine.SACEntry = sacEntry;
+  const lineDeliveryDate = firstPresent(line.lineDeliveryDate, line.deliveryDate, line.ShipDate);
+  if (lineDeliveryDate && hasDeliveryLineColumn(fieldMetadata, 'ShipDate')) {
+    documentLine.ShipDate = formatDateForSAP(lineDeliveryDate);
+  }
+
+  const lineShippingType = toOptionalNumber(firstPresent(
+    line.lineShippingType,
+    line.shippingType,
+    line.ShippingMethod,
+    line.TrnsCode,
+  ));
+  if (lineShippingType !== undefined && hasDeliveryLineColumn(fieldMetadata, 'TrnsCode')) {
+    documentLine.ShippingMethod = lineShippingType;
+  }
+
+  const taxLiable = firstPresent(line.taxLiable, line.TaxLiable, line.TaxOnly);
+  if (taxLiable !== undefined && hasDeliveryLineColumn(fieldMetadata, 'TaxOnly')) {
+    documentLine.TaxOnly = toSapYesNo(taxLiable);
+  }
+
+  const wTaxLiable = firstPresent(line.wTaxLiable, line.WTaxLiable, line.WTLiable);
+  if (wTaxLiable !== undefined && hasDeliveryLineColumn(fieldMetadata, 'WtLiable')) {
+    documentLine.WTLiable = toSapYesNo(wTaxLiable);
+  }
+
+  const locationCode = toOptionalNumber(firstPresent(
+    line.loc,
+    line.locCode,
+    line.LocationCode,
+    line.LocCode,
+  ));
+  if (locationCode !== undefined && hasDeliveryLineColumn(fieldMetadata, 'LocCode')) {
+    documentLine.LocationCode = locationCode;
+  }
+
+  const agreementNo = toOptionalNumber(firstPresent(
+    line.blanketAgreementNo,
+    line.agreementNo,
+    line.AgreementNo,
+    line.AgrNo,
+  ));
+  if (agreementNo !== undefined && hasDeliveryLineColumn(fieldMetadata, 'AgrNo')) {
+    documentLine.AgreementNo = agreementNo;
+  }
+
+  const agreementRowNumber = toOptionalNumber(firstPresent(
+    line.blanketAgreementLine,
+    line.agreementRowNumber,
+    line.AgreementRowNumber,
+    line.AgrLnNum,
+  ));
+  if (agreementRowNumber !== undefined && hasDeliveryLineColumn(fieldMetadata, 'AgrLnNum')) {
+    documentLine.AgreementRowNumber = agreementRowNumber;
+  }
+
+  const commissionPercent = toOptionalNumber(firstPresent(
+    line.commPercent,
+    line.commissionPercent,
+    line.CommissionPercent,
+  ));
+  if (commissionPercent !== undefined && hasDeliveryLineColumn(fieldMetadata, 'CommPercent', 'Commission')) {
+    documentLine.CommissionPercent = commissionPercent;
+  }
+
+  const withoutInventoryMovement = firstPresent(
+    line.withoutQtyPosting,
+    line.withoutInventoryMovement,
+    line.WithoutInventoryMovement,
+    line.NoInvtryMv,
+  );
+  if (withoutInventoryMovement !== undefined && hasDeliveryLineColumn(fieldMetadata, 'NoInvtryMv')) {
+    documentLine.WithoutInventoryMovement = toSapYesNo(withoutInventoryMovement);
+  }
+
+  const hsnValue = firstPresent(line.hsnCode, line.HSNCode, line.HSNEntry);
+  if (hsnValue && hasDeliveryLineColumn(fieldMetadata, 'HsnEntry')) {
+    const hsnEntry = await hsnCodeDbService.resolveHSNCodeToAbsEntry(hsnValue);
+    if (hsnEntry !== null && hsnEntry !== undefined) {
+      documentLine.HSNEntry = hsnEntry;
+    }
+  }
+
+  const sacValue = firstPresent(line.sacCode, line.SACCode, line.SACEntry);
+  if (sacValue && hasDeliveryLineColumn(fieldMetadata, 'SACEntry', 'SacEntry')) {
+    const sacEntry = await hsnCodeDbService.resolveSACCodeToAbsEntry(sacValue);
+    if (sacEntry !== null && sacEntry !== undefined) {
+      documentLine.SACEntry = sacEntry;
+    }
   }
 
   const countryOrg = normalizeCountryOrgValue(line.countryOfOrigin);

@@ -1,9 +1,8 @@
 const {
-  HEADER_TABLE,
-  LINE_TABLE,
   isEmptyValue,
   isUdfField,
   normalizeCheckbox,
+  resolveSchemaTables,
 } = require('./newSalesOrderValidationService');
 
 const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value || {}, key);
@@ -75,10 +74,12 @@ const buildNewSalesOrderPayload = ({ schema, canonicalFormData } = {}) => {
     throw error;
   }
 
+  const { headerTable, lineTable } = resolveSchemaTables(schema);
+
   return {
-    ...buildPayloadSection(schema.headerFields, canonicalFormData.header, HEADER_TABLE),
+    ...buildPayloadSection(schema.headerFields, canonicalFormData.header, headerTable),
     DocumentLines: (canonicalFormData.lines || []).map((line) =>
-      buildPayloadSection(schema.lineFields, line, LINE_TABLE)),
+      buildPayloadSection(schema.lineFields, line, lineTable)),
   };
 };
 

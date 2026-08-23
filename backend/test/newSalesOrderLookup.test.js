@@ -3,7 +3,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+  buildItemUomLookupSql,
+  buildLinkedTableSql,
+  buildStandardLookupSql,
   createNewSalesOrderLookupService,
+  findSchemaField,
+  normalizeLookupInput,
 } = require('../modules/newSalesOrder/newSalesOrderLookupService');
 const {
   assertStaticReadOnlySql,
@@ -80,6 +85,34 @@ test('standard lookup is parameterized, paginated, capped, and returns stored va
   assert.equal(calls[1].params.fetchLimit, 101);
 });
 
+test('database lookups treat LIKE wildcard characters literally on SQL Server and HANA', () => {
+  assert.equal(normalizeLookupInput({ q: 'A%B_C!D[E]' }).like, '%A!%B!_C!!D![E!]%');
+
+  const sqlVariants = [
+    buildStandardLookupSql('items', 'sqlserver'),
+    buildStandardLookupSql('items', 'hana'),
+    buildItemUomLookupSql('sqlserver'),
+    buildItemUomLookupSql('hana'),
+    buildLinkedTableSql({
+      tableName: '@LIVE_VALUES',
+      codeColumn: 'Code',
+      labelColumn: 'Name',
+      dialect: 'sqlserver',
+    }),
+    buildLinkedTableSql({
+      tableName: '@LIVE_VALUES',
+      codeColumn: 'Code',
+      labelColumn: 'Name',
+      dialect: 'hana',
+    }),
+  ];
+
+  sqlVariants.forEach((sql) => {
+    assert.match(sql, /LIKE @like ESCAPE '!'/);
+    assert.doesNotMatch(sql, /LIKE @like(?! ESCAPE '!')/);
+  });
+});
+
 test('lookup source, arbitrary table, arbitrary SQL, and unknown parameters are rejected', async () => {
   const { service } = createHarness();
   await assert.rejects(
@@ -122,6 +155,23 @@ test('dynamic lookup rejects a stale schema version', async () => {
       schemaVersion: 'old-schema',
     }),
     (error) => error.statusCode === 409 && error.code === 'STALE_SCHEMA_VERSION',
+  );
+});
+
+test('dynamic lookup field allowlist follows the active document profile', () => {
+  const schema = {
+    documentType: 'AR_INVOICE',
+    headerFields: [],
+    lineFields: [{ id: 'INV1.U_LiveValue', tableName: 'INV1', sapField: 'U_LiveValue', storage: 'udf' }],
+  };
+  assert.equal(findSchemaField(schema, 'INV1.U_LiveValue').sapField, 'U_LiveValue');
+  assert.throws(
+    () => findSchemaField(schema, 'RDR1.U_LiveValue'),
+    (error) => error.statusCode === 400 && error.code === 'INVALID_LOOKUP_FIELD',
+  );
+  assert.throws(
+    () => findSchemaField({ ...schema, documentType: 'UNKNOWN' }, 'INV1.U_LiveValue'),
+    (error) => error.statusCode === 400 && error.code === 'INVALID_LOOKUP_FIELD',
   );
 });
 
@@ -193,7 +243,7 @@ test('lookup validator scopes UoM membership to the current line item', async ()
   assert.equal(calls.length, 1);
   assert.equal(calls[0].params.itemCode, 'I001');
   assert.equal(calls[0].params.search, 'EA');
-  assert.match(calls[0].sql, /INNER JOIN UGP1/);
+  assert.match(calls[0].sql, /INNER JOIN \[UGP1\]/);
 });
 
 test('read-only SQL guard blocks write tokens, multiple statements, and SELECT INTO', () => {

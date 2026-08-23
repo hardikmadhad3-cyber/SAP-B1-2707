@@ -29,6 +29,22 @@ test('falls back to local currency when BP currency is all currencies marker', (
   })).toBe('INR');
 });
 
+test('can require selected-company currency data instead of assuming INR', () => {
+  expect(resolveDocumentCurrency({
+    mode: 'BP',
+    cardCode: 'C-ALL',
+    businessPartners,
+    localCurrency: '',
+    fallbackLocalCurrency: '',
+  })).toBe('');
+
+  expect(inferDocumentCurrencyMode({
+    currency: '',
+    localCurrency: '',
+    fallbackLocalCurrency: '',
+  })).toBe('BP');
+});
+
 test('resolves local and system currency modes', () => {
   expect(resolveDocumentCurrency({ mode: 'LOCAL', localCurrency: 'INR', systemCurrency: 'USD' })).toBe('INR');
   expect(resolveDocumentCurrency({ mode: 'SYSTEM', localCurrency: 'INR', systemCurrency: 'USD' })).toBe('USD');

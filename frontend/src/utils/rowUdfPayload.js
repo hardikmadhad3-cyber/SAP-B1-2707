@@ -29,9 +29,13 @@ export const buildVisibleEnteredRowUdfPayload = (
   rowUdfDefinitions = [],
   values = {},
   formSettings = {},
+  { preserveUnmappedUdfs = true } = {},
 ) => {
   const rowSettings = formSettings?.rowUdfs || {};
   const matrixSettings = formSettings?.matrixColumns || {};
+  const definedUdfKeys = new Set(
+    (rowUdfDefinitions || []).map((field) => field?.key).filter(Boolean),
+  );
 
   const payload = (rowUdfDefinitions || []).reduce((acc, field) => {
     const key = field?.key;
@@ -51,6 +55,7 @@ export const buildVisibleEnteredRowUdfPayload = (
     if (
       !isSapUdfKey(key) ||
       Object.prototype.hasOwnProperty.call(payload, key) ||
+      (!preserveUnmappedUdfs && !definedUdfKeys.has(key)) ||
       !hasEnteredUdfValue(value)
     ) {
       return;

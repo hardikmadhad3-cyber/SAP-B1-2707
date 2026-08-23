@@ -1,11 +1,40 @@
-import { BASE_MATRIX_COLUMNS } from '../../config/salesOrderForm';
-
 export const SALES_ORDER_LAYOUT_DOCUMENT_TYPE = 'SALES_ORDER';
 export const SALES_QUOTATION_LAYOUT_DOCUMENT_TYPE = 'SALES_QUOTATION';
 export const DELIVERY_LAYOUT_DOCUMENT_TYPE = 'DELIVERY';
 export const AR_INVOICE_LAYOUT_DOCUMENT_TYPE = 'AR_INVOICE';
 export const AR_CREDIT_MEMO_LAYOUT_DOCUMENT_TYPE = 'AR_CREDIT_MEMO';
 export const SALES_ORDER_LINE_NUMBER_KEY = '__lineNumber';
+
+// This is the only non-live matrix used by the standard Sales-A/R pages.  It
+// deliberately contains SAP fields only: no company UDF, workbook, or
+// customer-specific column is allowed into the unavailable-metadata path.
+export const SAP_STANDARD_SALES_MATRIX_COLUMNS = Object.freeze([
+  Object.freeze({ key: SALES_ORDER_LINE_NUMBER_KEY, valueKey: SALES_ORDER_LINE_NUMBER_KEY, rendererKey: SALES_ORDER_LINE_NUMBER_KEY, fieldName: 'LineNum', sapField: 'LineNum', label: '#', type: 'number', minWidth: 42, width: 42, order: -10000, columnOrder: -10000, visible: true, readOnly: true, active: false, sapControlled: false, source: 'sap-standard-fallback' }),
+  Object.freeze({ key: 'itemNo', fieldName: 'ItemCode', sapField: 'ItemCode', label: 'Item No.', type: 'text', minWidth: 150, visible: true, order: 20, source: 'sap-standard-fallback' }),
+  Object.freeze({ key: 'itemDescription', fieldName: 'Dscription', sapField: 'Dscription', label: 'Item Description', type: 'text', minWidth: 220, visible: true, order: 30, source: 'sap-standard-fallback' }),
+  Object.freeze({ key: 'quantity', fieldName: 'Quantity', sapField: 'Quantity', label: 'Quantity', type: 'number', numeric: true, minWidth: 100, visible: true, order: 40, source: 'sap-standard-fallback' }),
+  Object.freeze({ key: 'uomCode', fieldName: 'UomCode', sapField: 'UoMCode', label: 'UoM Code', type: 'text', minWidth: 105, visible: true, order: 50, source: 'sap-standard-fallback' }),
+  Object.freeze({ key: 'unitPrice', fieldName: 'Price', sapField: 'UnitPrice', label: 'Unit Price', type: 'number', numeric: true, minWidth: 110, visible: true, order: 60, source: 'sap-standard-fallback' }),
+  Object.freeze({ key: 'stdDiscount', fieldName: 'DiscPrcnt', sapField: 'DiscountPercent', label: 'Discount %', type: 'number', numeric: true, minWidth: 95, visible: true, order: 70, source: 'sap-standard-fallback' }),
+  Object.freeze({ key: 'taxCode', fieldName: 'VatGroup', sapField: 'TaxCode', label: 'Tax Code', type: 'text', minWidth: 115, visible: true, order: 80, source: 'sap-standard-fallback' }),
+  Object.freeze({ key: 'whse', fieldName: 'WhsCode', sapField: 'WarehouseCode', label: 'Warehouse', type: 'text', minWidth: 120, visible: true, order: 90, source: 'sap-standard-fallback' }),
+  Object.freeze({ key: 'distRule', fieldName: 'OcrCode', sapField: 'CostingCode', label: 'Distribution Rule', type: 'text', minWidth: 145, visible: true, order: 100, source: 'sap-standard-fallback' }),
+  Object.freeze({ key: 'lineDeliveryDate', fieldName: 'ShipDate', sapField: 'ShipDate', label: 'Delivery Date', type: 'date', minWidth: 125, visible: true, order: 110, source: 'sap-standard-fallback' }),
+  Object.freeze({ key: 'totalLC', fieldName: 'LineTotal', sapField: 'LineTotal', label: 'Total (LC)', type: 'number', numeric: true, minWidth: 115, visible: true, readOnly: true, active: false, order: 120, source: 'sap-standard-fallback' }),
+  Object.freeze({ key: 'grossTotal', fieldName: 'TotalFrgn', sapField: 'TotalFrgn', label: 'Total (Doc)', type: 'number', numeric: true, minWidth: 120, visible: true, readOnly: true, active: false, order: 130, source: 'sap-standard-fallback' }),
+]);
+
+export const getSapStandardSalesMatrixColumns = () => (
+  SAP_STANDARD_SALES_MATRIX_COLUMNS.map((column) => ({ ...column }))
+);
+
+export const makeSalesOrderHsnColumnEditable = (columns = []) => (
+  (Array.isArray(columns) ? columns : []).map((column) => (
+    String(column?.key || column?.valueKey || '').trim() === 'hsnCode'
+      ? { ...column, active: true, readOnly: false, editable: true }
+      : column
+  ))
+);
 
 const normalizeToken = (value) =>
   String(value || '')
@@ -44,7 +73,16 @@ const SAP_FIELD_TO_INTERNAL_KEY = {
   DELIVERYDATE: 'lineDeliveryDate',
   UOMNAME: 'uomName',
   UNITMSR: 'uomName',
+  UNITOFMEASURENAME: 'uomName',
   UOMCODE: 'uomCode',
+  ONHAND: 'inStock',
+  ONHANDQTY: 'inStock',
+  INSTOCK: 'inStock',
+  QUANTITYONSTOCK: 'inStock',
+  WHSQTY: 'qtyInWhse',
+  QTYINWHSE: 'qtyInWhse',
+  QTYINWAREHOUSE: 'qtyInWhse',
+  WAREHOUSEQUANTITY: 'qtyInWhse',
   HSN: 'hsnCode',
   HSNCODE: 'hsnCode',
   HSNENTRY: 'hsnCode',
@@ -71,6 +109,7 @@ const SAP_FIELD_TO_INTERNAL_KEY = {
   TAXONLY: 'taxLiable',
   LINETOTAL: 'totalLC',
   GTOTAL: 'grossTotal',
+  TOTALFRGN: 'grossTotal',
   GROSSTOTAL: 'grossTotal',
   TOTAL: 'totalLC',
   PACKQTY: 'noOfPackages',
@@ -115,6 +154,8 @@ const SAP_FIELD_TO_INTERNAL_KEY = {
   OCRCODE5: 'distRule5',
   COSTINGCODE5: 'distRule5',
   COGSOCRCOD: 'cogsDistRule',
+  COGSCOSTINGCODE: 'cogsDistRule',
+  COGSDISTRIBUTIONRULE: 'cogsDistRule',
   WEIGHT1: 'weight',
   WEIGHT: 'weight',
   OPENQTY: 'openQty',
@@ -196,6 +237,12 @@ const LABEL_TO_INTERNAL_KEY = {
   QUANTITY: 'quantity',
   UOMNAME: 'uomName',
   UOMCODE: 'uomCode',
+  INSTOCK: 'inStock',
+  ONHAND: 'inStock',
+  QUANTITYONSTOCK: 'inStock',
+  QTYINWHSE: 'qtyInWhse',
+  QTYINWAREHOUSE: 'qtyInWhse',
+  WAREHOUSEQUANTITY: 'qtyInWhse',
   HSN: 'hsnCode',
   SAC: 'sacCode',
   UNITPRICE: 'unitPrice',
@@ -204,6 +251,7 @@ const LABEL_TO_INTERNAL_KEY = {
   TOTALDOC: 'grossTotal',
   TOTALDOCUMENT: 'grossTotal',
   GROSSTOTAL: 'grossTotal',
+  TOTALLC: 'totalLC',
   TOTAL: 'totalLC',
   GROSSWT: 'U_GrossWt',
   PACKINGTYPE: 'U_PackingType',
@@ -246,6 +294,7 @@ const LABEL_TO_INTERNAL_KEY = {
   CHANGEQTYINVUOMINDEPENDENTLY: 'changeQtyInvUomIndependently',
   UOMGROUP: 'uomGroup',
   COGSDISTRULE: 'cogsDistRule',
+  COGSDISTRRULE: 'cogsDistRule',
   COUNTRYREGIONOFORIGIN: 'countryOfOrigin',
   ASSESSABLEVALUE: 'assessableValue',
   ASSESSABLEVALUEINR: 'assessableValue',
@@ -303,6 +352,8 @@ const STANDARD_RENDERER_KEYS = new Set([
   'lineDeliveryDate',
   'uomName',
   'uomCode',
+  'inStock',
+  'qtyInWhse',
   'hsnCode',
   'unitPrice',
   'unitPriceUdf',
@@ -381,15 +432,19 @@ const STANDARD_FIELD_OVERRIDES = {
   itemDescription: { type: 'text', minWidth: 220 },
   quantity: { type: 'number', minWidth: 100, numeric: true },
   requiredQty: { type: 'number', minWidth: 110, numeric: true },
+  requiredDate: { type: 'date', minWidth: 125 },
   lineDeliveryDate: { type: 'date', minWidth: 125 },
   uomName: { type: 'text', minWidth: 120, readOnly: true },
   uomCode: { type: 'text', minWidth: 105 },
+  inStock: { type: 'number', minWidth: 105, readOnly: true, numeric: true },
+  qtyInWhse: { type: 'number', minWidth: 115, readOnly: true, numeric: true },
   hsnCode: { type: 'text', minWidth: 105 },
   sacCode: { type: 'text', minWidth: 105 },
   unitPrice: { type: 'number', minWidth: 110, numeric: true },
   unitPriceUdf: { type: 'number', minWidth: 110, numeric: true },
   forRate: { type: 'number', minWidth: 110, numeric: true },
   taxCode: { type: 'text', minWidth: 115 },
+  wTaxLiable: { type: 'checkbox', minWidth: 100 },
   lineShippingType: { type: 'text', minWidth: 125 },
   taxCodeRepeat: { type: 'text', minWidth: 110, readOnly: true },
   taxLiable: { type: 'checkbox', minWidth: 95 },
@@ -408,10 +463,10 @@ const STANDARD_FIELD_OVERRIDES = {
   distRule3: { type: 'text', minWidth: 115 },
   distRule4: { type: 'text', minWidth: 115 },
   distRule5: { type: 'text', minWidth: 115 },
-  cogsDistRule: { type: 'text', minWidth: 130, readOnly: true },
+  cogsDistRule: { type: 'text', minWidth: 130 },
   openQty: { type: 'number', minWidth: 110, readOnly: true, numeric: true },
   blanketAgreementNo: { type: 'text', minWidth: 150 },
-  withoutQtyPosting: { type: 'yesNo', minWidth: 145 },
+  withoutQtyPosting: { type: 'checkbox', minWidth: 145 },
   enableSettingCost: { type: 'checkbox', minWidth: 140 },
   returnCost: { type: 'number', minWidth: 125, numeric: true },
   commPercent: { type: 'number', minWidth: 95, numeric: true },
@@ -433,6 +488,7 @@ export const SALES_ORDER_WRITABLE_STANDARD_LINE_FIELDS = Object.freeze({
   taxCode: Object.freeze({ serviceLayerField: 'TaxCode', payloadKey: 'taxCode' }),
   lineShippingType: Object.freeze({ serviceLayerField: 'ShippingMethod', payloadKey: 'lineShippingType' }),
   lineDeliveryDate: Object.freeze({ serviceLayerField: 'ShipDate', payloadKey: 'lineDeliveryDate' }),
+  requiredDate: Object.freeze({ serviceLayerField: 'RequiredDate', payloadKey: 'requiredDate' }),
   taxLiable: Object.freeze({ serviceLayerField: 'TaxOnly', payloadKey: 'taxLiable' }),
   whse: Object.freeze({ serviceLayerField: 'WarehouseCode', payloadKey: 'whse' }),
   distRule: Object.freeze({ serviceLayerField: 'CostingCode', payloadKey: 'distRule' }),
@@ -440,6 +496,13 @@ export const SALES_ORDER_WRITABLE_STANDARD_LINE_FIELDS = Object.freeze({
   distRule3: Object.freeze({ serviceLayerField: 'CostingCode3', payloadKey: 'distRule3' }),
   distRule4: Object.freeze({ serviceLayerField: 'CostingCode4', payloadKey: 'distRule4' }),
   distRule5: Object.freeze({ serviceLayerField: 'CostingCode5', payloadKey: 'distRule5' }),
+  cogsDistRule: Object.freeze({ serviceLayerField: 'COGSCostingCode', payloadKey: 'cogsDistRule' }),
+  glAccount: Object.freeze({ serviceLayerField: 'AccountCode', payloadKey: 'glAccount' }),
+  wTaxLiable: Object.freeze({ serviceLayerField: 'WTLiable', payloadKey: 'wTaxLiable' }),
+  blanketAgreementNo: Object.freeze({ serviceLayerField: 'AgreementNo', payloadKey: 'blanketAgreementNo' }),
+  commPercent: Object.freeze({ serviceLayerField: 'CommissionPercent', payloadKey: 'commPercent' }),
+  withoutQtyPosting: Object.freeze({ serviceLayerField: 'WithoutInventoryMovement', payloadKey: 'withoutQtyPosting' }),
+  loc: Object.freeze({ serviceLayerField: 'LocationCode', payloadKey: 'loc' }),
   countryOfOrigin: Object.freeze({ serviceLayerField: 'CountryOrg', payloadKey: 'countryOfOrigin' }),
   hsnCode: Object.freeze({ serviceLayerField: 'HSNEntry', payloadKey: 'hsnCode', resolved: true }),
   sacCode: Object.freeze({ serviceLayerField: 'SACEntry', payloadKey: 'sacCode', resolved: true }),
@@ -528,6 +591,12 @@ const findInternalKey = (layoutColumn, liveFieldMap) => {
   }
 
   const labelMappedKey = LABEL_TO_INTERNAL_KEY[labelToken];
+  // SAP can retain an old physical UID while the Form Settings caption has
+  // been changed. For standard fields the visible caption is authoritative;
+  // keep explicit UDF identities above this branch so UDFs stay company-safe.
+  if (labelMappedKey && !layoutColumn.preferPhysicalField && !rawFieldNameUpper.startsWith('U_')) {
+    return labelMappedKey;
+  }
   if (labelMappedKey && [
     'DISTRRULE',
     'DISTRIBUTIONRULE',
@@ -557,7 +626,10 @@ const buildSyntheticColumn = (layoutColumn, key, extras = {}) => {
     layoutFieldName: layoutColumn.fieldName || layoutColumn.columnUid || key,
     label: layoutColumn.columnTitle || extras.label || key,
     visible: layoutColumn.visible !== false,
-    active: extras.active ?? (layoutColumn.editable !== false && !readOnly),
+    // The SAP Form Settings Active value is independent of whether this web
+    // client can safely post a field. Keep the UI input read-only when needed,
+    // while preserving SAP's actual Active checkbox in Form Settings.
+    active: extras.active ?? (layoutColumn.editable !== false),
     readOnly,
     minWidth: Number(layoutColumn.width) || extras.minWidth || 125,
     width: Number(layoutColumn.width) || extras.minWidth || 125,
@@ -581,6 +653,7 @@ const buildSyntheticColumn = (layoutColumn, key, extras = {}) => {
     serviceLayerField: extras.serviceLayerField,
     payloadKey: extras.payloadKey,
     writableStandardField: Boolean(extras.writableStandardField),
+    displayOnly: Boolean(extras.displayOnly),
   };
 };
 
@@ -600,7 +673,7 @@ const buildStandardLayoutColumn = (layoutColumn, liveField, internalKey, index) 
     layoutFieldName: layoutColumn.fieldName || layoutColumn.columnUid || liveField?.fieldName || internalKey,
     label: layoutColumn.columnTitle || liveField?.label || internalKey,
     visible: layoutColumn.visible !== false,
-    active: layoutColumn.editable !== false && !readOnly,
+    active: layoutColumn.editable !== false,
     readOnly,
     minWidth: Number(layoutColumn.width) || standardOverride.minWidth || liveField?.minWidth || 125,
     width: Number(layoutColumn.width) || standardOverride.minWidth || liveField?.minWidth || 125,
@@ -681,7 +754,7 @@ export const buildSalesOrderRowUdfDefinitionsFromSchema = (schemaLineFields = []
         required: Boolean(field.required),
         readOnly: Boolean(field.readOnly || field.editable === false),
         visible: field.visible !== false,
-        active: field.editable !== false && !field.readOnly,
+        active: field.editable !== false,
         maxLength: field.maxLength || field.length || undefined,
         precision: field.precision ?? undefined,
         scale: field.scale ?? undefined,
@@ -704,6 +777,7 @@ export const buildSalesOrderMatrixColumnsFromSchema = ({
   schemaLineFields = [],
   liveMatrixColumns = [],
   rowUdfFields = [],
+  lineTable = 'RDR1',
 } = {}) => {
   if (!Array.isArray(schemaLineFields) || !schemaLineFields.length) return [];
 
@@ -729,6 +803,7 @@ export const buildSalesOrderMatrixColumnsFromSchema = ({
           dataType: field.databaseType || field.type || '',
           isUdf,
           source: 'schema',
+          preferPhysicalField: true,
         };
 
         if (isUdf) {
@@ -740,10 +815,10 @@ export const buildSalesOrderMatrixColumnsFromSchema = ({
               label: field.label || key,
               type: getSchemaFieldInputType(field),
               options: Array.isArray(field.options) ? field.options : [],
-              lookupSource: getSchemaSalesOrderLookupSource(field),
+              lookupSource: getSchemaSalesOrderLookupSource(field, lineTable),
               lookupTable: field.linkedTable || field.lookupTable || undefined,
               readOnly: Boolean(field.readOnly || field.editable === false),
-              active: field.editable !== false && !field.readOnly,
+              active: field.editable !== false,
             };
 
           return buildSyntheticColumn(layoutColumn, udfField.key, {
@@ -753,7 +828,7 @@ export const buildSalesOrderMatrixColumnsFromSchema = ({
             order: Number(field.order) || index + 1,
             type: udfField.type || getSchemaFieldInputType(field),
             isUdf: true,
-            lookupSource: udfField.lookupSource || getSchemaSalesOrderLookupSource(field),
+            lookupSource: udfField.lookupSource || getSchemaSalesOrderLookupSource(field, lineTable),
             lookupTable: udfField.lookupTable || field.linkedTable || field.lookupTable,
             lookup: field.lookup,
             options: udfField.options || field.options,
@@ -795,7 +870,7 @@ export const buildSalesOrderMatrixColumnsFromSchema = ({
             label: field.label || internalKey,
             order: Number(field.order) || index + 1,
             readOnly,
-            active: field.editable !== false && !readOnly,
+            active: field.editable !== false,
             lookupSource: field.lookup?.source || field.lookupSource || undefined,
             lookup: field.lookup,
             options: Array.isArray(field.options) ? field.options : undefined,
@@ -949,7 +1024,7 @@ export const mapLiveSalesOrderMatrixToLayout = (columns = []) => (
     fieldName: column.sapField || column.fieldName || column.key || '',
     columnTitle: column.label || column.columnTitle || column.key || '',
     visible: column.visible !== false,
-    editable: column.active !== false && !column.readOnly,
+    editable: column.active !== false,
     columnOrder: Number.isFinite(Number(column.order)) ? Number(column.order) : index + 1,
     width: Number(column.minWidth || column.width) || undefined,
     dataType: column.dataType || column.type || '',
@@ -989,7 +1064,7 @@ export const buildSalesOrderMatrixColumnsFromLayout = ({
       ? withUniqueLayoutKeys(dedupeVisibleMatrixColumns(pinLineNumberColumnFirst(
           includeLineNumber ? ensureLineNumberColumn(liveMatrixColumns) : liveMatrixColumns,
         )))
-      : BASE_MATRIX_COLUMNS;
+      : getSapStandardSalesMatrixColumns();
   }
 
   const liveFieldMap = buildLiveFieldMap(liveMatrixColumns);
@@ -1047,7 +1122,7 @@ export const buildSalesOrderMatrixColumnsFromLayout = ({
         label: layoutColumn.columnTitle || internalKey,
         order: Number(layoutColumn.columnOrder) || index + 1,
         readOnly,
-        active: layoutColumn.editable !== false && !readOnly,
+        active: layoutColumn.editable !== false,
         serviceLayerField: writableMapping?.serviceLayerField,
         payloadKey: writableMapping?.payloadKey,
         writableStandardField: Boolean(writableMapping),
@@ -1099,31 +1174,28 @@ export const buildSalesOrderMatrixColumnsFromLayout = ({
       });
     }
 
-    // Skip unknown layout fields that cannot be rendered by the UI.
-    return null;
+    // Do not silently lose a column that SAP B1 shows in Form Settings. It is
+    // read-only until this client has a confirmed payload mapping, but it
+    // remains present with SAP's caption, visibility, active flag, and width.
+    return buildSyntheticColumn(layoutColumn, `sapLayout_${fieldName || index + 1}`, {
+      label: layoutColumn.columnTitle || fieldName || `SAP Column ${index + 1}`,
+      readOnly: true,
+      active: layoutColumn.editable !== false,
+      minWidth: Number(layoutColumn.width) || 125,
+      order: Number(layoutColumn.columnOrder) || index + 1,
+      type: mapLayoutDataTypeToInputType(layoutColumn.dataType),
+      source: layoutColumn.source || 'live-sap-metadata',
+      displayOnly: true,
+    });
   });
 
-  // Ensure Tax Code appears before Tax Amount to match SAP B1 default ordering
   const filtered = mappedColumns.filter(Boolean);
-  try {
-    const taxCodeIdx = filtered.findIndex((c) => (c.key || '').toString().toLowerCase() === 'taxcode' || (c.fieldName || '').toString().toLowerCase().includes('taxcode'));
-    const taxAmountIdx = filtered.findIndex((c) => (c.key || '').toString().toLowerCase() === 'taxamount' || (c.fieldName || '').toString().toLowerCase().includes('taxamount') || (c.label || '').toString().toLowerCase().includes('tax amount'));
-    if (taxCodeIdx >= 0 && taxAmountIdx >= 0 && taxAmountIdx < taxCodeIdx) {
-      // swap their order values so taxCode renders earlier
-      const tmpOrder = Number(filtered[taxCodeIdx].order || filtered[taxCodeIdx].columnOrder || taxCodeIdx + 1);
-      filtered[taxCodeIdx].order = Number(filtered[taxAmountIdx].order || filtered[taxAmountIdx].columnOrder || taxAmountIdx + 1);
-      filtered[taxAmountIdx].order = tmpOrder;
-    }
-  } catch (e) {
-    // swallow any errors — ordering is best-effort
-    // console.debug('layout ordering adjust failed', e);
-  }
 
   const mergedColumns = appendMissingLiveColumns
     ? appendMissingLiveMatrixColumns(filtered, liveMatrixColumns)
     : filtered;
 
-  return withUniqueLayoutKeys(dedupeVisibleMatrixColumns(pinLineNumberColumnFirst(
+  return withUniqueLayoutKeys(
     includeLineNumber ? ensureLineNumberColumn(mergedColumns) : mergedColumns,
-  )));
+  );
 };

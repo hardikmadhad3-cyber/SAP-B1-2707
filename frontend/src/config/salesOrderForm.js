@@ -1,3 +1,5 @@
+import { mergeSavedFormSettings } from '../utils/formSettingsPreferences';
+
 const FORM_SETTINGS_STORAGE_KEY = 'sapb1.salesOrder.formSettings.v2';
 
 const normalizeUdfKey = (value) => {
@@ -428,22 +430,6 @@ const createDefaultFormSettings = (
   rowUdfs: buildVisibilitySettings(rowUdfDefinitions),
 });
 
-const mergeNestedSettings = (defaults, saved = {}) =>
-  Object.keys(defaults).reduce((acc, groupKey) => {
-    const savedGroup = saved[groupKey] || {};
-    acc[groupKey] = Object.keys(defaults[groupKey] || {}).reduce((group, fieldKey) => {
-      const defaultEntry = defaults[groupKey][fieldKey] || {};
-      const savedEntry = savedGroup[fieldKey] || {};
-      group[fieldKey] = {
-        ...defaultEntry,
-        ...savedEntry,
-        sapControlled: defaultEntry.sapControlled,
-      };
-      return group;
-    }, {});
-    return acc;
-  }, {});
-
 const readSavedFormSettings = (...args) => {
   let headerUdfDefinitions = HEADER_UDF_DEFINITIONS;
   let rowUdfDefinitions = ROW_UDF_DEFINITIONS;
@@ -464,7 +450,7 @@ const readSavedFormSettings = (...args) => {
   try {
     const raw = localStorage.getItem(storageKey);
     if (!raw) return defaults;
-    return mergeNestedSettings(defaults, JSON.parse(raw));
+    return mergeSavedFormSettings(defaults, JSON.parse(raw));
   } catch (error) {
     return defaults;
   }

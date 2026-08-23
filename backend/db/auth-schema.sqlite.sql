@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS UserCompanies (
   UserId INTEGER NOT NULL,
   CompanyId INTEGER NOT NULL,
   IsDefault INTEGER DEFAULT 0,
+  SapUserCode TEXT NULL,
   FOREIGN KEY (UserId) REFERENCES Users(UserId),
   FOREIGN KEY (CompanyId) REFERENCES Companies(CompanyId)
 );

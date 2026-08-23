@@ -1,12 +1,25 @@
 import React from 'react';
+import DocumentLineSettingsLoading from '../../../components/sales-document/DocumentLineSettingsLoading';
 import TaxCodeLookup from '../../../components/TaxCodeLookup';
+import LineValueLookupModal from '../../../components/sales-document/LineValueLookupModal';
 import { useSapItemCodeTab } from '../../../utils/sapTabNavigation';
 import { getLineTotalsForDisplay } from '../../../utils/lineTotals';
-import { DELIVERY_WORKBOOK_COLUMNS } from '../../../config/workbookMatrixColumns';
+import { getSapStandardSalesMatrixColumns } from '../../sales-order/documentLayout';
+import { normalizeDeliveryMatrixColumn } from '../deliveryLiveMatrix';
+import { getReadableDocumentLineColumnWidth } from '../../../utils/documentLineColumnWidth';
 
-const TABLE_MIN_WIDTH = 4800;
+const LINE_NUMBER_COLUMN_KEY = '__lineNumber';
+const INDEX_COLUMN_WIDTH = 42;
 
-const MATRIX_COLS = DELIVERY_WORKBOOK_COLUMNS;
+const MATRIX_COLS = getSapStandardSalesMatrixColumns();
+const DELIVERY_SPECIALIZED_LOOKUP_RENDERERS = new Set([
+  'itemNo',
+  'taxCode',
+  'whse',
+  'distRule',
+  'uomCode',
+  'hsnCode',
+]);
 
 const parseNumber = (value) => {
   const parsed = Number(value);
@@ -98,7 +111,7 @@ const getGenericUdfField = (column = {}) => {
   };
 };
 
-export default function ContentsTab({
+function ReadyContentsTab({
   lines,
   onLineChange,
   onNumBlur,
@@ -118,12 +131,21 @@ export default function ContentsTab({
   valErrors,
   distributionRules = [],
   formSettings = {},
-  matrixFields = MATRIX_COLS,
+  matrixFields = null,
   rowUdfFields = [],
   onRowUdfChange,
+  onLoadLookupOptions,
   currency = '',
 }) {
   const sapItemTab = useSapItemCodeTab({ lineItemOptions, onLineChange, onOpenItemModal });
+  const [dynamicLookup, setDynamicLookup] = React.useState({
+    open: false,
+    rowIndex: -1,
+    column: null,
+    options: [],
+    loading: false,
+    error: '',
+  });
   const getTaxAmountDisplay = (line) => {
     if (String(line.taxAmount ?? '').trim()) return line.taxAmount;
     const totals = getLineTotalsForDisplay(line, effectiveTaxCodes);
@@ -131,36 +153,69 @@ export default function ContentsTab({
     return (parseNumber(totals.total) - parseNumber(totals.beforeTax)).toFixed(2);
   };
 
-  const validMatrixFields = Array.isArray(matrixFields) ? matrixFields.filter((field) => field && field.key) : [];
+  const hasExplicitMatrixFields = Array.isArray(matrixFields);
+  const validMatrixFields = hasExplicitMatrixFields ? matrixFields.filter((field) => field && field.key) : [];
   const safeRowUdfFields = Array.isArray(rowUdfFields) ? rowUdfFields.filter((field) => field && field.key) : [];
-  const sourceMatrixFields = validMatrixFields.length ? validMatrixFields : MATRIX_COLS;
-  const usesMetadataDrivenMatrix = sourceMatrixFields.some((field) => field?.sapControlled || field?.importedLayout);
+  const configuredMatrixFields = hasExplicitMatrixFields ? validMatrixFields : MATRIX_COLS;
+  const sourceMatrixFields = configuredMatrixFields.some((field) => field?.key === LINE_NUMBER_COLUMN_KEY)
+    ? configuredMatrixFields
+    : [{
+        key: LINE_NUMBER_COLUMN_KEY,
+        valueKey: LINE_NUMBER_COLUMN_KEY,
+        rendererKey: LINE_NUMBER_COLUMN_KEY,
+        fieldName: 'LineNum',
+        label: '#',
+        visible: true,
+        active: false,
+        readOnly: true,
+        minWidth: INDEX_COLUMN_WIDTH,
+        width: INDEX_COLUMN_WIDTH,
+        order: -10000,
+        sapControlled: true,
+      }, ...configuredMatrixFields];
+  const usesMetadataDrivenMatrix = hasExplicitMatrixFields
+    || sourceMatrixFields.some((field) => field?.sapControlled || field?.importedLayout);
   const rowUdfByKey = new Map(safeRowUdfFields.map((field) => [field.key, field]));
   const rowUdfByToken = new Map(safeRowUdfFields.map((field) => [getUdfToken(field.key), field]));
   const baseColumnByKey = new Map(MATRIX_COLS.map((field) => [field.key, field]));
-  const isVisibleBySetting = (field = {}, setting = {}) => (
-    setting?.visible !== undefined ? setting.visible !== false : field.visible !== false
+  const isUdfMatrixColumn = (column = {}) => Boolean(
+    column.isUdf
+    || String(column.key || '').startsWith('U_')
+    || String(column.valueKey || '').startsWith('U_')
   );
+  const getMatrixColumnSetting = (column = {}) => ({
+    visible: column.visible !== false,
+    active: column.active !== false,
+    ...(
+      formSettings.matrixColumns?.[column.key]
+      || formSettings.matrixColumns?.[column.valueKey]
+      || (isUdfMatrixColumn(column)
+        ? formSettings.rowUdfs?.[column.key] || formSettings.rowUdfs?.[column.valueKey]
+        : undefined)
+      || {}
+    ),
+  });
   const matrixColumns = [
     ...sourceMatrixFields.map((field, index) => {
-      const rendererKey = field.rendererKey || field.valueKey || field.key;
+      const normalizedField = normalizeDeliveryMatrixColumn(field);
+      const rendererKey = normalizedField.rendererKey || normalizedField.valueKey || normalizedField.key;
       return {
         ...(baseColumnByKey.get(rendererKey) || {}),
-        ...field,
-        key: field.key,
+        ...normalizedField,
+        key: normalizedField.key,
         rendererKey,
-        valueKey: field.valueKey || rendererKey,
-        minWidth: field.minWidth || field.width || baseColumnByKey.get(rendererKey)?.minWidth || 125,
-        order: Number(field.order ?? field.columnOrder ?? index + 1),
-        field: field.isUdf
+        valueKey: normalizedField.valueKey || rendererKey,
+        minWidth: normalizedField.minWidth || normalizedField.width || baseColumnByKey.get(rendererKey)?.minWidth || 125,
+        order: Number(normalizedField.order ?? normalizedField.columnOrder ?? index + 1),
+        field: normalizedField.isUdf
           ? (
-            rowUdfByKey.get(field.valueKey || field.key) ||
-            rowUdfByKey.get(field.key) ||
-            rowUdfByToken.get(getUdfToken(field.valueKey || field.key)) ||
-            rowUdfByToken.get(getUdfToken(field.key)) ||
-            field.field
+            rowUdfByKey.get(normalizedField.valueKey || normalizedField.key) ||
+            rowUdfByKey.get(normalizedField.key) ||
+            rowUdfByToken.get(getUdfToken(normalizedField.valueKey || normalizedField.key)) ||
+            rowUdfByToken.get(getUdfToken(normalizedField.key)) ||
+            normalizedField.field
           )
-          : field.field,
+          : normalizedField.field,
       };
     }),
     ...(usesMetadataDrivenMatrix ? [] : safeRowUdfFields.map((field) => ({
@@ -172,26 +227,96 @@ export default function ContentsTab({
     }))),
   ];
 
-  const visibleColumns = dedupeColumns(matrixColumns).filter((col) => {
-    const setting = formSettings.matrixColumns?.[col.key];
-    if (col.isUdf) {
-      return isVisibleBySetting(col, formSettings.rowUdfs?.[col.key] || {});
-    }
-    return isVisibleBySetting(col, setting || {});
-  }).sort((left, right) => Number(left.order || 0) - Number(right.order || 0));
+  const visibleColumns = dedupeColumns(matrixColumns)
+    .filter((column) => getMatrixColumnSetting(column).visible !== false)
+    .sort((left, right) => Number(left.order || 0) - Number(right.order || 0));
   // Ensure actions column is always present as the trailing column
   const visibleColumnsWithActions = [
     ...visibleColumns,
     { key: '__actions', label: '', minWidth: 48, order: Number.MAX_SAFE_INTEGER },
   ];
+  const getColumnWidth = (column = {}) => {
+    if (String(column.key || '') === '__actions') {
+      return Number(column.minWidth || column.width) || 48;
+    }
+    const rendererKey = column.rendererKey || column.valueKey || column.key;
+    return getReadableDocumentLineColumnWidth(
+      column,
+      baseColumnByKey.get(rendererKey) || {},
+      {
+        lineNumberKey: LINE_NUMBER_COLUMN_KEY,
+        lineNumberWidth: INDEX_COLUMN_WIDTH,
+      },
+    );
+  };
+  const tableWidth = visibleColumnsWithActions.reduce(
+    (total, column) => total + getColumnWidth(column),
+    0
+  );
   const isBatchColumn = (column = {}) => ['BATCH', 'BATCHES'].includes(compactColumnToken(
     column.rendererKey || column.valueKey || column.key || column.label
   ));
   const hasBatchColumn = visibleColumns.some(isBatchColumn);
 
+  const openDynamicLookup = async (rowIndex, column, line) => {
+    const source = column.lookupSource
+      || column.lookup?.source
+      || column.field?.lookupSource
+      || column.field?.lookup?.source;
+    if (!source || typeof onLoadLookupOptions !== 'function') return;
+
+    setDynamicLookup({
+      open: true,
+      rowIndex,
+      column,
+      options: [],
+      loading: true,
+      error: '',
+    });
+    try {
+      const options = await onLoadLookupOptions(source, column, line);
+      setDynamicLookup({
+        open: true,
+        rowIndex,
+        column,
+        options: Array.isArray(options) ? options : [],
+        loading: false,
+        error: '',
+      });
+    } catch (error) {
+      setDynamicLookup({
+        open: true,
+        rowIndex,
+        column,
+        options: [],
+        loading: false,
+        error: error?.response?.data?.detail || error?.message || 'Failed to load lookup values.',
+      });
+    }
+  };
+
+  const selectDynamicLookupValue = (option) => {
+    const column = dynamicLookup.column;
+    if (!column || dynamicLookup.rowIndex < 0) return;
+    const valueKey = getColumnValueKey(column);
+    const isUdfColumn = Boolean(column.isUdf || String(column.field?.key || valueKey).startsWith('U_'));
+    if (isUdfColumn) {
+      onRowUdfChange && onRowUdfChange(
+        dynamicLookup.rowIndex,
+        column.field?.key || valueKey,
+        option?.value || ''
+      );
+    } else {
+      onLineChange(dynamicLookup.rowIndex, {
+        target: { name: valueKey, value: option?.value || '' },
+      });
+    }
+    setDynamicLookup((previous) => ({ ...previous, open: false }));
+  };
+
   const isColumnVisible = (columnKey) => {
-    const setting = formSettings.matrixColumns?.[columnKey];
-    return setting?.visible !== false;
+    const column = matrixColumns.find((candidate) => candidate.key === columnKey);
+    return column ? getMatrixColumnSetting(column).visible !== false : false;
   };
 
   const renderBatchCell = (line, i) => {
@@ -269,20 +394,41 @@ export default function ContentsTab({
       )
       : safeRowUdfFields.find((field) => field.key === columnKey);
     const columnObject = typeof column === 'object' ? column : { key: columnKey };
+    const columnSetting = getMatrixColumnSetting(columnObject);
     const renderGenericCell = () => {
       const valueKey = getColumnValueKey(columnObject) || columnKey;
       const fieldKey = udfColumn?.key || valueKey;
       const disabled = Boolean(
         columnObject.readOnly ||
         columnObject.active === false ||
+        columnSetting.active === false ||
         udfColumn?.readOnly ||
-        formSettings.rowUdfs?.[fieldKey]?.active === false
+        (!formSettings.matrixColumns?.[columnObject.key]
+          && formSettings.rowUdfs?.[fieldKey]?.active === false)
       );
-      const value = udfColumn
+      const rawValue = udfColumn
         ? (getLineUdfValue(line, fieldKey) ?? line[fieldKey] ?? '')
         : (line[valueKey] ?? line[columnKey] ?? '');
+      const value = valueKey === 'grossTotal' && String(rawValue ?? '').trim() === ''
+        ? lineTotals.total
+        : rawValue;
       const fieldType = String(udfColumn?.type || columnObject.type || (columnObject.numeric ? 'number' : 'text')).trim();
       const fieldTypeKind = fieldType.toLowerCase();
+      const fieldOptions = Array.isArray(udfColumn?.options) && udfColumn.options.length
+        ? udfColumn.options
+        : (Array.isArray(columnObject.options) ? columnObject.options : []);
+      const lookupSource = columnObject.lookupSource
+        || columnObject.lookup?.source
+        || udfColumn?.lookupSource
+        || udfColumn?.lookup?.source
+        || '';
+      const lookupColumn = {
+        ...columnObject,
+        field: udfColumn || columnObject.field,
+        lookupSource,
+        lookup: columnObject.lookup || udfColumn?.lookup,
+        lookupTable: columnObject.lookupTable || udfColumn?.lookupTable,
+      };
       const centeredInputStyle = {
         textAlign: 'center',
         textAlignLast: 'center',
@@ -301,7 +447,7 @@ export default function ContentsTab({
 
       return (
         <td key={columnKey} style={{ verticalAlign: 'middle' }}>
-          {fieldTypeKind === 'select' && Array.isArray(udfColumn?.options) && udfColumn.options.length > 0 ? (
+          {fieldTypeKind === 'select' && fieldOptions.length > 0 ? (
             <select
               className="del-grid__input"
               style={centeredInputStyle}
@@ -310,7 +456,7 @@ export default function ContentsTab({
               onChange={(e) => updateValue(e.target.value)}
             >
               <option value=""></option>
-              {(udfColumn.options || []).map((option) => {
+              {fieldOptions.map((option) => {
                 const normalizedOption = typeof option === 'object' ? option : { value: option, label: option };
                 return (
                   <option key={normalizedOption.value} value={normalizedOption.value}>
@@ -338,6 +484,35 @@ export default function ContentsTab({
               <option value="Y">Yes</option>
               <option value="N">No</option>
             </select>
+          ) : lookupSource ? (
+            <div style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+              <input
+                className="del-grid__input"
+                type={fieldTypeKind === 'date' ? 'date' : fieldTypeKind === 'number' ? 'number' : 'text'}
+                value={value}
+                readOnly={disabled}
+                style={disabled ? { background: '#f5f8fc', ...centeredInputStyle } : centeredInputStyle}
+                onChange={(e) => updateValue(e.target.value)}
+              />
+              <button
+                type="button"
+                onClick={() => openDynamicLookup(i, lookupColumn, line)}
+                disabled={disabled}
+                style={pickerButtonStyle}
+                title={`List of ${columnObject.label || udfColumn?.label || 'Values'}`}
+              >
+                ...
+              </button>
+            </div>
+          ) : fieldTypeKind === 'textarea' ? (
+            <textarea
+              className="del-grid__input"
+              value={value}
+              readOnly={disabled}
+              rows={2}
+              style={disabled ? { background: '#f5f8fc', ...centeredInputStyle } : centeredInputStyle}
+              onChange={(e) => updateValue(e.target.value)}
+            />
           ) : (
             <input
               className="del-grid__input"
@@ -353,6 +528,13 @@ export default function ContentsTab({
     };
 
     if (udfColumn) return renderGenericCell();
+    if (
+      columnObject.schemaDriven
+      && (columnObject.lookupSource || columnObject.lookup?.source)
+      && !DELIVERY_SPECIALIZED_LOOKUP_RENDERERS.has(rendererKey)
+    ) {
+      return renderGenericCell();
+    }
 
     if (!isColumnVisible(columnKey)) return <td key={columnKey} />;
 
@@ -456,6 +638,9 @@ export default function ContentsTab({
         <td key="unitPrice">
           <input
             className="del-grid__input"
+            type="text"
+            inputMode="decimal"
+            autoComplete="off"
             style={{ border: valErrors.lines[i]?.unitPrice ? '1px solid #c00' : undefined }}
             name="unitPrice"
             value={line.unitPrice}
@@ -780,7 +965,7 @@ export default function ContentsTab({
         <td key="loc">
           <input
             className="del-grid__input"
-            value={getBranchName ? getBranchName(line.branch) : line.loc || ''}
+            value={line.loc || (getBranchName ? getBranchName(line.branch) : line.branch || '')}
             readOnly
             style={{ background: '#f5f8fc' }}
           />
@@ -1047,10 +1232,20 @@ export default function ContentsTab({
     };
 
     const renderedCell = cellRenderers[rendererKey] ? cellRenderers[rendererKey]() : renderGenericCell();
-    return React.cloneElement(renderedCell, { key: columnKey });
+    const disableSpecializedCell = Boolean(columnObject.readOnly || columnSetting.active === false);
+    return React.cloneElement(
+      renderedCell,
+      { key: columnKey },
+      disableSpecializedCell ? (
+        <fieldset className="del-grid__disabled-fieldset" disabled>
+          {renderedCell.props.children}
+        </fieldset>
+      ) : renderedCell.props.children
+    );
   };
 
   return (
+    <>
     <div className="sap-tab-panel del-tab-panel">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
         <div className="del-section-title">Document Lines</div>
@@ -1074,22 +1269,20 @@ export default function ContentsTab({
           <table
             className="del-grid del-grid--contents"
             style={{
-              width: 'max-content',
-              minWidth: TABLE_MIN_WIDTH,
-              tableLayout: 'auto'
+              width: tableWidth,
+              minWidth: '100%',
+              tableLayout: 'fixed'
             }}
           >
             <colgroup>
-              <col style={{ width: 42 }} />
               {visibleColumnsWithActions.map((column) => (
-                <col key={column.key} style={{ width: column.minWidth }} />
+                <col key={column.key} style={{ width: getColumnWidth(column) }} />
               ))}
             </colgroup>
             <thead>
               <tr>
-                <th style={{ width: 42 }}>#</th>
                 {visibleColumnsWithActions.map((column) => (
-                  <th key={column.key} style={{ minWidth: column.minWidth }}>
+                  <th key={column.key} style={{ width: getColumnWidth(column) }}>
                     {column.label}
                   </th>
                 ))}
@@ -1102,11 +1295,18 @@ export default function ContentsTab({
 
                 return (
                   <tr key={i}>
-                    <td className="del-grid__cell--muted" style={{ textAlign: 'center', fontSize: 11 }}>
-                      {i + 1}
-                    </td>
-
                     {visibleColumnsWithActions.map((col) => {
+                      if (String(col.key) === LINE_NUMBER_COLUMN_KEY) {
+                        return (
+                          <td
+                            key={LINE_NUMBER_COLUMN_KEY}
+                            className="del-grid__cell--muted"
+                            style={{ textAlign: 'center', fontSize: 11 }}
+                          >
+                            {i + 1}
+                          </td>
+                        );
+                      }
                       if (String(col.key) === '__actions') {
                         return (
                           <td key="__actions">
@@ -1132,5 +1332,26 @@ export default function ContentsTab({
         </div>
       </div>
     </div>
+    <LineValueLookupModal
+      isOpen={dynamicLookup.open}
+      onClose={() => setDynamicLookup((previous) => ({ ...previous, open: false }))}
+      onSelect={selectDynamicLookupValue}
+      options={dynamicLookup.options}
+      title={`List of ${dynamicLookup.column?.label || 'Values'}`}
+      searchPlaceholder="Search values"
+      emptyMessage={dynamicLookup.loading
+        ? 'Loading values...'
+        : (dynamicLookup.error || 'No values found')}
+      allowCreate={false}
+    />
+    </>
   );
+}
+
+export default function ContentsTab(props) {
+  if (props.formSettingsReady === false) {
+    return <DocumentLineSettingsLoading />;
+  }
+
+  return <ReadyContentsTab {...props} />;
 }

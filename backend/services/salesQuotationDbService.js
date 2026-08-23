@@ -12,11 +12,19 @@ const {
   buildDocumentAddressComponents,
 } = require('./documentAddressDbUtils');
 const {
-  escapeLike,
   normalizeTopLimit,
   buildMarketingDocumentListFilterQuery,
 } = require('./documentListUtils');
 const { getMarketingDocumentSeries } = require('./documentSeriesDbUtils');
+const {
+  createTableColumnDetailsReader,
+  createTableFieldMetadataReader,
+  escapeLikeValue,
+  LIKE_ESCAPE_SQL,
+} = require('./salesDocumentDbCompatibility');
+const authDbService = require('./authDbService');
+const { getRequestContext } = require('./requestContextService');
+const { selectEffectiveCprfRows } = require('./sapFormPreferenceUtils');
 
 const salesQuotationLineLookups = createMarketingDocumentLineLookupRepository({ lineTable: 'QUT1' });
 
@@ -25,32 +33,15 @@ const safe = async (promise) => {
     const r = await promise;
     return r.recordset || [];
   } catch (e) {
+    console.warn('[Sales Quotation DB] Query failed silently:', e.message);
     return [];
   }
 };
 
-const tableFieldMetadataPromises = new Map();
-
-const getTableFieldMetadata = async (tableName) => {
-  const normalizedTableName = String(tableName || '').trim();
-  if (!normalizedTableName) return {};
-
-  if (!tableFieldMetadataPromises.has(normalizedTableName)) {
-    tableFieldMetadataPromises.set(normalizedTableName, safe(db.query(`
-      SELECT COLUMN_NAME, DATA_TYPE
-      FROM INFORMATION_SCHEMA.COLUMNS
-      WHERE TABLE_NAME = @tableName
-      ORDER BY ORDINAL_POSITION
-    `, { tableName: normalizedTableName })).then((rows) => rows.reduce((acc, row) => {
-      const columnName = String(row.COLUMN_NAME || '').trim();
-      if (!columnName) return acc;
-      acc[columnName] = String(row.DATA_TYPE || '').trim().toLowerCase();
-      return acc;
-    }, {})));
-  }
-
-  return tableFieldMetadataPromises.get(normalizedTableName);
-};
+const getTableFieldMetadata = createTableFieldMetadataReader({ database: db });
+const getTableColumnDetails = createTableColumnDetailsReader({ database: db });
+const getSalesQuotationHeaderFieldMetadata = () => getTableFieldMetadata('OQUT');
+const getSalesQuotationLineFieldMetadata = () => getTableFieldMetadata('QUT1');
 
 const hasTableField = (metadata, columnName) => {
   const normalizedColumnName = String(columnName || '').trim().toLowerCase();
@@ -154,18 +145,18 @@ const searchCustomers = async ({ query = '', cardCode = '', cardName = '', top, 
       *
     FROM OCRD
     WHERE CardType = 'C'
-      AND (@query = '' OR CardCode LIKE @queryLike OR CardName LIKE @queryLike)
-      AND (@cardCode = '' OR CardCode LIKE @cardCodeLike)
-      AND (@cardName = '' OR CardName LIKE @cardNameLike)
+      AND (@query = '' OR CardCode LIKE @queryLike ${LIKE_ESCAPE_SQL} OR CardName LIKE @queryLike ${LIKE_ESCAPE_SQL})
+      AND (@cardCode = '' OR CardCode LIKE @cardCodeLike ${LIKE_ESCAPE_SQL})
+      AND (@cardName = '' OR CardName LIKE @cardNameLike ${LIKE_ESCAPE_SQL})
     ORDER BY ${orderBy}
   `, {
     ...(normalizedTop ? { top: normalizedTop } : {}),
     query: normalizedQuery,
-    queryLike: `%${escapeLike(normalizedQuery)}%`,
+    queryLike: `%${escapeLikeValue(normalizedQuery)}%`,
     cardCode: normalizedCardCode,
-    cardCodeLike: `%${escapeLike(normalizedCardCode)}%`,
+    cardCodeLike: `%${escapeLikeValue(normalizedCardCode)}%`,
     cardName: normalizedCardName,
-    cardNameLike: `%${escapeLike(normalizedCardName)}%`,
+    cardNameLike: `%${escapeLikeValue(normalizedCardName)}%`,
   }));
 };
 
@@ -401,7 +392,22 @@ const resolveSapUserSign = async () => {
   try {
     const { getActiveCompanyConfig } = require('./companyConfigService');
     const company = await getActiveCompanyConfig();
-    sapUsername = String(company?.serviceLayer?.username || '').trim();
+    const requestAuth = getRequestContext()?.req?.auth || {};
+    const applicationUser = requestAuth.username
+      ? { Username: requestAuth.username }
+      : Number.isInteger(Number(requestAuth.userId))
+        ? await authDbService.queryOne(`
+            SELECT Username
+            FROM Users
+            WHERE UserId = @userId
+          `, { userId: Number(requestAuth.userId) })
+        : null;
+    sapUsername = String(
+      company?.userMapping?.sapUserCode
+      || applicationUser?.Username
+      || company?.serviceLayer?.username
+      || '',
+    ).trim();
   } catch (_error) {
     sapUsername = '';
   }
@@ -422,34 +428,28 @@ const resolveSapUserSign = async () => {
 };
 
 const getRichTableColumns = async (tableName) => {
-  const rows = await safe(db.query(`
-    SELECT
-      COLUMN_NAME,
-      DATA_TYPE,
-      CHARACTER_MAXIMUM_LENGTH,
-      NUMERIC_PRECISION,
-      NUMERIC_SCALE,
-      IS_NULLABLE,
-      ORDINAL_POSITION
-    FROM INFORMATION_SCHEMA.COLUMNS
-    WHERE TABLE_NAME = @tableName
-    ORDER BY ORDINAL_POSITION
-  `, { tableName }));
+  try {
+    const columnDetails = await getTableColumnDetails(String(tableName || '').trim());
+    if (!columnDetails.length) return {};
 
-  return rows.reduce((acc, row) => {
-    const columnName = String(row.COLUMN_NAME || '').trim();
-    if (!columnName) return acc;
-    acc[columnName.toUpperCase()] = {
-      name: columnName,
-      dataType: String(row.DATA_TYPE || '').trim().toLowerCase(),
-      maxLength: row.CHARACTER_MAXIMUM_LENGTH,
-      precision: row.NUMERIC_PRECISION,
-      scale: row.NUMERIC_SCALE,
-      nullable: String(row.IS_NULLABLE || '').toUpperCase() === 'YES',
-      ordinal: Number(row.ORDINAL_POSITION || 0),
-    };
-    return acc;
-  }, {});
+    return columnDetails.reduce((acc, col) => {
+      const columnName = String(col.columnName || '').trim();
+      if (!columnName) return acc;
+      acc[columnName.toUpperCase()] = {
+        name: columnName,
+        dataType: String(col.dataType || '').trim().toLowerCase(),
+        maxLength: col.maxLength ?? null,
+        precision: col.numericPrecision ?? null,
+        scale: col.numericScale ?? null,
+        nullable: Boolean(col.nullable),
+        ordinal: col.ordinal || 0,
+      };
+      return acc;
+    }, {});
+  } catch (error) {
+    console.warn('[Sales Quotation DB] getRichTableColumns failed for', tableName, error.message);
+    return {};
+  }
 };
 
 const getPreferenceRowMatchKeys = (row = {}) => unique([
@@ -492,19 +492,15 @@ const shouldReplaceColumnPreference = (current, next) => {
 };
 
 const getSalesQuotationColumnPreferences = async () => {
-  const tableRows = await safe(db.query(`
-    SELECT TABLE_NAME
-    FROM INFORMATION_SCHEMA.TABLES
-    WHERE TABLE_NAME = 'CPRF'
-  `));
-  if (!tableRows.length) return { byKey: {}, rows: [], userSign: null };
+  let cprfColumnDetails;
+  try {
+    cprfColumnDetails = await getTableColumnDetails('CPRF');
+  } catch (_error) {
+    cprfColumnDetails = [];
+  }
+  if (!cprfColumnDetails.length) return { byKey: {}, rows: [], userSign: null };
 
-  const cprfColumns = await safe(db.query(`
-    SELECT COLUMN_NAME
-    FROM INFORMATION_SCHEMA.COLUMNS
-    WHERE TABLE_NAME = 'CPRF'
-  `));
-  const columnSet = new Set(cprfColumns.map((row) => String(row.COLUMN_NAME || '').trim()));
+  const columnSet = new Set(cprfColumnDetails.map((col) => String(col.columnName || '').trim()));
   const hasItemUid = columnSet.has('ItemUID');
   const hasTableName = columnSet.has('TableName');
   const hasCaption = columnSet.has('Caption');
@@ -514,7 +510,7 @@ const getSalesQuotationColumnPreferences = async () => {
   const userSign = await resolveSapUserSign();
   if (userSign == null) return { byKey: {}, rows: [], userSign: null };
 
-  const rows = await safe(db.query(`
+  let rows = await safe(db.query(`
     SELECT
       FormID,
       ItemID,
@@ -549,6 +545,8 @@ const getSalesQuotationColumnPreferences = async () => {
     tableName: 'QUT1',
     userSign,
   }));
+
+  rows = selectEffectiveCprfRows(rows);
 
   const byKey = rows.reduce((acc, row) => {
     getPreferenceRowMatchKeys(row).forEach((key) => {
@@ -1454,6 +1452,8 @@ const getSalesQuotationForCopy = async (docEntry) => {
 };
 
 module.exports = {
+  getSalesQuotationHeaderFieldMetadata,
+  getSalesQuotationLineFieldMetadata,
   getReferenceData,
   getCustomerDetails,
   searchCustomers,

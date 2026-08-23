@@ -19,7 +19,13 @@ import { getSapVisibleDocumentSeries } from '../../utils/seriesDefaults';
 import { calculateServiceInvoiceLine } from '../../utils/serviceInvoiceLineCalculations';
 import { resolveLocationDisplayName } from '../../utils/locationLookup';
 import { getDocumentLayout } from '../../api/sapLayoutApi';
+import { fetchSalesDocumentLookup, fetchSalesDocumentSchema } from '../../api/salesDocumentSchemaApi';
 import { buildMatrixColumnsFromSapLayout, mergeLiveMatrixSettings } from '../../utils/liveDocumentLayout';
+import {
+  buildSalesDocumentLiveFields,
+  loadSalesDocumentFieldLookupOptions,
+} from '../../utils/salesDocumentLiveFields';
+import { useAuth } from '../../auth/AuthContext';
 import { BASE_TYPE, normaliseDocumentHeader, unwrapCopyFromDocument } from '../../api/copyFromApi';
 import BusinessPartnerModal from '../sales-order/components/BusinessPartnerModal';
 import StateSelectionModal from '../../components/common/StateSelectionModal';
@@ -379,6 +385,11 @@ const normalizeServiceMatrixColumns = (columns = []) => {
   const orderedColumns = CONTENT_COLUMNS.map((baseColumn, index) => {
     const liveColumn = liveByKey.get(baseColumn.key) || {};
     const liveWidth = Number(liveColumn.width || liveColumn.minWidth);
+    // When a live column carries CPRF visibility, respect it over the
+    // hardcoded CONTENT_COLUMNS default.
+    const liveVisible = liveColumn.sapControlled && liveColumn.visible !== undefined
+      ? liveColumn.visible
+      : baseColumn.visible !== false;
     return {
       ...liveColumn,
       ...baseColumn,
@@ -386,11 +397,14 @@ const normalizeServiceMatrixColumns = (columns = []) => {
       label: baseColumn.label,
       width: Number.isFinite(liveWidth) && liveWidth > 0 ? Math.max(liveWidth, baseColumn.width || 125) : baseColumn.width,
       minWidth: Number.isFinite(liveWidth) && liveWidth > 0 ? Math.max(liveWidth, baseColumn.width || 125) : baseColumn.width,
-      order: index + 1,
-      columnOrder: index + 1,
-      visible: baseColumn.visible !== false,
+      order: liveColumn.order || index + 1,
+      columnOrder: liveColumn.columnOrder || index + 1,
+      visible: liveVisible,
       active: liveColumn.active !== false,
       readOnly: Boolean(baseColumn.readOnly || liveColumn.readOnly),
+      lookupSource: liveColumn.lookupSource || baseColumn.lookupSource,
+      isUdf: Boolean(liveColumn.isUdf),
+      field: liveColumn.field,
     };
   });
 
@@ -443,7 +457,12 @@ const isFixedServiceMatrixField = (field = {}) =>
   fieldNameMatches(field, FIXED_SERVICE_MATRIX_FIELD_NAMES);
 
 const applyServiceRowUdfDefaults = (definitions = []) =>
-  definitions.map((field) => ({ ...field, visible: false }));
+  definitions.map((field) => ({
+    ...field,
+    // When the schema provides an explicit visible value, respect it.
+    // Otherwise default to hidden (service pages show curated columns).
+    visible: field.schemaDriven ? (field.visible !== false) : false,
+  }));
 
 const DEFAULT_TRANSACTION_TYPES = [
   { value: 'GST Tax Invoice', label: 'GST Tax Invoice' },
@@ -678,6 +697,9 @@ function ServiceARInvoicePage() {
   const location = useLocation();
   const navigate = useNavigate();
   const { removeTask, upsertTask } = useSapWindowTaskbarActions();
+  const { company } = useAuth();
+  const activeCompanyId = company?.companyId || '';
+  const activeCompanyDb = company?.dbName || '';
   const requestedDocEntry = location.state?.serviceARInvoiceDocEntry;
   const handledCopyFromRef = useRef('');
   const customerDetailsRequestRef = useRef(0);
@@ -806,6 +828,16 @@ function ServiceARInvoicePage() {
     if (normalized && normalized !== '##') return normalized;
     return fallback || refData.local_currency || refData.company_currency || 'INR';
   }, [refData.company_currency, refData.local_currency]);
+  const loadDynamicLineLookupOptions = useCallback((source, field = {}, line = {}) => (
+    loadSalesDocumentFieldLookupOptions({
+      fetchLookup: fetchSalesDocumentLookup,
+      source,
+      field,
+      line,
+      documentType: 'AR_INVOICE',
+      schemaVersion: refData.line_field_metadata?.live_schema?.schemaVersion || '',
+    })
+  ), [refData.line_field_metadata]);
   useRelationshipMapRegistration({
     enabled: Boolean(currentDocEntry),
     objectType: 13,
@@ -1135,7 +1167,7 @@ function ServiceARInvoicePage() {
     const load = async () => {
       setPageState((prev) => ({ ...prev, loading: true, error: '' }));
       try {
-        const [refRes, layoutRes] = await Promise.all([
+        const [refRes, layoutRes, liveSchema] = await Promise.all([
           fetchServiceARInvoiceReferenceData(),
           getDocumentLayout({ documentType: 'SERVICE_AR_INVOICE' }).catch((error) => ({
             data: {
@@ -1144,6 +1176,10 @@ function ServiceARInvoicePage() {
               warning: error.response?.data?.message || error.message || 'Failed to load SAP layout.',
             },
           })),
+          fetchSalesDocumentSchema({ documentType: 'AR_INVOICE' }).catch((error) => {
+            console.warn('[Service AR Invoice] Live INV1 schema was not available.', error);
+            return null;
+          }),
         ]);
         if (ignore) return;
 
@@ -1156,7 +1192,26 @@ function ServiceARInvoicePage() {
           ...refRes.data,
           series: refRes.data?.series || [],
         };
-        const nextHeaderUdfs = nextRefData.udf_metadata?.header || [];
+        const sourceMatrixColumns = (
+          nextRefData.line_field_metadata?.matrix_columns?.length
+            ? nextRefData.line_field_metadata.matrix_columns
+            : []
+        ).filter((field) => field && field.key);
+        const liveFields = buildSalesDocumentLiveFields({
+          schema: liveSchema,
+          documentType: 'AR_INVOICE',
+          objectType: '13',
+          headerTable: 'OINV',
+          lineTable: 'INV1',
+          companyId: activeCompanyId,
+          companyDb: activeCompanyDb,
+          layoutResponse: layoutRes,
+          referenceMatrixColumns: sourceMatrixColumns,
+          referenceSapForm: nextRefData.line_field_metadata?.sap_form,
+        });
+        const nextHeaderUdfs = liveFields.liveAvailable
+          ? liveFields.headerUdfFields
+          : (nextRefData.udf_metadata?.header || []);
         const liveTransactionTypes = getTransactionTypeOptions(nextHeaderUdfs, nextRefData);
         const defaultTransactionType = liveTransactionTypes[0]?.value || '';
         if (defaultTransactionType || defaultBranch) {
@@ -1171,14 +1226,42 @@ function ServiceARInvoicePage() {
             // Keep the all-series response if the typed series lookup is unavailable.
           }
         }
-        const nextRowUdfs = applyServiceRowUdfDefaults(nextRefData.udf_metadata?.rows || []);
-        const layoutMatrixColumns = buildMatrixColumnsFromSapLayout({
-          baseColumns: CONTENT_COLUMNS,
-          layoutColumns: layoutRes?.data?.columns || [],
-          fallbackColumns: CONTENT_COLUMNS,
-        });
-        const nextMatrixColumns = normalizeServiceMatrixColumns(layoutMatrixColumns);
-        const hasSapMatrixPreferences = Boolean((layoutRes?.data?.columns || []).length && layoutRes?.data?.source !== 'fallback');
+        const nextRowUdfs = applyServiceRowUdfDefaults(
+          liveFields.liveAvailable
+            ? liveFields.rowUdfFields
+            : (nextRefData.udf_metadata?.rows || []),
+        );
+        // Build matrix columns: use live schema columns normalized through
+        // service-specific key mapping, then fall back to hardcoded columns.
+        const liveMatrixColumns = liveFields.liveAvailable
+          ? liveFields.matrixColumns
+          : [];
+        const layoutMatrixColumns = liveMatrixColumns.length
+          ? normalizeServiceMatrixColumns(liveMatrixColumns)
+          : normalizeServiceMatrixColumns(buildMatrixColumnsFromSapLayout({
+              baseColumns: CONTENT_COLUMNS,
+              layoutColumns: layoutRes?.data?.columns || [],
+              fallbackColumns: CONTENT_COLUMNS,
+            }));
+        // Append any live UDF columns from the schema that the hardcoded
+        // CONTENT_COLUMNS do not cover — these are company-specific UDFs.
+        const coveredKeys = new Set(layoutMatrixColumns.map((col) => normalizeServiceColumnToken(col.key)));
+        const schemaUdfColumns = (liveMatrixColumns.length ? liveMatrixColumns : [])
+          .filter((col) => {
+            if (!col?.key || !col.isUdf) return false;
+            const token = normalizeServiceColumnToken(col.key);
+            return token && !coveredKeys.has(token) && !SERVICE_COLUMN_TOKEN_TO_KEY[token];
+          })
+          .map((col, index) => ({
+            ...col,
+            order: layoutMatrixColumns.length + index + 1,
+            columnOrder: layoutMatrixColumns.length + index + 1,
+          }));
+        const nextMatrixColumns = [...layoutMatrixColumns, ...schemaUdfColumns];
+        const hasSapMatrixPreferences = Boolean(
+          liveFields.liveAvailable ||
+          ((layoutRes?.data?.columns || []).length && layoutRes?.data?.source !== 'fallback'),
+        );
         const nextDefaults = readSavedFormSettings(nextHeaderUdfs, nextRowUdfs, nextMatrixColumns, formSettingsStorageKey);
         setHeaderUdfDefinitions(nextHeaderUdfs);
         setRowUdfDefinitions(nextRowUdfs);
@@ -1195,9 +1278,15 @@ function ServiceARInvoicePage() {
             ...(nextRefData.line_field_metadata || { sap_form: {} }),
             matrix_columns: nextMatrixColumns,
             imported_layout: layoutRes?.data || null,
+            live_schema: liveFields.liveSchema,
+            live_available: liveFields.liveAvailable,
           },
+          udf_metadata: { header: nextHeaderUdfs, rows: nextRowUdfs },
           warnings: [
             ...(nextRefData.warnings || []),
+            ...(!liveFields.liveAvailable
+              ? ['Live Service A/R Invoice field metadata was unavailable; standard fields are shown.']
+              : []),
             ...(layoutRes?.data?.warning ? [layoutRes.data.warning] : []),
           ],
         });
@@ -1415,7 +1504,11 @@ function ServiceARInvoicePage() {
     const selectedValue = option?.value || '';
     setLines((prev) => prev.map((line, lineIndex) => {
       if (lineIndex !== lineLookupModal.lineIndex) return line;
-      const next = { ...line, [lineLookupModal.field]: selectedValue };
+      // Schema UDF columns store values in line.udf
+      const isSchemaUdf = String(lineLookupModal.field || '').startsWith('U_');
+      const next = isSchemaUdf
+        ? { ...line, udf: { ...(line.udf || {}), [lineLookupModal.field]: selectedValue } }
+        : { ...line, [lineLookupModal.field]: selectedValue };
       if (lineLookupModal.field === 'glAccount') {
         next.glAccountName = option?.description || '';
       }
@@ -2254,13 +2347,45 @@ function ServiceARInvoicePage() {
       });
     }
 
+    // Schema-driven UDF lookups: if the column has a lookupSource from the
+    // live schema, show a lookup button that loads options dynamically.
+    if (column.lookupSource && column.isUdf) {
+      return renderLookupInput({
+        title: `Select ${column.label}`,
+        onOpen: async () => {
+          try {
+            const options = await loadDynamicLineLookupOptions(column.lookupSource, column.field || column, line);
+            openLineLookup(column.key, index, {
+              title: `Select ${column.label}`,
+              options: Array.isArray(options) ? options : [],
+            });
+          } catch (_error) {
+            openLineLookup(column.key, index, {
+              title: `Select ${column.label}`,
+              options: Array.isArray(column.options) ? column.options : [],
+            });
+          }
+        },
+      });
+    }
+
     return (
       <input
         className={`del-grid__input${error ? ' del-field__input--error' : ''}`}
         type={column.type === 'date' ? 'date' : 'text'}
         name={column.key}
-        value={column.key === 'taxCodeRepeat' ? (line.taxCodeRepeat || line.taxCode || '') : (line[column.key] || '')}
-        onChange={(event) => handleLineChange(index, event)}
+        value={column.key === 'taxCodeRepeat'
+          ? (line.taxCodeRepeat || line.taxCode || '')
+          : (line[column.key] || (column.isUdf ? (line.udf?.[column.key] || '') : ''))}
+        onChange={(event) => {
+          if (column.isUdf) {
+            setLines((prev) => prev.map((l, i) =>
+              i === index ? { ...l, udf: { ...(l.udf || {}), [column.key]: event.target.value } } : l
+            ));
+          } else {
+            handleLineChange(index, event);
+          }
+        }}
         onBlur={() => handleLineBlur(index, column.key)}
         readOnly={column.readOnly}
         disabled={!isDocumentEditable || column.readOnly}

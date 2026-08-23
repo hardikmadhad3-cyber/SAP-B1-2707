@@ -7,38 +7,82 @@ const {
   SALES_ORDER_DOCUMENT,
   resolveSalesDocument,
 } = require('./newSalesOrderConstants');
+const {
+  aliased,
+  columnReference,
+  normalizeSqlDialect,
+  quoteIdentifier,
+  selectFirstClause,
+} = require('./newSalesOrderSqlDialect');
 
-const PHYSICAL_COLUMNS_SQL = `
-  SELECT
-    COLUMN_NAME AS columnName,
-    DATA_TYPE AS dataType,
-    CHARACTER_MAXIMUM_LENGTH AS maxLength,
-    NUMERIC_PRECISION AS numericPrecision,
-    NUMERIC_SCALE AS numericScale,
-    IS_NULLABLE AS isNullable,
-    ORDINAL_POSITION AS ordinalPosition
-  FROM INFORMATION_SCHEMA.COLUMNS
-  WHERE TABLE_NAME = @tableName
-  ORDER BY ORDINAL_POSITION
-`;
+const buildPhysicalColumnsSql = (rawDialect) => {
+  const dialect = normalizeSqlDialect(rawDialect);
+  if (dialect === 'hana') {
+    return `
+      SELECT
+        ${aliased('T0."COLUMN_NAME"', 'columnName', dialect)},
+        ${aliased('T0."DATA_TYPE_NAME"', 'dataType', dialect)},
+        ${aliased('T0."LENGTH"', 'maxLength', dialect)},
+        ${aliased('T0."LENGTH"', 'numericPrecision', dialect)},
+        ${aliased('T0."SCALE"', 'numericScale', dialect)},
+        ${aliased('T0."IS_NULLABLE"', 'isNullable', dialect)},
+        ${aliased('T0."POSITION"', 'ordinalPosition', dialect)}
+      FROM "SYS"."TABLE_COLUMNS" T0
+      WHERE T0."SCHEMA_NAME" = CURRENT_SCHEMA
+        AND T0."TABLE_NAME" = @tableName
+      ORDER BY T0."POSITION"
+    `;
+  }
+  return `
+    SELECT
+      ${aliased('T0.[COLUMN_NAME]', 'columnName', dialect)},
+      ${aliased('T0.[DATA_TYPE]', 'dataType', dialect)},
+      ${aliased('T0.[CHARACTER_MAXIMUM_LENGTH]', 'maxLength', dialect)},
+      ${aliased('T0.[NUMERIC_PRECISION]', 'numericPrecision', dialect)},
+      ${aliased('T0.[NUMERIC_SCALE]', 'numericScale', dialect)},
+      ${aliased('T0.[IS_NULLABLE]', 'isNullable', dialect)},
+      ${aliased('T0.[ORDINAL_POSITION]', 'ordinalPosition', dialect)}
+    FROM [INFORMATION_SCHEMA].[COLUMNS] T0
+    WHERE T0.[TABLE_NAME] = @tableName
+    ORDER BY T0.[ORDINAL_POSITION]
+  `;
+};
 
-const TABLE_EXISTS_SQL = `
-  SELECT TABLE_NAME AS tableName
-  FROM INFORMATION_SCHEMA.TABLES
-  WHERE TABLE_NAME = @tableName
-`;
+const buildTableExistsSql = (rawDialect) => {
+  const dialect = normalizeSqlDialect(rawDialect);
+  return dialect === 'hana'
+    ? `
+      SELECT ${aliased('T0."TABLE_NAME"', 'tableName', dialect)}
+      FROM "SYS"."TABLES" T0
+      WHERE T0."SCHEMA_NAME" = CURRENT_SCHEMA
+        AND T0."TABLE_NAME" = @tableName
+    `
+    : `
+      SELECT ${aliased('T0.[TABLE_NAME]', 'tableName', dialect)}
+      FROM [INFORMATION_SCHEMA].[TABLES] T0
+      WHERE T0.[TABLE_NAME] = @tableName
+    `;
+};
 
-const UFD1_VALUES_SQL = `
-  SELECT
-    TableID AS tableId,
-    FieldID AS fieldId,
-    IndexID AS indexId,
-    FldValue AS value,
-    Descr AS label
-  FROM UFD1
-  WHERE TableID = @tableName
-  ORDER BY FieldID, IndexID
-`;
+const buildUfd1ValuesSql = (rawDialect) => {
+  const dialect = normalizeSqlDialect(rawDialect);
+  const column = (name) => columnReference('T0', name, dialect);
+  return `
+    SELECT
+      ${aliased(column('TableID'), 'tableId', dialect)},
+      ${aliased(column('FieldID'), 'fieldId', dialect)},
+      ${aliased(column('IndexID'), 'indexId', dialect)},
+      ${aliased(column('FldValue'), 'value', dialect)},
+      ${aliased(column('Descr'), 'label', dialect)}
+    FROM ${quoteIdentifier('UFD1', dialect)} T0
+    WHERE ${column('TableID')} = @tableName
+    ORDER BY ${column('FieldID')}, ${column('IndexID')}
+  `;
+};
+
+const PHYSICAL_COLUMNS_SQL = buildPhysicalColumnsSql('sqlserver');
+const TABLE_EXISTS_SQL = buildTableExistsSql('sqlserver');
+const UFD1_VALUES_SQL = buildUfd1ValuesSql('sqlserver');
 
 const LAYOUT_SQL = `
   SELECT
@@ -87,7 +131,9 @@ const normalizePhysicalColumn = (row) => ({
   maxLength: numberOrNull(rowValue(row, 'maxLength', 'CHARACTER_MAXIMUM_LENGTH')),
   precision: numberOrNull(rowValue(row, 'numericPrecision', 'NUMERIC_PRECISION')),
   scale: numberOrNull(rowValue(row, 'numericScale', 'NUMERIC_SCALE')),
-  nullable: text(rowValue(row, 'isNullable', 'IS_NULLABLE')).toUpperCase() === 'YES',
+  nullable: ['1', 'TRUE', 'Y', 'YES'].includes(
+    text(rowValue(row, 'isNullable', 'IS_NULLABLE')).toUpperCase(),
+  ),
   ordinal: numberOrNull(rowValue(row, 'ordinalPosition', 'ORDINAL_POSITION')) || 0,
 });
 
@@ -115,12 +161,17 @@ const normalizeSapIdentifier = (value, label = 'SAP table') => {
   return normalized;
 };
 
-const buildCufdSql = (columnNames) => {
+const buildCufdSql = (columnNames, rawDialect = 'sqlserver') => {
+  const dialect = normalizeSqlDialect(rawDialect);
   const columns = new Map([...columnNames].map((name) => [String(name).toUpperCase(), String(name)]));
   const select = (name, alias, fallback = "''") => {
     const actual = columns.get(name.toUpperCase());
-    return actual ? `T0.[${actual}] AS [${alias}]` : `${fallback} AS [${alias}]`;
+    return actual
+      ? aliased(columnReference('T0', actual, dialect), alias, dialect)
+      : aliased(fallback, alias, dialect);
   };
+  const tableId = columns.get('TABLEID') || 'TableID';
+  const fieldId = columns.get('FIELDID') || 'FieldID';
 
   return `
     SELECT
@@ -137,9 +188,21 @@ const buildCufdSql = (columnNames) => {
       ${select('LinkedTable', 'linkedTable')},
       ${select('RelUDO', 'relUDO')},
       ${select('Dflt', 'defaultValue', 'NULL')}
-    FROM CUFD T0
-    WHERE T0.[${columns.get('TABLEID') || 'TableID'}] = @tableName
-    ORDER BY T0.[${columns.get('FIELDID') || 'FieldID'}]
+    FROM ${quoteIdentifier('CUFD', dialect)} T0
+    WHERE ${columnReference('T0', tableId, dialect)} = @tableName
+    ORDER BY ${columnReference('T0', fieldId, dialect)}
+  `;
+};
+
+const buildResolveUdoSql = (rawDialect) => {
+  const dialect = normalizeSqlDialect(rawDialect);
+  const limit = selectFirstClause(dialect, 1);
+  return `
+    ${limit.prefix} ${aliased(columnReference('T0', 'TableName', dialect), 'tableName', dialect)}
+    FROM ${quoteIdentifier('OUDO', dialect)} T0
+    WHERE ${columnReference('T0', 'Code', dialect)} = @udoCode
+    ORDER BY ${columnReference('T0', 'Code', dialect)}
+    ${limit.suffix}
   `;
 };
 
@@ -157,42 +220,56 @@ const createNewSalesOrderMetadataRepository = ({
     throw new TypeError('A New Sales Order read-only database service is required.');
   }
 
-  const getTableColumns = async (context, tableName, { documentTableOnly = false } = {}) => {
+  const getDialect = async (context) => normalizeSqlDialect(
+    typeof readOnlyDb.getDialect === 'function'
+      ? await readOnlyDb.getDialect(context)
+      : context?.dbDialect,
+  );
+
+  const getTableColumns = async (context, tableName, {
+    documentTableOnly = false,
+    dialect: suppliedDialect,
+  } = {}) => {
     const normalizedTable = documentTableOnly
       ? assertKnownDocumentTable(tableName)
       : normalizeSapIdentifier(tableName);
+    const dialect = normalizeSqlDialect(suppliedDialect || await getDialect(context));
     const rows = await readOnlyDb.select({
       context,
       queryId: `metadata.columns.${normalizedTable}`,
-      sql: PHYSICAL_COLUMNS_SQL,
+      sql: buildPhysicalColumnsSql(dialect),
       params: { tableName: normalizedTable },
     });
     return rows.map(normalizePhysicalColumn).filter((column) => column.columnName);
   };
 
-  const tableExists = async (context, tableName) => {
+  const tableExists = async (context, tableName, { dialect: suppliedDialect } = {}) => {
     const normalizedTable = normalizeSapIdentifier(tableName);
+    const dialect = normalizeSqlDialect(suppliedDialect || await getDialect(context));
     const rows = await readOnlyDb.select({
       context,
       queryId: `metadata.table-exists.${normalizedTable}`,
-      sql: TABLE_EXISTS_SQL,
+      sql: buildTableExistsSql(dialect),
       params: { tableName: normalizedTable },
     });
     return rows.length > 0;
   };
 
-  const getUdfDefinitions = async (context, tableName, cufdColumnNames) => {
+  const getUdfDefinitions = async (context, tableName, cufdColumnNames, {
+    dialect: suppliedDialect,
+  } = {}) => {
     const normalizedTable = assertKnownDocumentTable(tableName);
+    const dialect = normalizeSqlDialect(suppliedDialect || await getDialect(context));
     const udfRows = await readOnlyDb.select({
       context,
       queryId: `metadata.cufd.${normalizedTable}`,
-      sql: buildCufdSql(cufdColumnNames),
+      sql: buildCufdSql(cufdColumnNames, dialect),
       params: { tableName: normalizedTable },
     });
     const valueRows = await readOnlyDb.select({
       context,
       queryId: `metadata.ufd1.${normalizedTable}`,
-      sql: UFD1_VALUES_SQL,
+      sql: buildUfd1ValuesSql(dialect),
       params: { tableName: normalizedTable },
     });
 
@@ -245,17 +322,17 @@ const createNewSalesOrderMetadataRepository = ({
 
   const getDocumentMetadata = async (context, rawDocument = SALES_ORDER_DOCUMENT) => {
     const document = typeof rawDocument === 'string' ? resolveSalesDocument(rawDocument) : rawDocument;
-    const [dialect, headerColumns, lineColumns, cufdColumns, layoutRows] = await Promise.all([
-      readOnlyDb.getDialect(context),
-      getTableColumns(context, document.headerTable, { documentTableOnly: true }),
-      getTableColumns(context, document.lineTable, { documentTableOnly: true }),
-      getTableColumns(context, 'CUFD'),
+    const dialect = await getDialect(context);
+    const [headerColumns, lineColumns, cufdColumns, layoutRows] = await Promise.all([
+      getTableColumns(context, document.headerTable, { documentTableOnly: true, dialect }),
+      getTableColumns(context, document.lineTable, { documentTableOnly: true, dialect }),
+      getTableColumns(context, 'CUFD', { dialect }),
       getLayoutRows(context, document),
     ]);
     const cufdColumnNames = new Set(cufdColumns.map((column) => column.columnName));
     const [headerUdfs, lineUdfs] = await Promise.all([
-      getUdfDefinitions(context, document.headerTable, cufdColumnNames),
-      getUdfDefinitions(context, document.lineTable, cufdColumnNames),
+      getUdfDefinitions(context, document.headerTable, cufdColumnNames, { dialect }),
+      getUdfDefinitions(context, document.lineTable, cufdColumnNames, { dialect }),
     ]);
 
     return {
@@ -277,15 +354,11 @@ const createNewSalesOrderMetadataRepository = ({
   const resolveUdoTable = async (context, udoCode) => {
     const normalizedCode = text(udoCode);
     if (!normalizedCode || normalizedCode.length > 20) return null;
+    const dialect = await getDialect(context);
     const rows = await readOnlyDb.select({
       context,
       queryId: 'metadata.oudo.resolve-table',
-      sql: `
-        SELECT TOP 1 TableName AS tableName
-        FROM OUDO
-        WHERE Code = @udoCode
-        ORDER BY Code
-      `,
+      sql: buildResolveUdoSql(dialect),
       params: { udoCode: normalizedCode },
     });
     const rawTable = text(rowValue(rows[0], 'tableName', 'TableName'));
@@ -295,6 +368,7 @@ const createNewSalesOrderMetadataRepository = ({
 
   return {
     getDocumentMetadata,
+    getDialect,
     getLayoutRows,
     getSalesOrderMetadata,
     getTableColumns,
@@ -313,6 +387,10 @@ module.exports.TABLE_EXISTS_SQL = TABLE_EXISTS_SQL;
 module.exports.UFD1_VALUES_SQL = UFD1_VALUES_SQL;
 module.exports.assertKnownDocumentTable = assertKnownDocumentTable;
 module.exports.buildCufdSql = buildCufdSql;
+module.exports.buildPhysicalColumnsSql = buildPhysicalColumnsSql;
+module.exports.buildResolveUdoSql = buildResolveUdoSql;
+module.exports.buildTableExistsSql = buildTableExistsSql;
+module.exports.buildUfd1ValuesSql = buildUfd1ValuesSql;
 module.exports.createNewSalesOrderMetadataRepository = createNewSalesOrderMetadataRepository;
 module.exports.normalizePhysicalColumn = normalizePhysicalColumn;
 module.exports.normalizeSapIdentifier = normalizeSapIdentifier;

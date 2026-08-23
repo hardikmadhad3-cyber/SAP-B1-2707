@@ -6,6 +6,7 @@ import PropertiesSelectionModal from "../components/reports/PropertiesSelectionM
 import useFloatingWindow from "../components/reports/useFloatingWindow";
 import { useSapWindowTaskbarActions } from "../components/SapWindowTaskbarContext";
 import { matchesSapSearchText } from "../utils/sapSearch";
+import { createActiveCompanyScopedRouteState } from "../utils/companyStorageScope";
 import "../styles/customer-receivables-aging-report.css";
 import "../styles/inventory-audit-report.css";
 import "../styles/sales-analysis-report.css";
@@ -107,7 +108,9 @@ function CustomerReceivablesAgingReportPage() {
       navigate("/journal-entry", { state: { journalEntryTransId: row.transId } });
       return;
     }
-    navigate(route[0], { state: { [route[1]]: row.sourceDocEntry } });
+    navigate(route[0], {
+      state: createActiveCompanyScopedRouteState({ [route[1]]: row.sourceDocEntry }),
+    });
   };
   const arrow = (title, onClick) => <button type="button" className="cra-arrow" title={title} onClick={onClick}>-&gt;</button>;
   const controls = (windowFrame, onClose) => <div className="cra-controls sales-analysis-window__controls"><button type="button" aria-label="Minimize" onClick={windowFrame.toggleMinimize}>-</button><button type="button" aria-label="Restore" onClick={windowFrame.toggleMaximize}>[]</button><button type="button" aria-label="Close" onClick={onClose}>x</button></div>;

@@ -4,8 +4,11 @@ export const SALES_DOCUMENT_SCHEMA_HEADER_TABLE = 'ORDR';
 export const SALES_DOCUMENT_SCHEMA_LINE_TABLE = 'RDR1';
 
 export const SALES_DOCUMENT_SCHEMA_TYPES = Object.freeze({
+  SALES_QUOTATION: Object.freeze({ objectType: '23', headerTable: 'OQUT', lineTable: 'QUT1' }),
   SALES_ORDER: Object.freeze({ objectType: '17', headerTable: 'ORDR', lineTable: 'RDR1' }),
   DELIVERY: Object.freeze({ objectType: '15', headerTable: 'ODLN', lineTable: 'DLN1' }),
+  AR_INVOICE: Object.freeze({ objectType: '13', headerTable: 'OINV', lineTable: 'INV1' }),
+  AR_CREDIT_MEMO: Object.freeze({ objectType: '14', headerTable: 'ORIN', lineTable: 'RIN1' }),
 });
 
 export const SALES_DOCUMENT_SCHEMA_LOOKUP_SOURCES = new Set([

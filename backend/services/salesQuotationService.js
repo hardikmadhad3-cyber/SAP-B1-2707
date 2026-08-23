@@ -1,10 +1,21 @@
 const sapService = require('./sapService');
 const salesQuotationDb = require('./salesQuotationDbService');
+const salesOrderDb = require('./salesOrderDbService');
 const { buildDocumentAdditionalExpenses } = require('./freightPayloadUtils');
 const { buildMarketingDocumentAddressPayload } = require('./documentAddressPayloadUtils');
 const { getUdfDefinitions } = require('./udfMetadataService');
-const { normalizeUdfValue, normalizeUdfValues, applyUdfsRobust } = require('./udfPayloadUtils');
+const { normalizeUdfValue, applyUdfsRobust } = require('./udfPayloadUtils');
 const { buildDocumentSeriesPayload } = require('./documentSeriesPayloadUtils');
+const hsnCodeDbService = require('./hsnCodeDbService');
+const {
+  assignMappedUdfValue,
+  buildMetadataValidatedStandardLine,
+  compactDocumentLinePayload,
+  filterMetadataValidatedUdfDefinitions,
+  filterMetadataValidatedUdfs,
+  getLineValue,
+  intersectPhysicalUdfKeys,
+} = require('./salesDocumentLinePayloadUtils');
 
 const normalizeBranchId = (branch) => {
   const normalized = String(branch || '').trim();
@@ -12,12 +23,6 @@ const normalizeBranchId = (branch) => {
 };
 
 const hasValue = (value) => value !== '' && value !== null && value !== undefined;
-
-const toNumberOrUndefined = (value) => {
-  if (!hasValue(value)) return undefined;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
-};
 
 const toSapYesNo = (value) => {
   const normalized = String(value ?? '').trim().toUpperCase();
@@ -110,11 +115,11 @@ const resolveAvailableUdfKey = (availableUdfKeys = new Set(), aliases = []) => {
 };
 
 const getSalesQuotationLineUdfMetadata = async () => {
-  const definitions = await getUdfDefinitions('QUT1');
+  const definitions = await getUdfDefinitions('QUT1').catch((error) => {
+    console.warn('[Sales Quotation] Live QUT1 UDF metadata is unavailable; line UDFs will be omitted.', error.message);
+    return [];
+  });
   const keys = new Set(definitions.map((field) => String(field.key || '').trim()));
-  if (keys.has('U_PACKINGTYPE') || keys.has('U_PACKING_TYPE')) {
-    keys.add('U_PackingType');
-  }
 
   return {
     keys,
@@ -127,8 +132,36 @@ const getSalesQuotationLineUdfMetadata = async () => {
 };
 
 const getUdfDefinitionsByKey = async (tableId) => {
-  const definitions = await getUdfDefinitions(tableId);
+  const definitions = await getUdfDefinitions(tableId).catch((error) => {
+    console.warn(`[Sales Quotation] Live ${tableId} UDF metadata is unavailable; UDFs will be omitted.`, error.message);
+    return [];
+  });
   return new Map(definitions.map((field) => [field.key, field]));
+};
+
+const applySalesQuotationHeaderUdfs = async (sapPayload, payload = {}) => {
+  const [definitionsByKey, fieldMetadata] = await Promise.all([
+    getUdfDefinitionsByKey('OQUT'),
+    salesQuotationDb.getSalesQuotationHeaderFieldMetadata().catch((error) => {
+      console.warn('[Sales Quotation] Live OQUT field metadata is unavailable; header UDFs will be omitted.', error.message);
+      return {};
+    }),
+  ]);
+  const physicalDefinitionsByKey = filterMetadataValidatedUdfDefinitions(definitionsByKey, fieldMetadata);
+  const values = { ...(payload.header_udfs || {}) };
+  const placeOfSupplyKey = resolveAvailableUdfKey(
+    new Set(physicalDefinitionsByKey.keys()),
+    ['U_PlaceOfSupply', 'U_PLACE_OF_SUPPLY'],
+  );
+  if (placeOfSupplyKey && hasValue(payload.header?.placeOfSupply)) {
+    sapPayload[placeOfSupplyKey] = payload.header.placeOfSupply;
+  }
+  applyUdfsRobust(
+    sapPayload,
+    filterMetadataValidatedUdfs(values, new Set(physicalDefinitionsByKey.keys()), fieldMetadata),
+    physicalDefinitionsByKey,
+    false,
+  );
 };
 
 const buildValidatedLineUdfs = (line, udfMetadata) => {
@@ -136,69 +169,67 @@ const buildValidatedLineUdfs = (line, udfMetadata) => {
   const udfs = {};
 
   Object.entries(line.udf || {}).forEach(([key, value]) => {
-    if (availableUdfKeys.has(key)) {
-      udfs[key] = normalizeUdfValue(value);
-    }
+    const resolvedKey = resolveAvailableUdfKey(availableUdfKeys, [key]);
+    if (resolvedKey) udfs[resolvedKey] = normalizeUdfValue(value);
   });
 
   SALES_QUOTATION_LINE_UDF_MAPPINGS.forEach(({ sapField, sapFields, getValue }) => {
     const aliases = sapFields || [sapField];
     const resolvedSapField = resolveAvailableUdfKey(availableUdfKeys, aliases);
     if (!resolvedSapField) return;
-    udfs[resolvedSapField] = normalizeUdfValue(getValue(line));
+    assignMappedUdfValue(udfs, resolvedSapField, getValue(line), normalizeUdfValue);
   });
 
   SALES_QUOTATION_LABEL_UDF_MAPPINGS.forEach(({ labels, getValue }) => {
     const sapField = labels.map((label) => udfMetadata.labelToKey?.[compactLabel(label)]).find(Boolean);
-    if (!sapField || !availableUdfKeys.has(sapField) || udfs[sapField] !== undefined) return;
-    udfs[sapField] = normalizeUdfValue(getValue(line));
+    if (!sapField || !availableUdfKeys.has(sapField) || Object.prototype.hasOwnProperty.call(udfs, sapField)) return;
+    assignMappedUdfValue(udfs, sapField, getValue(line), normalizeUdfValue);
   });
 
   return udfs;
 };
 
 const buildDocumentLines = async (lines = [], includeLineNum = false) => {
-  const udfMetadata = await getSalesQuotationLineUdfMetadata();
-  return lines
-    .filter((line) => String(line.itemNo || '').trim())
-    .map((line) => {
-      const lineNum = line.lineNum ?? line.LineNum;
-      const documentLine = {
-        ...(includeLineNum && lineNum !== undefined && lineNum !== null && lineNum !== '' ? { LineNum: Number(lineNum) } : {}),
-        ItemCode: line.itemNo,
-        ItemDescription: line.itemDescription || undefined,
-        Quantity: toNumberOrUndefined(line.quantity),
-        Price: toNumberOrUndefined(line.unitPrice),
-        UnitPrice: toNumberOrUndefined(line.unitPrice),
-        WarehouseCode: line.whse || '01',
-        TaxCode: line.taxCode || line.stcode || undefined,
-        MeasureUnit: line.uomCode || undefined,
-        UoMCode: line.uomCode || undefined,
-        DiscountPercent: toNumberOrUndefined(line.stdDiscount),
-        RequiredDate: line.requiredDate || undefined,
-        ShipDate: line.quotedDate || undefined,
-        CostingCode: line.distRule,
-        COGSCostingCode: line.cogsDistRule,
-        CountryOrg: line.countryOfOrigin,
-        AgreementNo: toNumberOrUndefined(line.blanketAgreementNo),
-        ...(line.baseType && line.baseEntry != null ? { BaseType: Number(line.baseType) } : {}),
-        ...(line.baseEntry != null ? { BaseEntry: Number(line.baseEntry) } : {}),
-        ...(line.baseLine != null ? { BaseLine: Number(line.baseLine) } : {}),
-        ...buildValidatedLineUdfs(line, udfMetadata),
-      };
+  const [udfMetadata, fieldMetadata] = await Promise.all([
+    getSalesQuotationLineUdfMetadata(),
+    salesQuotationDb.getSalesQuotationLineFieldMetadata().catch((error) => {
+      console.warn('[Sales Quotation] Live QUT1 field metadata is unavailable; using SAP-standard line fields only.', error.message);
+      return {};
+    }),
+  ]);
+  const effectiveUdfMetadata = {
+    ...udfMetadata,
+    keys: intersectPhysicalUdfKeys(udfMetadata.keys, fieldMetadata),
+  };
+
+  return Promise.all(lines
+    .filter((line) => String(getLineValue(line, ['itemNo', 'ItemCode']) || '').trim())
+    .map(async (line) => {
+      const documentLine = await buildMetadataValidatedStandardLine({
+        line: {
+          ...line,
+          taxCode: line.taxCode || line.stcode,
+        },
+        fieldMetadata,
+        includeLineNum,
+        resolveUomEntry: salesOrderDb.resolveSalesOrderLineUomEntry,
+        resolveHsnEntry: hsnCodeDbService.resolveHSNCodeToAbsEntry,
+        resolveSacEntry: hsnCodeDbService.resolveSACCodeToAbsEntry,
+      });
+      Object.assign(documentLine, buildValidatedLineUdfs(line, effectiveUdfMetadata));
 
       if (Array.isArray(line.batches) && line.batches.length > 0) {
-        documentLine.BatchNumbers = line.batches.map((batch) => ({
-          BatchNumber: batch.batchNumber,
-          Quantity: Number(batch.quantity),
-        }));
+        const batchNumbers = line.batches
+          .filter((batch) => String(batch.batchNumber || '').trim() && Number(batch.quantity) > 0)
+          .map((batch) => ({
+            BatchNumber: String(batch.batchNumber).trim(),
+            Quantity: Number(batch.quantity),
+          }));
+        if (batchNumbers.length) documentLine.BatchNumbers = batchNumbers;
       }
 
-      return Object.entries(documentLine).reduce((acc, [key, value]) => {
-        if (value !== undefined && value !== null && value !== '') acc[key] = value;
-        return acc;
-      }, {});
-    });
+      return compactDocumentLinePayload(documentLine, { preserveNullUdfs: includeLineNum });
+    }));
 };
 
 // ───────── HELPERS ─────────
@@ -416,21 +447,7 @@ const submitSalesQuotation = async (payload) => {
       DocumentLines: documentLines,
     };
 
-    if (payload.header.placeOfSupply) {
-      sapPayload.U_PlaceOfSupply = payload.header.placeOfSupply;
-    }
-
-    // Add header UDFs if any
-    if (payload.header_udfs && Object.keys(payload.header_udfs).length > 0) {
-      try {
-        const headerUdfDefinitionsByKey = await getUdfDefinitionsByKey('OQUT');
-        applyUdfsRobust(sapPayload, payload.header_udfs, headerUdfDefinitionsByKey, false);
-        console.log('[Sales Quotation] Header UDFs applied successfully');
-      } catch (error) {
-        console.error('[Sales Quotation] Error applying header UDFs:', error.message);
-        // Continue even if UDF processing fails - don't block document creation
-      }
-    }
+    await applySalesQuotationHeaderUdfs(sapPayload, payload);
 
     console.log('🔥 SAP Quotation Payload:', JSON.stringify(sapPayload, null, 2));
 
@@ -512,21 +529,7 @@ const updateSalesQuotation = async (docEntry, payload) => {
       DocumentLines: documentLines,
     };
 
-    if (payload.header.placeOfSupply) {
-      sapPayload.U_PlaceOfSupply = payload.header.placeOfSupply;
-    }
-
-    // Add header UDFs if any
-    if (payload.header_udfs && Object.keys(payload.header_udfs).length > 0) {
-      try {
-        const headerUdfDefinitionsByKey = await getUdfDefinitionsByKey('OQUT');
-        applyUdfsRobust(sapPayload, payload.header_udfs, headerUdfDefinitionsByKey, false);
-        console.log('[Sales Quotation Update] Header UDFs applied successfully');
-      } catch (error) {
-        console.error('[Sales Quotation Update] Error applying header UDFs:', error.message);
-        // Continue even if UDF processing fails - don't block document update
-      }
-    }
+    await applySalesQuotationHeaderUdfs(sapPayload, payload);
 
     await sapService.request({
       method: 'patch',

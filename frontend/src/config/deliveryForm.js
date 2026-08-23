@@ -1,4 +1,5 @@
 import { DELIVERY_WORKBOOK_COLUMNS } from './workbookMatrixColumns';
+import { mergeSavedFormSettings } from '../utils/formSettingsPreferences';
 
 const FORM_SETTINGS_STORAGE_KEY = 'sapb1.delivery.formSettings.v3';
 
@@ -341,7 +342,8 @@ const getUdfValueByKey = (values = {}, key = '') => {
   return match ? match[1] : undefined;
 };
 
-const normalizeUdfState = (definitions, values = {}) => {
+const normalizeUdfState = (definitions, values = {}, options = {}) => {
+  const preserveExtra = options.preserveExtra !== false;
   const normalized = definitions.reduce((acc, field) => {
     const currentValue = getUdfValueByKey(values, field.key);
     const shouldApplyDefault =
@@ -353,18 +355,26 @@ const normalizeUdfState = (definitions, values = {}) => {
     return acc;
   }, {});
 
-  Object.entries(values || {}).forEach(([key, value]) => {
-    if (String(key || '').startsWith('U_') && !Object.prototype.hasOwnProperty.call(normalized, key)) {
-      normalized[key] = value == null ? '' : value;
-    }
-  });
+  if (preserveExtra) {
+    Object.entries(values || {}).forEach(([key, value]) => {
+      if (String(key || '').startsWith('U_') && !Object.prototype.hasOwnProperty.call(normalized, key)) {
+        normalized[key] = value == null ? '' : value;
+      }
+    });
+  }
 
   return normalized;
 };
 
 const buildVisibilitySettings = (definitions) =>
   definitions.reduce((acc, field) => {
-    acc[field.key] = { visible: field.visible !== undefined ? field.visible : true, active: true };
+    acc[field.key] = {
+      visible: field.visible !== undefined ? field.visible : true,
+      active: field.active !== undefined ? field.active : true,
+      sapControlled: Boolean(field.sapControlled),
+      order: field.order,
+      minWidth: field.minWidth,
+    };
     return acc;
   }, {});
 
@@ -377,15 +387,6 @@ const createDefaultFormSettings = (
   matrixColumns: buildVisibilitySettings(matrixColumns),
   rowUdfs: buildVisibilitySettings(rowUdfs),
 });
-
-const mergeNestedSettings = (defaults, saved = {}) =>
-  Object.keys(defaults).reduce((acc, groupKey) => {
-    acc[groupKey] = {
-      ...defaults[groupKey],
-      ...(saved[groupKey] || {}),
-    };
-    return acc;
-  }, {});
 
 const readSavedFormSettings = (
   headerUdfs = HEADER_UDF_DEFINITIONS,
@@ -404,7 +405,7 @@ const readSavedFormSettings = (
   try {
     const raw = localStorage.getItem(storageKey);
     if (!raw) return defaults;
-    return mergeNestedSettings(defaults, JSON.parse(raw));
+    return mergeSavedFormSettings(defaults, JSON.parse(raw));
   } catch (error) {
     return defaults;
   }

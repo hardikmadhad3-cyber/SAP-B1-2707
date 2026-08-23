@@ -167,6 +167,9 @@ const buildCompanyConfig = (company = {}) => {
     documentDefaults: {
       salesOrderToVendorCode: firstText(company.SalesOrderDefaultToVendorCode),
     },
+    userMapping: {
+      sapUserCode: firstText(company.AssignedSapUserCode),
+    },
   };
 };
 

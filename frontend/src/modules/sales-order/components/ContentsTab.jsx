@@ -1,4 +1,5 @@
 import React from 'react';
+import DocumentLineSettingsLoading from '../../../components/sales-document/DocumentLineSettingsLoading';
 import { resolveLocationDisplayName } from '../../../utils/locationLookup';
 import TaxCodeLookup from '../../../components/TaxCodeLookup';
 import DocumentLinesTable from '../../../components/sales-document/DocumentLinesTable';
@@ -7,6 +8,7 @@ import { matchesSapSearchText } from '../../../utils/sapSearch';
 import { filterSalesOrderRowUdfDefinitions } from '../../../config/salesOrderForm';
 import LineValueLookupModal from '../../../components/sales-document/LineValueLookupModal';
 import { SALES_ORDER_LINE_NUMBER_KEY } from '../documentLayout';
+import { getReadableDocumentLineColumnWidth } from '../../../utils/documentLineColumnWidth';
 
 import { getCalculatedForRate, getLineTotalsForDisplay } from '../../../utils/lineTotals';
 
@@ -58,6 +60,12 @@ const MATRIX_COLS = [
   { key: 'brokerageNumber', label: 'Brokerage Number', minWidth: 140 },
 ];
 
+const getReadableColumnWidth = (field = {}, rendererColumn = {}) => (
+  getReadableDocumentLineColumnWidth(field, rendererColumn, {
+    lineNumberKey: SALES_ORDER_LINE_NUMBER_KEY,
+  })
+);
+
 const parseNumber = (value) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -104,7 +112,16 @@ const COLUMN_RENDERER_ALIASES = new Map([
   ['QTY', 'quantity'],
   ['UOMNAME', 'uomName'],
   ['UNITMSR', 'uomName'],
+  ['UNITOFMEASURENAME', 'uomName'],
   ['UOMCODE', 'uomCode'],
+  ['ONHAND', 'inStock'],
+  ['ONHANDQTY', 'inStock'],
+  ['INSTOCK', 'inStock'],
+  ['QUANTITYONSTOCK', 'inStock'],
+  ['WHSQTY', 'qtyInWhse'],
+  ['QTYINWHSE', 'qtyInWhse'],
+  ['QTYINWAREHOUSE', 'qtyInWhse'],
+  ['WAREHOUSEQUANTITY', 'qtyInWhse'],
   ['HSN', 'hsnCode'],
   ['HSNCODE', 'hsnCode'],
   ['HSNENTRY', 'hsnCode'],
@@ -141,6 +158,9 @@ const COLUMN_RENDERER_ALIASES = new Map([
   ['DISTRULE', 'distRule'],
   ['DISTRIBUTIONRULE', 'distRule'],
   ['COGSOCRCOD', 'cogsDistRule'],
+  ['COGSCOSTINGCODE', 'cogsDistRule'],
+  ['COGSDISTRIBUTIONRULE', 'cogsDistRule'],
+  ['COGSDISTRRULE', 'cogsDistRule'],
   ['COUNTRYORG', 'countryOfOrigin'],
   ['LOC', 'loc'],
   ['LOCCODE', 'loc'],
@@ -344,7 +364,7 @@ function DistributionRuleAssignmentModal({
   );
 }
 
-export default function ContentsTab({
+function ReadyContentsTab({
   lines,
   onLineChange,
   onNumBlur,
@@ -373,6 +393,7 @@ export default function ContentsTab({
   getBranchName,
   countries = [],
   locations = [],
+  shippingTypeOptions = [],
   displayCurrency = '',
 }) {
   const sapItemTab = useSapItemCodeTab({ lineItemOptions, onLineChange, onOpenItemModal });
@@ -514,19 +535,22 @@ export default function ContentsTab({
   const matrixColumns = [
     ...liveMatrixFields.map((field, index) => {
       const rendererColumn = rendererColumnMap.get(getColumnRendererKey(field)) || {};
+      const readableWidth = getReadableColumnWidth(field, rendererColumn);
       return {
         ...rendererColumn,
         ...field,
         key: field.key,
         label: field.label || rendererColumn.label || field.key,
-        minWidth: field.minWidth || rendererColumn.minWidth || 125,
+        width: readableWidth,
+        minWidth: readableWidth,
         order: field.order ?? rendererColumn.order ?? index + 1,
       };
     }),
     ...(usesMetadataDrivenMatrix ? [] : visibleRowUdfFields.map((field) => ({
       key: field.key,
       label: field.label || field.key,
-      minWidth: field.type === 'textarea' ? 180 : 125,
+      width: getReadableColumnWidth(field),
+      minWidth: getReadableColumnWidth(field),
       visible: field.visible,
       active: field.active,
       order: field.order,
@@ -581,7 +605,12 @@ export default function ContentsTab({
   const handleDynamicUdfLookupSelect = (option) => {
     if (!dynamicUdfLookup.field?.key || dynamicUdfLookup.rowIndex < 0) return;
     const valueKey = getColumnValueKey(dynamicUdfLookup.field);
-    onRowUdfChange && onRowUdfChange(dynamicUdfLookup.rowIndex, valueKey, option?.value || '');
+    const selectedValue = option?.value || '';
+    if (isUdfMatrixColumn(dynamicUdfLookup.field)) {
+      onRowUdfChange && onRowUdfChange(dynamicUdfLookup.rowIndex, valueKey, selectedValue);
+    } else {
+      onLineChange && onLineChange(dynamicUdfLookup.rowIndex, { target: { name: valueKey, value: selectedValue } });
+    }
     setDynamicUdfLookup((prev) => ({ ...prev, open: false }));
   };
 
@@ -1185,6 +1214,34 @@ export default function ContentsTab({
           )}
         </td>
       ),
+      lineShippingType: () => {
+        const currentValue = String(line.lineShippingType ?? '').trim();
+        const normalizedOptions = (shippingTypeOptions || []).map((option) => ({
+          value: String(option?.value ?? option?.TrnspCode ?? '').trim(),
+          label: String(option?.label ?? option?.TrnspName ?? option?.value ?? '').trim(),
+        })).filter((option) => option.value);
+        const hasCurrentOption = normalizedOptions.some((option) => option.value === currentValue);
+
+        return (
+          <td key={'lineShippingType'}>
+            <select
+              className={'so-grid__input'}
+              name={'lineShippingType'}
+              value={currentValue}
+              onChange={(e) => onLineChange(i, e)}
+              aria-label={`Shipping Type row ${i + 1}`}
+            >
+              <option value={''}></option>
+              {currentValue && !hasCurrentOption ? (
+                <option value={currentValue}>{currentValue}</option>
+              ) : null}
+              {normalizedOptions.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </td>
+        );
+      },
       sacCode: () => (
         <td key="sacCode">
           <input
@@ -1391,9 +1448,22 @@ export default function ContentsTab({
 
     if (!cellRenderers[rendererKey]) return renderGenericMatrixCell(column, line, i);
     const rendered = cellRenderers[rendererKey]();
-    return React.isValidElement(rendered)
-      ? React.cloneElement(rendered, { key: columnKey })
-      : rendered;
+    if (!React.isValidElement(rendered)) return rendered;
+
+    const setting = getMatrixColumnSetting(column);
+    const disableSpecializedCell = Boolean(column.readOnly || setting.active === false);
+    return React.cloneElement(
+      rendered,
+      { key: columnKey },
+      disableSpecializedCell ? (
+        <fieldset
+          disabled
+          style={{ border: 0, margin: 0, minInlineSize: 0, padding: 0 }}
+        >
+          {rendered.props.children}
+        </fieldset>
+      ) : rendered.props.children,
+    );
   };
 
   return (
@@ -1411,7 +1481,8 @@ export default function ContentsTab({
         columns={visibleColumns.map((column) => ({
           ...column,
           columnTitle: column.label || column.columnTitle || column.key,
-          width: column.width || column.minWidth,
+          width: getReadableColumnWidth(column),
+          minWidth: getReadableColumnWidth(column),
           columnOrder: column.columnOrder ?? column.order,
         }))}
         loading={loading}
@@ -1445,6 +1516,7 @@ export default function ContentsTab({
       searchPlaceholder="Search values"
       emptyMessage={dynamicUdfLookup.loading ? 'Loading values...' : (dynamicUdfLookup.error || 'No values found')}
       allowCreate={false}
+      portalTarget={document.body}
     />
     <DistributionRuleAssignmentModal
       isOpen={distributionRuleAssignment.open}
@@ -1461,4 +1533,12 @@ export default function ContentsTab({
     />
     </>
   );
+}
+
+export default function ContentsTab(props) {
+  if (props.formSettingsReady === false) {
+    return <DocumentLineSettingsLoading />;
+  }
+
+  return <ReadyContentsTab {...props} />;
 }

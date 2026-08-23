@@ -18,9 +18,39 @@ const DELIVERY_DOCUMENT = Object.freeze({
   lineTable: 'DLN1',
 });
 
+const SALES_QUOTATION_DOCUMENT = Object.freeze({
+  documentType: 'SALES_QUOTATION',
+  objectType: '23',
+  formType: '149',
+  matrixId: '38',
+  headerTable: 'OQUT',
+  lineTable: 'QUT1',
+});
+
+const AR_INVOICE_DOCUMENT = Object.freeze({
+  documentType: 'AR_INVOICE',
+  objectType: '13',
+  formType: '133',
+  matrixId: '38',
+  headerTable: 'OINV',
+  lineTable: 'INV1',
+});
+
+const AR_CREDIT_MEMO_DOCUMENT = Object.freeze({
+  documentType: 'AR_CREDIT_MEMO',
+  objectType: '14',
+  formType: '179',
+  matrixId: '38',
+  headerTable: 'ORIN',
+  lineTable: 'RIN1',
+});
+
 const SALES_DOCUMENTS = Object.freeze({
+  SALES_QUOTATION: SALES_QUOTATION_DOCUMENT,
   SALES_ORDER: SALES_ORDER_DOCUMENT,
   DELIVERY: DELIVERY_DOCUMENT,
+  AR_INVOICE: AR_INVOICE_DOCUMENT,
+  AR_CREDIT_MEMO: AR_CREDIT_MEMO_DOCUMENT,
 });
 
 const resolveSalesDocument = (value = SALES_ORDER_DOCUMENT.documentType) => {
@@ -37,8 +67,9 @@ const resolveSalesDocument = (value = SALES_ORDER_DOCUMENT.documentType) => {
 
 const SCHEMA_FORMAT_VERSION = 'nso-schema-v1';
 
-// This registry only describes stable SAP Sales Order semantics. Company UDFs
-// are deliberately absent and are discovered from ORDR/RDR1 + CUFD at runtime.
+// This registry only describes stable SAP marketing-document semantics. Company
+// UDFs are deliberately absent and are discovered from the active document
+// profile tables plus CUFD at runtime.
 const SALES_ORDER_HEADER_STANDARD_FIELDS = Object.freeze({
   CardCode: Object.freeze({
     stateKey: 'customerCode',
@@ -246,6 +277,18 @@ const SALES_ORDER_LINE_STANDARD_FIELDS = Object.freeze({
     order: 75,
     width: 120,
   }),
+  TotalFrgn: Object.freeze({
+    stateKey: 'lineTotalForeign',
+    sapField: 'RowTotalFC',
+    databaseField: 'TotalFrgn',
+    aliases: Object.freeze(['RowTotalFC', 'Total Foreign', 'Total (FC)']),
+    label: 'Total (Doc)',
+    renderer: 'number',
+    storage: 'calculated',
+    readOnly: true,
+    order: 76,
+    width: 120,
+  }),
   LocationCode: Object.freeze({
     stateKey: 'locationCode',
     sapField: 'LocationCode',
@@ -332,6 +375,17 @@ const SALES_ORDER_LINE_STANDARD_FIELDS = Object.freeze({
     renderer: 'date',
     type: 'date',
     order: 125,
+    width: 125,
+  }),
+  RequiredDate: Object.freeze({
+    stateKey: 'requiredDate',
+    sapField: 'RequiredDate',
+    databaseField: 'ReqDate',
+    aliases: Object.freeze(['RequiredDate', 'ReqDate', 'Required Date']),
+    label: 'Required Date',
+    renderer: 'date',
+    type: 'date',
+    order: 126,
     width: 125,
   }),
   OpenQuantity: Object.freeze({
@@ -472,6 +526,8 @@ const LINKED_TABLE_COLUMN_CANDIDATES = Object.freeze({
 });
 
 module.exports = {
+  AR_CREDIT_MEMO_DOCUMENT,
+  AR_INVOICE_DOCUMENT,
   DELIVERY_DOCUMENT,
   FORBIDDEN_LOOKUP_KEYS,
   FORBIDDEN_SCOPE_KEYS,
@@ -481,6 +537,7 @@ module.exports = {
   LOOKUP_SOURCES,
   LOOKUP_SOURCE_SET,
   SALES_ORDER_DOCUMENT,
+  SALES_QUOTATION_DOCUMENT,
   SALES_DOCUMENTS,
   SALES_ORDER_HEADER_STANDARD_FIELDS,
   SALES_ORDER_LINE_STANDARD_FIELDS,

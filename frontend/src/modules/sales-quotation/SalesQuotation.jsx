@@ -9,7 +9,6 @@ import LogisticsTab from './components/LogisticsTab';
 import AccountingTab from './components/AccountingTab';
 import TaxTab from './components/TaxTab';
 import ElectronicDocumentsTab from './components/ElectronicDocumentsTab';
-import TransportTab from './components/TransportTab';
 import AttachmentsTab from './components/AttachmentsTab';
 import AddressModal from '../../components/document/AddressComponentModal';
 import { formatAddressComponent, mapAddressFields, pickAddressComponentFields } from '../../utils/documentAddress';
@@ -25,13 +24,13 @@ import LineValueLookupModal from '../../components/sales-document/LineValueLooku
 import DocumentCurrencySelect from '../../components/document/DocumentCurrencySelect';
 import PrintLayoutToolbar from '../../components/print-layout/PrintLayoutToolbar';
 import FreightChargesModal from '../../components/freight/FreightChargesModal';
+import ExchangeRatesIndexesModal from '../sales-order/components/ExchangeRatesIndexesModal';
 import { summarizeFreightRows } from '../../components/freight/freightUtils';
 import { useSapWindowTaskbarActions } from '../../components/SapWindowTaskbarContext';
 import useStandardDocumentDraftTask from '../../hooks/useStandardDocumentDraftTask';
 import { determineTaxCode, recalculateAllTaxCodes, getGSTTypeLabel } from '../../utils/taxEngine';
 import { filterWarehousesByBranch } from '../../utils/warehouseBranch';
 import { hydrateDocumentLineFromItem, mergeItemMaster } from '../../utils/documentItemHydration';
-import { FALLBACK_UOM, FALLBACK_WAREHOUSES } from '../../utils/fallbackReferenceData';
 import { getDefaultSeriesForCurrentYear, getSapVisibleDocumentSeries } from '../../utils/seriesDefaults';
 import { readGeneralSettings } from '../../utils/generalSettingsStorage';
 import {
@@ -40,6 +39,7 @@ import {
   isValidManualDocumentNumber,
 } from '../../utils/documentSeries';
 import { useCompanyScopedFormSettings } from '../../utils/formSettingsStorage';
+import { updateFormSettingPreference } from '../../utils/formSettingsPreferences';
 import { buildVisibleEnteredRowUdfPayload } from '../../utils/rowUdfPayload';
 import { getStateCodeValue, getStateDisplayName } from '../../utils/stateDisplay';
 import { findTaxCode, getTaxComponentCodes, taxCodeHasComponent } from '../../utils/taxCodeComponents';
@@ -53,11 +53,19 @@ import useSalesDocumentLineLookups from '../../hooks/useSalesDocumentLineLookups
 import SalesEmployeeSetupModal from '../../components/sales-employee/SalesEmployeeSetupModal';
 import { useRelationshipMapRegistration } from '../../components/relationship-map/RelationshipMapHost';
 import { useAuth } from '../../auth/AuthContext';
+import { isRouteStateForActiveCompany } from '../../utils/companyStorageScope';
 import { getDocumentLayout } from '../../api/sapLayoutApi';
 import {
   SALES_QUOTATION_LAYOUT_DOCUMENT_TYPE,
-  buildSalesOrderMatrixColumnsFromLayout,
+  getSapStandardSalesMatrixColumns,
 } from '../sales-order/documentLayout';
+import { fetchSalesDocumentLookup, fetchSalesDocumentSchema } from '../../api/salesDocumentSchemaApi';
+import {
+  buildSalesDocumentLiveFields,
+  getSalesDocumentCompanyScopeKey,
+  loadSalesDocumentFieldLookupOptions,
+  stripSalesDocumentTopLevelUdfs,
+} from '../../utils/salesDocumentLiveFields';
 import { hydrateWorkbookDocumentLine } from '../../utils/workbookLineHydration';
 import {
   fetchSalesQuotationByDocEntry,
@@ -73,15 +81,13 @@ import {
   fetchOpenSalesQuotations,
   fetchSalesQuotationForCopy,
 } from '../../api/salesQuotationApi';
+import { fetchSalesOrderExchangeRates, saveSalesOrderExchangeRate } from '../../api/salesOrderApi';
 import { normaliseDocumentHeader, normaliseDocumentLine, unwrapCopyFromDocument, BASE_TYPE } from '../../api/copyFromApi';
 import { fetchHSNCodes, fetchHSNCodeFromItem } from '../../api/hsnCodeApi';
 import {
-  BASE_MATRIX_COLUMNS,
   FORM_SETTINGS_STORAGE_KEY,
-  HEADER_UDF_DEFINITIONS,
-  ROW_UDF_DEFINITIONS,
   createUdfState,
-  normalizeUdfState,
+  normalizeUdfState as normalizeConfiguredUdfState,
   readSavedFormSettings,
 } from '../../config/salesQuotationForm';
 
@@ -95,6 +101,9 @@ const getErrMsg = (e, fb) => {
   if (body.message) return d?.hint ? `${body.message} ${d.hint}` : body.message;
   return e?.message || fb;
 };
+const normalizeUdfState = (definitions = [], values = {}) => (
+  normalizeConfiguredUdfState(definitions, values, { preserveExtra: false })
+);
 const today = () => new Date().toISOString().split('T')[0];
 const parseNum = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const roundTo = (v, d) => { const f = 10 ** Math.max(d, 0); return Math.round((v + Number.EPSILON) * f) / f; };
@@ -146,22 +155,38 @@ const normalizeAddressText = (value) =>
     .replace(/\s+/g, ' ')
     .trim();
 
-// ─── static fallbacks ────────────────────────────────────────────────────────
-const FALLBACK_PAYMENT_TERMS = [
-  { value: '0', label: 'Immediate' },
-  { value: '1', label: 'Net 30' },
-  { value: '2', label: 'Net 60' },
-  { value: '3', label: 'Net 90' },
-];
-const FALLBACK_SHIPPING = [
-  { value: '1', label: 'Air' },
-  { value: '2', label: 'Sea' },
-  { value: '3', label: 'Road' },
-  { value: '4', label: 'Courier' },
-];
 // ─── constants ────────────────────────────────────────────────────────────────
 const DEC = { QtyDec: 2, PriceDec: 2, SumDec: 2, RateDec: 2, PercentDec: 2 };
-const TAB_NAMES = ['Contents', 'Logistics', 'Accounting', 'Tax', 'Transport', 'Electronic Documents', 'Attachments'];
+const TAB_NAMES = ['Contents', 'Logistics', 'Accounting', 'Tax', 'Electronic Documents', 'Attachments'];
+const buildExchangeRatesFallbackData = ({ year, month, currencies = [], localCurrency = '', documentCurrency = '' }) => {
+  const normalizedYear = Number(year) || new Date().getFullYear();
+  const normalizedMonth = Number(month) || (new Date().getMonth() + 1);
+  const localCode = String(localCurrency || '').trim();
+  const currencyMap = new Map();
+  const addCurrency = (code, name = '') => {
+    const normalizedCode = String(code || '').trim();
+    if (!normalizedCode || normalizedCode === localCode || currencyMap.has(normalizedCode)) return;
+    currencyMap.set(normalizedCode, {
+      code: normalizedCode,
+      name: String(name || normalizedCode).trim(),
+    });
+  };
+
+  (Array.isArray(currencies) ? currencies : []).forEach((entry) => addCurrency(
+    entry.CurrCode || entry.Code || entry.code || entry.value,
+    entry.CurrName || entry.Name || entry.name || entry.label,
+  ));
+  addCurrency(documentCurrency);
+
+  const daysInMonth = new Date(normalizedYear, normalizedMonth, 0).getDate();
+  return {
+    year: normalizedYear,
+    month: normalizedMonth,
+    localCurrency: localCode,
+    currencies: [...currencyMap.values()].sort((left, right) => left.code.localeCompare(right.code)),
+    days: Array.from({ length: daysInMonth }, (_unused, index) => ({ day: index + 1, rates: {} })),
+  };
+};
 const GENERAL_SETTINGS = readGeneralSettings();
 const HEADER_VALIDATION_TABS = {
   shipToCode: 'Logistics',
@@ -177,10 +202,11 @@ const getValidationTab = (errors) => {
   return HEADER_VALIDATION_TABS[headerField] || 'Contents';
 };
 
-const createLine = (rowUdfDefinitions = ROW_UDF_DEFINITIONS) => ({
+const createLine = (rowUdfDefinitions = []) => ({
   itemNo: '', itemDescription: '', hsnCode: '', quantity: '', unitPrice: '',
   requiredDate: '', quotedDate: '', requiredQty: '',
-  sacCode: '', uomCode: '', stdDiscount: '', taxCode: '', total: '', totalLC: '', whse: '',
+  sacCode: '', uomCode: '', stdDiscount: '', taxCode: '', total: '', totalLC: '', grossTotal: '', whse: '',
+  lineDeliveryDate: '',
   taxCodeManuallyOverridden: false,
   distRule: '', cogsDistRule: '', countryOfOrigin: '', loc: '', branch: '',
   blanketAgreementNo: '', allowProcurementDoc: false,
@@ -210,7 +236,7 @@ const INIT_HEADER = {
   shippingType: '', confirmed: false, journalRemark: '', paymentTerms: '',
   paymentMethod: '', otherInstruction: '', discount: '', freight: '', tax: '',
   totalPaymentDue: '', rounding: false, owner: '', purchaser: '',
-  placeOfSupply: '', currency: 'INR', useBillToForTax: false,
+  placeOfSupply: '', currency: 'INR', exchangeRate: '', useBillToForTax: false,
   billToAddress: '', billToCode: '', shipToAddress: '',
   shipToAddressComponents: null, billToAddressComponents: null,
 };
@@ -231,138 +257,6 @@ const resolveCurrencyCode = (currency, fallback = 'INR') => {
   return normalized && normalized !== '##' ? normalized : fallback;
 };
 
-const isUomNameColumn = (column = {}) => {
-  const tokens = [
-    column.key,
-    column.valueKey,
-    column.rendererKey,
-    column.sapField,
-    column.fieldName,
-    column.layoutFieldName,
-    column.label,
-  ].map((value) => String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, ''));
-
-  return tokens.some((token) => ['UOMNAME', 'UNITMSR'].includes(token));
-};
-
-const normalizeSalesQuotationColumnToken = (value) =>
-  String(value || '')
-    .trim()
-    .toUpperCase()
-    .replace(/^U_/, 'U')
-    .replace(/[^A-Z0-9]+/g, '');
-
-const SALES_QUOTATION_LAYOUT_KEY_ALIASES = {
-  ITEMCODE: 'itemNo',
-  ITEMNO: 'itemNo',
-  DSCRIPTION: 'itemDescription',
-  DESCRIPTION: 'itemDescription',
-  ITEMDESCRIPTION: 'itemDescription',
-  ITEMSERVICEDESCRIPTION: 'itemDescription',
-  ITEMSERVICEDESCRIPTION200CHARACTERS: 'itemDescription',
-  QUANTITY: 'quantity',
-  QTY: 'quantity',
-  UNITMSR: 'uomName',
-  UOMNAME: 'uomName',
-  HSN: 'hsnCode',
-  HSNCODE: 'hsnCode',
-  HSNENTRY: 'hsnCode',
-  PRICE: 'unitPrice',
-  PRICEBEFDI: 'unitPrice',
-  UNITPRICE: 'unitPrice',
-  TAXCODE: 'taxCode',
-  VATGROUP: 'taxCode',
-  TOTAL: 'totalLC',
-  TOTALLC: 'totalLC',
-  LINETOTAL: 'totalLC',
-  GTOTAL: 'totalLC',
-  PACKINGTYPE: 'U_PackingType',
-  UPACKINGTYPE: 'U_PackingType',
-  UPACKINGSTATUS: 'U_PackingType',
-  OCRCODE: 'distRule',
-  DISTRULE: 'distRule',
-  DISTRRULE: 'distRule',
-  DISTRIBUTIONRULE: 'distRule',
-  UTAXCODE: 'taxCodeRepeat',
-  UPRICE: 'price',
-  UBROKSELLER: 'sellerBrokerage',
-  SELLERBROKERAGE: 'sellerBrokerage',
-  UBROKBUYER: 'buyerBrokerage',
-  BUYERBROKERAGE: 'buyerBrokerage',
-  UBUYERDELIVERY: 'buyerDelivery',
-  BUYERDELIVERY: 'buyerDelivery',
-  USELLERDELIVERY: 'sellerDelivery',
-  SELLERDELIVERY: 'sellerDelivery',
-  UBUYERPAYMENTTERM: 'buyerPaymentTerms',
-  UBUYERPAYMENTTERMS: 'buyerPaymentTerms',
-  BUYERTERMSOFPAYMENT: 'buyerPaymentTerms',
-  USELLERPAYMENTTER: 'sellerPaymentTerms',
-  USELLERPAYMENTTERM: 'sellerPaymentTerms',
-  USELLERPAYMENTTERMS: 'sellerPaymentTerms',
-  SELLERTERMSOFPAYMENT: 'sellerPaymentTerms',
-  UBUYERQUALITY: 'buyerQuality',
-  BUYERQUALITY: 'buyerQuality',
-  USELLERQUALITY: 'sellerQuality',
-  SELLERQUALITY: 'sellerQuality',
-  UBUYERPRICE: 'buyerPrice',
-  BUYERPRICE: 'buyerPrice',
-  USELLERPRICE: 'sellerPrice',
-  SELLERPRICE: 'sellerPrice',
-  UBUYERSPINS: 'buyerSpecialInstruction',
-  BUYERSPECIALINSTRUCTION: 'buyerSpecialInstruction',
-  USELLERSPINS: 'sellerSpecialInstruction',
-  SELLERSPECIALINSTRUCTION: 'sellerSpecialInstruction',
-  USELBROKAP: 'sellerBrokerageAmtPer',
-  SELLERBROKERAGEAMTPER: 'sellerBrokerageAmtPer',
-  USELLERBROKPER: 'sellerBrokeragePercent',
-  SELLERBROKERAGEINPERCENTAGE: 'sellerBrokeragePercent',
-  USELLTCODE: 'stcode',
-  USTCODE: 'stcode',
-  STCODE: 'stcode',
-  USITEM: 'sellerItem',
-  SITEM: 'sellerItem',
-  USQTY: 'sellerQty',
-  SQTY: 'sellerQty',
-  USPLRBT: 'specialRebate',
-  SPECIALREBATE: 'specialRebate',
-  UCOMPRC: 'commission',
-  COMMISION: 'commission',
-  COMMISSION: 'commission',
-  USBROKPERQTY: 'sellerBrokeragePerQty',
-  BROKPERQTY: 'sellerBrokeragePerQty',
-  UFIXBROCKB: 'U_Fix_Brock_B',
-  UFIXBROKB: 'U_Fix_Brock_B',
-  UFIXBROKBUYER: 'U_Fix_Brock_B',
-  FIXBROKBUYER: 'U_Fix_Brock_B',
-  UFIXBROCKS: 'U_Fix_Brock_S',
-  UFIXBROKS: 'U_Fix_Brock_S',
-  UFIXBROCKSELLER: 'U_Fix_Brock_S',
-  UFIXBROKSELLER: 'U_Fix_Brock_S',
-  FIXBROCKSELLER: 'U_Fix_Brock_S',
-  FIXBROKSELLER: 'U_Fix_Brock_S',
-};
-
-const getSalesQuotationCanonicalColumnKey = (column = {}) => {
-  const candidates = [
-    column.key,
-    column.valueKey,
-    column.rendererKey,
-    column.sapField,
-    column.fieldName,
-    column.layoutFieldName,
-    column.sapColumnId,
-    column.columnTitle,
-    column.label,
-  ];
-
-  for (const candidate of candidates) {
-    const key = SALES_QUOTATION_LAYOUT_KEY_ALIASES[normalizeSalesQuotationColumnToken(candidate)];
-    if (key) return key;
-  }
-
-  return '';
-};
-
 const getSalesQuotationItemDescription = (item = {}, fallback = '') => (
   item.ItemName ||
   item.ItemDescription ||
@@ -373,93 +267,6 @@ const getSalesQuotationItemDescription = (item = {}, fallback = '') => (
   fallback ||
   ''
 );
-
-const normalizeSalesQuotationMatrixColumns = (columns = []) => {
-  const sourceColumns = Array.isArray(columns) ? columns : [];
-  const desiredColumns = BASE_MATRIX_COLUMNS;
-  const desiredByKey = new Map(desiredColumns.map((column) => [column.key, column]));
-  const sourceByCanonicalKey = new Map();
-
-  sourceColumns.forEach((column) => {
-    const key = getSalesQuotationCanonicalColumnKey(column);
-    if (key && desiredByKey.has(key) && !sourceByCanonicalKey.has(key)) {
-      sourceByCanonicalKey.set(key, column);
-    }
-  });
-
-  return desiredColumns.map((desiredColumn, index) => {
-    const sourceColumn = sourceByCanonicalKey.get(desiredColumn.key) || {};
-    const minWidth = Math.max(
-      Number(desiredColumn.minWidth) || 125,
-      Number(sourceColumn.minWidth || sourceColumn.width) || 0,
-    );
-
-    return {
-      ...sourceColumn,
-      ...desiredColumn,
-      key: desiredColumn.key,
-      valueKey: desiredColumn.valueKey || desiredColumn.key,
-      rendererKey: desiredColumn.rendererKey || desiredColumn.valueKey || desiredColumn.key,
-      label: desiredColumn.label,
-      visible: desiredColumn.visible !== false,
-      active: sourceColumn.active !== false,
-      readOnly: desiredColumn.readOnly ?? sourceColumn.readOnly,
-      minWidth,
-      width: minWidth,
-      order: index + 1,
-      columnOrder: index + 1,
-      type: desiredColumn.type || (desiredColumn.numeric ? 'number' : 'text'),
-      numeric: Boolean(desiredColumn.numeric),
-      isUdf: Boolean(desiredColumn.isUdf),
-      importedLayout: Boolean(sourceColumn.importedLayout),
-      sapControlled: Boolean(sourceColumn.sapControlled),
-      source: sourceColumn.source || desiredColumn.source || 'sales-quotation-workbook',
-    };
-  });
-};
-
-const ensureSalesQuotationMatrixColumns = (columns = []) => {
-  const safeColumns = Array.isArray(columns) ? columns.filter(Boolean) : [];
-  const nextColumns = safeColumns.map((column) => ({
-    ...column,
-    sapControlled: true,
-  }));
-
-  if (nextColumns.some(isUomNameColumn)) return nextColumns;
-
-  const quantityIndex = nextColumns.findIndex((column) => (
-    String(column.key || column.valueKey || column.rendererKey || '').trim() === 'quantity'
-  ));
-  const orderBase = quantityIndex >= 0
-    ? Number(nextColumns[quantityIndex].order || nextColumns[quantityIndex].columnOrder || quantityIndex + 1)
-    : 4;
-  const uomNameColumn = {
-    key: 'uomName',
-    valueKey: 'uomName',
-    rendererKey: 'uomName',
-    sapField: 'unitMsr',
-    fieldName: 'unitMsr',
-    layoutFieldName: 'unitMsr',
-    label: 'UoM Name',
-    visible: true,
-    active: false,
-    readOnly: true,
-    minWidth: 120,
-    width: 120,
-    order: orderBase + 0.1,
-    columnOrder: orderBase + 0.1,
-    sapControlled: true,
-    importedLayout: true,
-    source: 'sales-quotation-required-column',
-    type: 'text',
-  };
-
-  return [
-    ...nextColumns.slice(0, quantityIndex >= 0 ? quantityIndex + 1 : nextColumns.length),
-    uomNameColumn,
-    ...nextColumns.slice(quantityIndex >= 0 ? quantityIndex + 1 : nextColumns.length),
-  ];
-};
 
 const INIT_ATTACH = Array.from({ length: 9 }, (_, i) => ({
   id: i + 1, targetPath: '', fileName: '', attachmentDate: '',
@@ -478,23 +285,34 @@ function SalesQuotation() {
   const { company } = useAuth();
   const activeCompanyId = company?.companyId || '';
   const activeCompanyDb = company?.dbName || '';
+  const activeFieldMetadataScope = getSalesDocumentCompanyScopeKey({
+    companyId: activeCompanyId,
+    companyDb: activeCompanyDb,
+  });
   const { removeTask, upsertTask } = useSapWindowTaskbarActions();
-  const requestedEditDocEntry = location.state?.salesQuotationDocEntry || location.state?.salesOrderDocEntry;
+  const requestedEditDocEntry = isRouteStateForActiveCompany(location.state)
+    ? location.state?.salesQuotationDocEntry || location.state?.salesOrderDocEntry
+    : null;
   const formRef = useRef(null);
 
   const [currentDocEntry, setCurrentDocEntry] = useState(null);
   const [header, setHeader] = useState(INIT_HEADER);
-  const [headerUdfDefinitions, setHeaderUdfDefinitions] = useState(HEADER_UDF_DEFINITIONS);
-  const [rowUdfDefinitions, setRowUdfDefinitions] = useState(ROW_UDF_DEFINITIONS);
-  const [matrixColumnDefinitions, setMatrixColumnDefinitions] = useState(BASE_MATRIX_COLUMNS);
-  const [lines, setLines] = useState([createLine(ROW_UDF_DEFINITIONS)]);
+  const [headerUdfDefinitions, setHeaderUdfDefinitions] = useState([]);
+  const [rowUdfDefinitions, setRowUdfDefinitions] = useState([]);
+  const [hydratedFieldMetadataScope, setHydratedFieldMetadataScope] = useState('');
+  const [matrixColumnDefinitions, setMatrixColumnDefinitions] = useState(() => getSapStandardSalesMatrixColumns());
+  const [lines, setLines] = useState([createLine([])]);
   const [attachments] = useState(INIT_ATTACH);
   const [activeTab, setActiveTab] = useState('Contents');
-  const [headerUdfs, setHeaderUdfs] = useState(() => normalizeUdfState(HEADER_UDF_DEFINITIONS));
-  const [formSettings, setFormSettings, formSettingsStorageKey] = useCompanyScopedFormSettings(
+  const [headerUdfs, setHeaderUdfs] = useState({});
+  const [formSettings, setFormSettings, formSettingsStorageKey, replaceFormSettings, formSettingsStatus] = useCompanyScopedFormSettings(
     FORM_SETTINGS_STORAGE_KEY,
     readSavedFormSettings,
     [headerUdfDefinitions, rowUdfDefinitions, matrixColumnDefinitions],
+    { saveMode: 'explicit' },
+  );
+  const companyFormSettingsReady = Boolean(activeCompanyId || activeCompanyDb) && (
+    formSettingsStatus.loaded && hydratedFieldMetadataScope === activeFieldMetadataScope
   );
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [formSettingsOpen, setFormSettingsOpen] = useState(false);
@@ -505,7 +323,7 @@ function SalesQuotation() {
     countries: [], distribution_rules: [], distribution_dimensions: [], quality_options: { buyer: [], seller: [] }, price_options: { buyer: [], seller: [] },
     company_currencies: { localCurrency: 'INR', systemCurrency: 'INR' },
     decimal_settings: DEC, warnings: [], series: [], states: [], udf_metadata: { header: [], rows: [] },
-    line_field_metadata: { matrix_columns: BASE_MATRIX_COLUMNS, sap_form: {} },
+    line_field_metadata: { matrix_columns: getSapStandardSalesMatrixColumns(), sap_form: {} },
     lookup_sources: {},
   });
   const [pageState, setPageState] = useState({ loading: false, vendorLoading: false, posting: false, error: '', success: '', seriesLoading: false });
@@ -522,6 +340,9 @@ function SalesQuotation() {
   const [hsnModal, setHsnModal] = useState({ open: false, lineIndex: -1 });
   const [itemModal, setItemModal] = useState({ open: false, lineIndex: -1, items: [], loading: false });
   const [freightModal, setFreightModal] = useState({ open: false, freightCharges: [], loading: false });
+  const [exchangeRatesModal, setExchangeRatesModal] = useState({
+    open: false, currency: '', postingDate: '', initialRate: '', loading: false, error: '', data: null,
+  });
 
   useStandardDocumentDraftTask({
     draftKey: 'salesQuotationDraft',
@@ -540,9 +361,9 @@ function SalesQuotation() {
       setHeader(draft.header || INIT_HEADER);
       setLines(Array.isArray(draft.lines) && draft.lines.length
         ? draft.lines
-        : [createLine(ROW_UDF_DEFINITIONS)]);
-      setHeaderUdfs(draft.headerUdfs || normalizeUdfState(HEADER_UDF_DEFINITIONS));
-      setActiveTab(draft.activeTab || 'Contents');
+        : [createLine([])]);
+      setHeaderUdfs(draft.headerUdfs || {});
+      setActiveTab(TAB_NAMES.includes(draft.activeTab) ? draft.activeTab : 'Contents');
       setIsDirty(Boolean(draft.isDirty));
       setFreightModal((prev) => ({
         ...prev,
@@ -575,6 +396,17 @@ function SalesQuotation() {
     setLines,
     createLookupValue: createSalesQuotationLookupValue,
   });
+
+  const loadDynamicLineLookupOptions = useCallback((source, field = {}, line = {}) => (
+    loadSalesDocumentFieldLookupOptions({
+      fetchLookup: fetchSalesDocumentLookup,
+      source,
+      field,
+      line,
+      documentType: 'SALES_QUOTATION',
+      schemaVersion: refData.line_field_metadata?.live_schema?.schemaVersion || '',
+    })
+  ), [refData.line_field_metadata]);
 
   useEffect(() => {
     if (!refData.states?.length || !header.placeOfSupply) return;
@@ -699,13 +531,14 @@ function SalesQuotation() {
   // ── load reference data ───────────────────────────────────────────────────
   useEffect(() => {
     let ignore = false;
+    setHydratedFieldMetadataScope('');
     const load = async () => {
       setPageState(p => ({ ...p, loading: true, error: '', success: '' }));
       try {
         if (!activeCompanyId) {
           setHeaderUdfDefinitions([]);
           setRowUdfDefinitions([]);
-          setMatrixColumnDefinitions(BASE_MATRIX_COLUMNS);
+          setMatrixColumnDefinitions(getSapStandardSalesMatrixColumns());
           setHeaderUdfs({});
           setLines([createLine([])]);
           setRefData(prev => ({
@@ -717,7 +550,7 @@ function SalesQuotation() {
             countries: [], distribution_rules: [], distribution_dimensions: [], quality_options: { buyer: [], seller: [] }, price_options: { buyer: [], seller: [] },
             company_currencies: { localCurrency: 'INR', systemCurrency: 'INR' },
             udf_metadata: { header: [], rows: [] },
-            line_field_metadata: { matrix_columns: BASE_MATRIX_COLUMNS, sap_form: {} },
+            line_field_metadata: { matrix_columns: getSapStandardSalesMatrixColumns(), sap_form: {} },
             lookup_sources: {},
           }));
           return;
@@ -725,13 +558,14 @@ function SalesQuotation() {
 
         setMatrixColumnDefinitions([]);
 
-        const [refDataRes, hsnRes, layoutRes] = await Promise.all([
+        const [refDataRes, hsnRes, layoutRes, liveSchema] = await Promise.all([
           fetchSalesQuotationReferenceData(activeCompanyId),
           fetchHSNCodes(),
           getDocumentLayout({
             companyDb: activeCompanyDb || undefined,
             documentType: SALES_QUOTATION_LAYOUT_DOCUMENT_TYPE,
             objectType: '23',
+            refresh: true,
           }).catch((error) => ({
             data: {
               success: false,
@@ -739,6 +573,10 @@ function SalesQuotation() {
               warning: getErrMsg(error, 'Failed to load SAP layout.'),
             },
           })),
+          fetchSalesDocumentSchema({ documentType: 'SALES_QUOTATION' }).catch((error) => {
+            console.warn('[Sales Quotation] Live OQUT/QUT1 schema was not available.', error);
+            return null;
+          }),
         ]);
         
         // ═══ LOGGING: Reference Data ═══
@@ -780,26 +618,31 @@ function SalesQuotation() {
         console.log('═══════════════════════════════════════════════════');
         
         if (!ignore) {
-          const nextHeaderUdfs = refDataRes.data.udf_metadata?.header || [];
-          const nextRowUdfs = refDataRes.data.udf_metadata?.rows || [];
-          const liveMatrixColumns = refDataRes.data.line_field_metadata?.matrix_columns?.length
-            ? refDataRes.data.line_field_metadata.matrix_columns
-            : BASE_MATRIX_COLUMNS;
-          const nextMatrixColumns = normalizeSalesQuotationMatrixColumns(ensureSalesQuotationMatrixColumns(buildSalesOrderMatrixColumnsFromLayout({
-            layoutColumns: layoutRes?.data?.columns || [],
-            liveMatrixColumns,
-            rowUdfFields: nextRowUdfs,
-            includeLineNumber: false,
-          })));
+          const sourceMatrixColumns = refDataRes.data.line_field_metadata?.matrix_columns || [];
+          const liveFields = buildSalesDocumentLiveFields({
+            schema: liveSchema,
+            documentType: 'SALES_QUOTATION',
+            objectType: '23',
+            headerTable: 'OQUT',
+            lineTable: 'QUT1',
+            companyId: activeCompanyId,
+            companyDb: activeCompanyDb,
+            layoutResponse: layoutRes,
+            referenceMatrixColumns: sourceMatrixColumns,
+            referenceSapForm: refDataRes.data.line_field_metadata?.sap_form,
+          });
+          const nextHeaderUdfs = liveFields.headerUdfFields;
+          const nextRowUdfs = liveFields.rowUdfFields;
+          const nextMatrixColumns = liveFields.matrixColumns;
           setHeaderUdfDefinitions(nextHeaderUdfs);
           setRowUdfDefinitions(nextRowUdfs);
           setMatrixColumnDefinitions(nextMatrixColumns);
-          setHeaderUdfs((prev) => normalizeUdfState(nextHeaderUdfs, prev));
+          setHeaderUdfs((prev) => normalizeUdfState(nextHeaderUdfs, prev, { preserveExtra: false }));
           setLines((prev) => prev.map((line) => ({
             ...line,
-            udf: normalizeUdfState(nextRowUdfs, line.udf || {}),
+            udf: normalizeUdfState(nextRowUdfs, line.udf || {}, { preserveExtra: false }),
           })));
-          setFormSettings(readSavedFormSettings(nextHeaderUdfs, nextRowUdfs, nextMatrixColumns, formSettingsStorageKey));
+          replaceFormSettings(readSavedFormSettings(nextHeaderUdfs, nextRowUdfs, nextMatrixColumns, formSettingsStorageKey));
           setRefData(prev => ({
             ...prev,
             company: refDataRes.data.company || '',
@@ -829,28 +672,69 @@ function SalesQuotation() {
             decimal_settings: { ...DEC, ...(refDataRes.data.decimal_settings || {}) },
             warnings: [
               ...(refDataRes.data.warnings || []),
+              ...(!liveFields.schemaMatchesCompany && liveSchema
+                ? ['Ignored a Sales Quotation schema belonging to another company.']
+                : []),
+              ...(!liveFields.liveAvailable
+                ? ['Live Sales Quotation field metadata was unavailable; SAP standard fields are shown.']
+                : []),
               ...(layoutRes?.data?.warning ? [layoutRes.data.warning] : []),
             ],
-            udf_metadata: refDataRes.data.udf_metadata || { header: [], rows: [] },
+            udf_metadata: { header: nextHeaderUdfs, rows: nextRowUdfs },
             line_field_metadata: {
               ...(refDataRes.data.line_field_metadata || { sap_form: {} }),
               matrix_columns: nextMatrixColumns,
-              imported_layout: layoutRes?.data || null,
+              source_matrix_columns: sourceMatrixColumns,
+              imported_layout: liveFields.importedLayout,
+              live_schema: liveFields.liveSchema,
+              live_available: liveFields.liveAvailable,
             },
             lookup_sources: refDataRes.data.lookup_sources || {},
             series: Array.isArray(prev.series) ? prev.series : [],
           }));
+          setHydratedFieldMetadataScope(activeFieldMetadataScope);
         }
       } catch (e) {
         console.error('❌ Error loading reference data:', e);
-        if (!ignore) setPageState(p => ({ ...p, error: getErrMsg(e, 'Failed to load reference data.') }));
+        if (!ignore) {
+          const fallbackColumns = getSapStandardSalesMatrixColumns();
+          setHeaderUdfDefinitions([]);
+          setRowUdfDefinitions([]);
+          setMatrixColumnDefinitions(fallbackColumns);
+          setHeaderUdfs({});
+          setLines((previous) => previous.map((line) => ({ ...line, udf: {} })));
+          replaceFormSettings(readSavedFormSettings([], [], fallbackColumns, formSettingsStorageKey));
+          setRefData((previous) => ({
+            ...previous,
+            udf_metadata: { header: [], rows: [] },
+            line_field_metadata: {
+              matrix_columns: fallbackColumns,
+              source_matrix_columns: [],
+              sap_form: {},
+              live_schema: null,
+              live_available: false,
+            },
+          }));
+          setPageState(p => ({ ...p, error: getErrMsg(e, 'Failed to load reference data.') }));
+          setHydratedFieldMetadataScope(activeFieldMetadataScope);
+        }
       } finally {
         if (!ignore) setPageState(p => ({ ...p, loading: false }));
       }
     };
     load();
     return () => { ignore = true; };
-  }, [activeCompanyDb, activeCompanyId, formSettingsStorageKey]);
+  }, [activeCompanyDb, activeCompanyId, activeFieldMetadataScope, formSettingsStorageKey, replaceFormSettings]);
+
+  useEffect(() => {
+    if (!companyFormSettingsReady || formSettingsStatus.hasUnsavedChanges) return;
+    replaceFormSettings(readSavedFormSettings(
+      headerUdfDefinitions,
+      rowUdfDefinitions,
+      matrixColumnDefinitions,
+      formSettingsStorageKey,
+    ));
+  }, [companyFormSettingsReady, formSettingsStatus.hasUnsavedChanges, formSettingsStorageKey, headerUdfDefinitions, matrixColumnDefinitions, replaceFormSettings, rowUdfDefinitions]);
 
   // ── load existing order ───────────────────────────────────────────────────
   useEffect(() => {
@@ -900,7 +784,7 @@ function SalesQuotation() {
 
   useEffect(() => {
     const docEntry = requestedEditDocEntry;
-    if (!docEntry) return;
+    if (!docEntry || hydratedFieldMetadataScope !== activeFieldMetadataScope) return;
     let ignore = false;
     const load = async () => {
       setPageState(p => ({ ...p, loading: true, error: '', success: '' }));
@@ -983,6 +867,7 @@ function SalesQuotation() {
           confirmed: so.header?.confirmed || false,
           journalRemark: so.header?.journalRemark || '',
           currency: so.header?.currency || 'INR',
+          exchangeRate: so.header?.exchangeRate || so.header?.docRate || so.header?.DocRate || '',
         };
         
         console.log('📥 Final header state:', newHeader);
@@ -1034,7 +919,7 @@ function SalesQuotation() {
     };
     load();
     return () => { ignore = true; };
-  }, [location.pathname, requestedEditDocEntry, navigate]);
+  }, [activeFieldMetadataScope, hydratedFieldMetadataScope, location.pathname, requestedEditDocEntry, navigate]);
 
   useEffect(() => {
     if (!currentDocEntry) {
@@ -1087,18 +972,16 @@ function SalesQuotation() {
   const uomGroupMap = (refData.uom_groups || []).reduce((acc, g) => { acc[g.AbsEntry] = g.uomCodes || []; return acc; }, {});
 
   const effectiveTaxCodes = refData.tax_codes || [];
-  const effectiveWarehouses = refData.warehouses.length ? refData.warehouses : FALLBACK_WAREHOUSES;
+  const effectiveWarehouses = refData.warehouses || [];
   const freightTotals = summarizeFreightRows(freightModal.freightCharges, effectiveTaxCodes);
   
   // Filter warehouses by selected branch
   const branchFilteredWarehouses = filterWarehousesByBranch(effectiveWarehouses, header.branch);
   
-  const payTermOpts = refData.payment_terms.length
-    ? refData.payment_terms.map(t => ({ value: String(t.GroupNum), label: t.PymntGroup }))
-    : FALLBACK_PAYMENT_TERMS;
-  const shipTypeOpts = refData.shipping_types.length
-    ? refData.shipping_types.map(s => ({ value: String(s.TrnspCode), label: s.TrnspName }))
-    : FALLBACK_SHIPPING;
+  const payTermOpts = (refData.payment_terms || [])
+    .map(t => ({ value: String(t.GroupNum), label: t.PymntGroup }));
+  const shipTypeOpts = (refData.shipping_types || [])
+    .map(s => ({ value: String(s.TrnspCode), label: s.TrnspName }));
 
   const getUomOptions = useCallback((line) => {
     const item = refData.items.find(i => String(i.ItemCode || '') === String(line.itemNo || ''));
@@ -1108,7 +991,7 @@ function SalesQuotation() {
       const fb = String(item.SalesUnit || item.InventoryUOM || '').trim();
       if (fb) return [fb];
     }
-    return FALLBACK_UOM;
+    return [];
   }, [refData.items, uomGroupMap]);
 
   const lineItemOptions = lines.reduce((acc, line, i) => {
@@ -1444,9 +1327,78 @@ function SalesQuotation() {
         paymentTerms: m.PayTermsGrpCode != null ? String(m.PayTermsGrpCode) : hdr.paymentTerms,
         contactPerson: '',
         currency: resolveCurrencyCode(m.Currency, localCurrency),
+        exchangeRate: '',
       },
     };
   };
+
+  const openExchangeRatesModal = useCallback(({ currency, postingDate, initialRate = '' }) => {
+    setExchangeRatesModal({ open: true, currency, postingDate, initialRate, loading: false, error: '', data: null });
+  }, []);
+
+  const loadExchangeRatesMonth = useCallback(async ({ year, month }) => {
+    setExchangeRatesModal((prev) => ({ ...prev, loading: true, error: '' }));
+    try {
+      const response = await fetchSalesOrderExchangeRates({ year, month });
+      setExchangeRatesModal((prev) => ({ ...prev, loading: false, error: '', data: response.data }));
+    } catch (error) {
+      setExchangeRatesModal((prev) => ({
+        ...prev, loading: false,
+        error: error?.response?.data?.detail || error?.message || 'Failed to load exchange rates.',
+        data: buildExchangeRatesFallbackData({ year, month, currencies: refData.currencies || refData.company_currencies?.currencies || [], localCurrency: refData.company_currencies?.localCurrency || 'INR', documentCurrency: exchangeRatesModal.currency }),
+      }));
+    }
+  }, [exchangeRatesModal.currency, refData.currencies, refData.company_currencies]);
+
+  const saveExchangeRateFromModal = useCallback(async ({ rates = [], currency, postingDate, rate }) => {
+    const entries = (Array.isArray(rates) && rates.length ? rates : [{ currency, postingDate, rate }])
+      .map((entry) => ({ ...entry, rate: Number(entry.rate) }));
+    const invalidEntry = entries.find((entry) => !String(entry.currency || '').trim() || !String(entry.postingDate || '').trim() || !Number.isFinite(entry.rate) || entry.rate <= 0);
+    if (invalidEntry) { setExchangeRatesModal((prev) => ({ ...prev, error: 'Enter a positive exchange rate.' })); return; }
+    setExchangeRatesModal((prev) => ({ ...prev, loading: true, error: '' }));
+    try {
+      const savedEntries = [];
+      for (const entry of entries) {
+        const saved = await saveSalesOrderExchangeRate(entry);
+        savedEntries.push({ ...entry, rate: Number(saved.data?.rate) || entry.rate });
+      }
+      setHeader((prev) => {
+        const documentRate = savedEntries.find((e) => String(e.currency).toUpperCase() === String(prev.currency).toUpperCase() && String(e.postingDate) === String(prev.postingDate));
+        return documentRate ? { ...prev, exchangeRate: String(documentRate.rate) } : prev;
+      });
+      setExchangeRatesModal((prev) => ({ ...prev, open: false, loading: false, error: '' }));
+    } catch (error) {
+      if (Number(error?.response?.status) === 404) {
+        setHeader((prev) => {
+          const documentRate = entries.find((e) => String(e.currency).toUpperCase() === String(prev.currency).toUpperCase() && String(e.postingDate) === String(prev.postingDate));
+          return documentRate ? { ...prev, exchangeRate: String(documentRate.rate) } : prev;
+        });
+        setExchangeRatesModal((prev) => ({ ...prev, open: false, loading: false, error: '' }));
+        return;
+      }
+      setExchangeRatesModal((prev) => ({ ...prev, loading: false, error: error?.response?.data?.detail || error?.message || 'Failed to save exchange rate.' }));
+    }
+  }, []);
+
+  const refreshExchangeRate = useCallback((nextCurrency = header.currency, nextDate = header.postingDate) => {
+    const currency = String(nextCurrency || '').trim();
+    const postingDate = String(nextDate || '').trim();
+    const localCurrency = String(refData.company_currencies?.localCurrency || 'INR').trim();
+    if (!currency || !postingDate || !localCurrency) return;
+    if (currency === localCurrency) {
+      setHeader((prev) => prev.exchangeRate ? { ...prev, exchangeRate: '' } : prev);
+      return;
+    }
+    if (!header.exchangeRate) {
+      openExchangeRatesModal({ currency, postingDate, initialRate: '' });
+    }
+  }, [header.currency, header.exchangeRate, header.postingDate, openExchangeRatesModal, refData.company_currencies]);
+
+  useEffect(() => {
+    if (currentDocEntry) return;
+    if (!header.vendor || !header.currency || !header.postingDate) return;
+    refreshExchangeRate(header.currency, header.postingDate);
+  }, [currentDocEntry, header.vendor, header.currency, header.postingDate, refreshExchangeRate]);
 
   // ── handlers ──────────────────────────────────────────────────────────────
   const handleHeaderChange = (e) => {
@@ -1478,6 +1430,26 @@ function SalesQuotation() {
         return nextHeader;
       });
       loadVendorDetails(value);
+      return;
+    }
+
+    if (name === 'currency') {
+      setHeader((prev) => ({
+        ...prev,
+        currency: String(value || '').trim(),
+        exchangeRate: '',
+      }));
+      return;
+    }
+
+    if (name === 'postingDate') {
+      setHeader((prev) => ({
+        ...prev,
+        postingDate: value,
+        exchangeRate: String(prev.currency || '').trim() === String(refData.company_currencies?.localCurrency || 'INR').trim()
+          ? prev.exchangeRate
+          : '',
+      }));
       return;
     }
 
@@ -1812,14 +1784,20 @@ function SalesQuotation() {
     markDirty();
     setLines(p => p.map((l, idx) => idx === i ? { ...l, udf: { ...(l.udf || {}), [k]: v } } : l));
   };
-  const updateFormSetting = (g, k, prop, val) => setFormSettings(p => ({ ...p, [g]: { ...(p[g] || {}), [k]: { ...((p[g] || {})[k] || {}), [prop]: val } } }));
+  const updateFormSetting = (g, k, prop, val) => setFormSettings((previous) => (
+    updateFormSettingPreference(previous, g, k, prop, val)
+  ));
   const toggleHeaderUdfs = () => {
     setFormSettingsOpen(false);
     setSidebarOpen(p => !p);
   };
   const toggleFormSettings = () => {
     setSidebarOpen(false);
-    setFormSettingsOpen(p => !p);
+    if (formSettingsOpen) {
+      setFormSettingsOpen(false);
+      return;
+    }
+    setFormSettingsOpen(true);
   };
 
   // ── Address Modal handlers ────────────────────────────────────────────────
@@ -2515,6 +2493,10 @@ function SalesQuotation() {
   // ── submit ────────────────────────────────────────────────────────────────
   const handleSubmit = async (ev) => {
     ev.preventDefault();
+    if (!companyFormSettingsReady) {
+      setPageState(p => ({ ...p, error: 'Select a company and wait for its Form Settings to load before saving this document.', success: '' }));
+      return;
+    }
     if (!isDocumentEditable) {
       setPageState(p => ({ ...p, error: 'This document is closed and cannot be edited.', success: '' }));
       return;
@@ -2531,7 +2513,7 @@ function SalesQuotation() {
     setPageState(p => ({ ...p, posting: true, error: '', success: '' }));
     try {
       const prep = { 
-        ...header, 
+        ...stripSalesDocumentTopLevelUdfs(header),
         deliveryDate: header.deliveryDate || header.postingDate || header.documentDate,
         placeOfSupply: header.placeOfSupply,
         branch: header.branch,
@@ -2570,8 +2552,14 @@ function SalesQuotation() {
         sellerBillDiscount: line.sellerBillDiscount,
         sellerItem: line.sellerItem,
         sellerQty: line.sellerQty,
+        freightPurchase: line.freightPurchase,
+        freightSales: line.freightSales,
+        freightProvider: line.freightProvider,
+        freightProviderName: line.freightProviderName,
+        brokerageNumber: line.brokerageNumber,
         uomCode: line.uomCode,
         uomName: line.uomName,
+        uomEntry: line.uomEntry,
         stdDiscount: line.stdDiscount,
         stcode: line.stcode,
         taxCode: line.taxCode,
@@ -2583,15 +2571,37 @@ function SalesQuotation() {
         distRule3: line.distRule3,
         distRule4: line.distRule4,
         distRule5: line.distRule5,
+        cogsDistRule: line.cogsDistRule,
+        cogsDistRule2: line.cogsDistRule2,
+        cogsDistRule3: line.cogsDistRule3,
+        cogsDistRule4: line.cogsDistRule4,
+        cogsDistRule5: line.cogsDistRule5,
+        glAccount: line.glAccount,
         freeText: line.freeText,
         countryOfOrigin: line.countryOfOrigin,
         sacCode: line.sacCode,
         loc: line.loc,
         branch: line.branch,
+        requiredDate: line.requiredDate,
+        quotedDate: line.quotedDate,
+        lineDeliveryDate: line.lineDeliveryDate,
+        lineShippingType: line.lineShippingType,
+        wTaxLiable: line.wTaxLiable,
+        taxLiable: line.taxLiable,
+        blanketAgreementNo: line.blanketAgreementNo,
+        blanketAgreementLine: line.blanketAgreementLine,
+        commPercent: line.commPercent,
+        withoutQtyPosting: line.withoutQtyPosting,
         baseEntry: line.baseEntry,
         baseType: line.baseType,
         baseLine: line.baseLine,
-        udf: buildVisibleEnteredRowUdfPayload(rowUdfDefinitions, line.udf || {}, formSettings),
+        batches: line.batches,
+        udf: buildVisibleEnteredRowUdfPayload(
+          rowUdfDefinitions,
+          line.udf || {},
+          formSettings,
+          { preserveUnmappedUdfs: false },
+        ),
       }));
       
       const payload = {
@@ -2675,7 +2685,7 @@ function SalesQuotation() {
         <button type="button" className="so-btn sap-document-toolbar__udf" onClick={toggleHeaderUdfs}>
           {sidebarOpen ? 'Hide UDFs' : 'Show UDFs'}
         </button>
-        <button type="button" className="so-btn sap-document-toolbar__settings" onClick={toggleFormSettings}>
+        <button type="button" className="so-btn sap-document-toolbar__settings" onClick={toggleFormSettings} disabled={!companyFormSettingsReady} title={companyFormSettingsReady ? 'Choose document-line fields' : 'Loading company Form Settings'}>
           Form Settings
         </button>
         <PrintLayoutToolbar
@@ -3008,10 +3018,12 @@ function SalesQuotation() {
                 onOpenPaymentTermsModal={openPaymentTermsModal}
                 getBranchName={getBranchName}
                 formSettings={formSettings}
+                formSettingsReady={companyFormSettingsReady}
                 matrixFields={matrixColumnDefinitions}
                 useSapMatrixOrder={Boolean(refData.line_field_metadata?.sap_form?.preferenceRows)}
                 rowUdfFields={visibleRowUdfs}
                 onRowUdfChange={handleRowUdfChange}
+                onLoadLookupOptions={loadDynamicLineLookupOptions}
               />
             )}
 
@@ -3039,13 +3051,6 @@ function SalesQuotation() {
             {activeTab === 'Tax' && (
               <TaxTab onOpenTaxInfoModal={openTaxInfoModal} />
             )}
-
-          {activeTab === 'Transport' && (
-            <TransportTab
-              headerUdfs={headerUdfs}
-              onHeaderUdfChange={handleHeaderUdfChange}
-            />
-          )}
 
             {activeTab === 'Electronic Documents' && (
               <ElectronicDocumentsTab />
@@ -3198,6 +3203,7 @@ function SalesQuotation() {
             values={headerUdfs}
             disabled={!hasBuyerCode}
             onFieldChange={handleHeaderUdfChange}
+            onLoadLookupOptions={loadDynamicLineLookupOptions}
             onClose={() => setSidebarOpen(false)}
           />
           <FormSettingsPanel
@@ -3210,7 +3216,14 @@ function SalesQuotation() {
             rowUdfFields={rowUdfDefinitions}
             formSettings={formSettings}
             onSettingChange={updateFormSetting}
-            editableSapControlledGroups={['matrixColumns']}
+            settingsLoaded={companyFormSettingsReady}
+            editablePropertiesByGroup={{ matrixColumns: ['visible'], rowUdfs: ['visible'] }}
+            editableSapControlledProperties={{ matrixColumns: ['visible'], headerUdfs: [], rowUdfs: ['visible'] }}
+            isSaving={formSettingsStatus.saving}
+            hasUnsavedChanges={formSettingsStatus.hasUnsavedChanges}
+            saveError={formSettingsStatus.error}
+            onSave={formSettingsStatus.save}
+            settingsScopeLabel={formSettingsStatus.scopeLabel}
           />
         </div>
 
@@ -3295,6 +3308,7 @@ function SalesQuotation() {
         searchPlaceholder={lineLookupModal.searchPlaceholder}
         emptyMessage={lineLookupModal.emptyMessage}
         allowCreate={lineLookupModal.allowCreate}
+        portalTarget={document.body}
       />
 
       <SalesEmployeeSetupModal
@@ -3314,6 +3328,20 @@ function SalesQuotation() {
         freightCharges={freightModal.freightCharges}
         taxCodes={effectiveTaxCodes}
         loading={freightModal.loading}
+        currency={header.currency || refData.company_currencies?.localCurrency || 'INR'}
+      />
+      <ExchangeRatesIndexesModal
+        isOpen={exchangeRatesModal.open}
+        currency={exchangeRatesModal.currency}
+        postingDate={exchangeRatesModal.postingDate}
+        initialRate={exchangeRatesModal.initialRate}
+        loading={exchangeRatesModal.loading}
+        error={exchangeRatesModal.error}
+        data={exchangeRatesModal.data}
+        documentLabel="sales quotation"
+        onLoad={loadExchangeRatesMonth}
+        onSave={saveExchangeRateFromModal}
+        onClose={() => setExchangeRatesModal((prev) => ({ ...prev, open: false }))}
       />
     </form>
   );

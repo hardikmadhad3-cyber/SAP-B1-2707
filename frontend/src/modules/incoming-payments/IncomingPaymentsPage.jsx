@@ -1311,7 +1311,6 @@ export default function IncomingPaymentsPage() {
     <div className="po-page sap-document-page ip-payments-page">
       <div className="po-toolbar">
         <span className="po-toolbar__title">Incoming Payments{isFoundDocument ? ` - #${header.documentNumber}` : ""}</span>
-        <button type="button" className="po-btn" onClick={openFind}>Find</button>
         <button type="button" className="po-btn po-btn--primary" onClick={handleOk} disabled={posting || isFoundDocument}>
           {posting ? "Posting..." : "OK"}
         </button>
@@ -1324,6 +1323,7 @@ export default function IncomingPaymentsPage() {
           className="po-btn sap-document-toolbar__journal-preview"
         />
         <button type="button" className="po-btn" onClick={resetForm} disabled={posting}>Cancel</button>
+        <button type="button" className="po-btn" onClick={openFind}>Find</button>
         <button type="button" className="po-btn sap-document-toolbar__settings" onClick={toggleFormSettings}>Form Settings</button>
         <button type="button" className="po-btn" onClick={deselectAll} disabled={posting || isFoundDocument}>Deselect All</button>
         <button type="button" className="po-btn" onClick={selectAll} disabled={posting || isFoundDocument}>Select All</button>

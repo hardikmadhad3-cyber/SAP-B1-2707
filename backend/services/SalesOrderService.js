@@ -3,7 +3,7 @@ const salesOrderDb = require('./salesOrderDbService');
 const hsnCodeDbService = require('./hsnCodeDbService');
 const { buildDocumentAdditionalExpenses } = require('./freightPayloadUtils');
 const { getActiveCompanyConfig } = require('./companyConfigService');
-const { getUdfDefinitions } = require('./udfMetadataService');
+const { getUdfDefinitionsOrEmpty } = require('./udfMetadataService');
 const { isBlankUdfValue, normalizeUdfValues } = require('./udfPayloadUtils');
 const { buildDocumentSeriesPayload } = require('./documentSeriesPayloadUtils');
 const { applyDocumentCurrency } = require('./documentCurrencyUtils');
@@ -19,7 +19,7 @@ const normalizeBranchId = (branch) => {
 };
 
 const getUdfDefinitionsByKey = async (tableId) => {
-  const definitions = await getUdfDefinitions(tableId);
+  const definitions = await getUdfDefinitionsOrEmpty(tableId);
   return new Map(definitions.map((field) => [field.key, field]));
 };
 
@@ -52,6 +52,53 @@ const toSapString = (value) => (value === undefined || value === null ? undefine
 const addIfPresent = (target, key, value) => {
   if (value === undefined || value === null) return;
   target[key] = String(value);
+};
+
+const mergeCompanyCurrencyRows = ({
+  currencies = [],
+  localCurrency = '',
+  systemCurrency = '',
+} = {}) => {
+  const byCode = new Map();
+  const addCurrency = (currency = {}) => {
+    const code = String(currency.CurrCode || currency.Code || '').trim();
+    if (!code) return;
+    const key = code.toUpperCase();
+    const name = String(currency.CurrName || currency.Name || code).trim() || code;
+    const existing = byCode.get(key);
+    if (!existing || existing.CurrName === existing.CurrCode) {
+      byCode.set(key, { CurrCode: code, CurrName: name });
+    }
+  };
+
+  (Array.isArray(currencies) ? currencies : []).forEach(addCurrency);
+  addCurrency({ CurrCode: localCurrency, CurrName: localCurrency });
+  addCurrency({ CurrCode: systemCurrency, CurrName: systemCurrency });
+
+  return [...byCode.values()]
+    .sort((left, right) => left.CurrCode.localeCompare(right.CurrCode));
+};
+
+const resolveSalesOrderDocumentCurrency = (header = {}, referenceData = {}) => {
+  const explicitCurrency = String(
+    header.currency || header.DocCurrency || header.DocCur || '',
+  ).trim();
+  if (explicitCurrency) return explicitCurrency;
+
+  const mode = String(header.currencyMode || 'BP').trim().toUpperCase();
+  const localCurrency = String(referenceData.local_currency || '').trim();
+  const systemCurrency = String(referenceData.system_currency || localCurrency).trim();
+  if (mode === 'LOCAL') return localCurrency;
+  if (mode === 'SYSTEM') return systemCurrency;
+
+  const cardCode = String(header.vendor || header.customerCode || header.CardCode || '').trim();
+  const businessPartner = (referenceData.vendors || referenceData.customers || []).find(
+    (partner) => String(partner.CardCode || '').trim() === cardCode,
+  );
+  const businessPartnerCurrency = String(businessPartner?.Currency || '').trim();
+  return businessPartnerCurrency && businessPartnerCurrency !== '##'
+    ? businessPartnerCurrency
+    : localCurrency;
 };
 
 const ADDRESS_EXTENSION_FIELDS = {
@@ -674,9 +721,12 @@ const buildDocumentLinePayload = async (line = {}, context = {}) => {
     ItemCode: toRequiredString(line.itemNo),
     Quantity: toRequiredNumber(line.quantity, 0),
     UnitPrice: toRequiredNumber(line.unitPrice, 0),
-    WarehouseCode: toRequiredString(line.whse, '01'),
-    TaxCode: toRequiredString(line.taxCode, 'IGST5'),
+    WarehouseCode: toRequiredString(line.whse),
   };
+
+  if (hasValue(line.taxCode)) {
+    documentLine.TaxCode = String(line.taxCode).trim();
+  }
 
   if (hasValue(line.itemDescription)) {
     documentLine.ItemDescription = String(line.itemDescription).trim();
@@ -686,12 +736,20 @@ const buildDocumentLinePayload = async (line = {}, context = {}) => {
     documentLine.LineNum = Number(line.lineNum);
   }
 
+  const rawUomValue = line.uomEntry ?? line.UoMEntry ?? line.uomCode;
   const resolvedUomEntry = await salesOrderDb.resolveSalesOrderLineUomEntry(
     documentLine.ItemCode,
-    line.uomEntry ?? line.UoMEntry ?? line.uomCode,
+    rawUomValue,
   );
   if (resolvedUomEntry !== null && resolvedUomEntry !== undefined) {
     documentLine.UoMEntry = resolvedUomEntry;
+  } else {
+    const uomCode = String(rawUomValue || '').trim().toUpperCase() === 'MANUAL'
+      ? (line.uomName || line.unitMsr || rawUomValue)
+      : rawUomValue;
+    if (hasValue(uomCode)) {
+      documentLine.UoMCode = String(uomCode).trim();
+    }
   }
 
   if (hasLineDiscountValue(line)) {
@@ -717,21 +775,81 @@ const buildDocumentLinePayload = async (line = {}, context = {}) => {
     documentLine.CostingCode5 = String(line.distRule5).trim();
   }
 
+  if (hasValue(line.cogsDistRule) && hasFieldMetadata(fieldMetadata, 'CogsOcrCod')) {
+    documentLine.COGSCostingCode = String(line.cogsDistRule).trim();
+  }
+  [2, 3, 4, 5].forEach((dimension) => {
+    const value = line[`cogsDistRule${dimension}`];
+    if (hasValue(value) && hasFieldMetadata(fieldMetadata, `CogsOcrCo${dimension}`)) {
+      documentLine[`COGSCostingCode${dimension}`] = String(value).trim();
+    }
+  });
+
+  if (hasValue(line.glAccount) && hasFieldMetadata(fieldMetadata, 'AcctCode')) {
+    documentLine.AccountCode = String(line.glAccount).trim();
+  }
+
   if (hasValue(line.freeText)) {
     documentLine.FreeText = String(line.freeText).trim();
   }
 
-  if (hasValue(line.lineDeliveryDate ?? line.deliveryDate ?? line.ShipDate)) {
+  if (
+    hasValue(line.lineDeliveryDate ?? line.deliveryDate ?? line.ShipDate) &&
+    hasFieldMetadata(fieldMetadata, 'ShipDate')
+  ) {
     documentLine.ShipDate = formatDateForInput(line.lineDeliveryDate ?? line.deliveryDate ?? line.ShipDate);
   }
 
   const lineShippingType = toOptionalNumber(line.lineShippingType ?? line.shippingType ?? line.ShippingMethod ?? line.TrnsCode);
-  if (lineShippingType !== undefined) {
+  if (lineShippingType !== undefined && hasFieldMetadata(fieldMetadata, 'TrnsCode')) {
     documentLine.ShippingMethod = lineShippingType;
   }
 
-  if (hasValue(line.taxLiable ?? line.TaxLiable ?? line.TaxOnly)) {
+  if (
+    hasValue(line.taxLiable ?? line.TaxLiable ?? line.TaxOnly) &&
+    hasFieldMetadata(fieldMetadata, 'TaxOnly')
+  ) {
     documentLine.TaxOnly = toSapYesNo(line.taxLiable ?? line.TaxLiable ?? line.TaxOnly);
+  }
+
+  if (
+    hasValue(line.wTaxLiable ?? line.WTaxLiable ?? line.WTLiable) &&
+    hasFieldMetadata(fieldMetadata, 'WtLiable')
+  ) {
+    documentLine.WTLiable = toSapYesNo(line.wTaxLiable ?? line.WTaxLiable ?? line.WTLiable);
+  }
+
+  const agreementNo = toOptionalNumber(
+    line.blanketAgreementNo ?? line.agreementNo ?? line.AgreementNo ?? line.AgrNo,
+  );
+  if (agreementNo !== undefined && hasFieldMetadata(fieldMetadata, 'AgrNo')) {
+    documentLine.AgreementNo = agreementNo;
+  }
+
+  const agreementRowNumber = toOptionalNumber(
+    line.blanketAgreementLine ?? line.agreementRowNumber ?? line.AgreementRowNumber ?? line.AgrLnNum,
+  );
+  if (agreementRowNumber !== undefined && hasFieldMetadata(fieldMetadata, 'AgrLnNum')) {
+    documentLine.AgreementRowNumber = agreementRowNumber;
+  }
+
+  const commissionPercent = toOptionalNumber(
+    line.commPercent ?? line.commissionPercent ?? line.CommissionPercent,
+  );
+  if (
+    commissionPercent !== undefined &&
+    (hasFieldMetadata(fieldMetadata, 'CommPercent') || hasFieldMetadata(fieldMetadata, 'Commission'))
+  ) {
+    documentLine.CommissionPercent = commissionPercent;
+  }
+
+  if (
+    hasValue(line.withoutQtyPosting ?? line.withoutInventoryMovement ?? line.WithoutInventoryMovement ?? line.NoInvtryMv) &&
+    hasFieldMetadata(fieldMetadata, 'NoInvtryMv')
+  ) {
+    documentLine.WithoutInventoryMovement = toSapYesNo(
+      line.withoutQtyPosting ?? line.withoutInventoryMovement ?? line.WithoutInventoryMovement ?? line.NoInvtryMv,
+    );
   }
 
   const countryOrg = normalizeCountryOrgValue(line.countryOfOrigin);
@@ -751,7 +869,7 @@ const buildDocumentLinePayload = async (line = {}, context = {}) => {
   }
 
   const hsnValue = line.hsnCode ?? line.HSNCode ?? line.HSNEntry;
-  if (hasValue(hsnValue)) {
+  if (hasValue(hsnValue) && hasFieldMetadata(fieldMetadata, 'HsnEntry')) {
     const hsnEntry = await hsnCodeDbService.resolveHSNCodeToAbsEntry(hsnValue);
     if (hsnEntry !== null && hsnEntry !== undefined) {
       documentLine.HSNEntry = hsnEntry;
@@ -761,7 +879,7 @@ const buildDocumentLinePayload = async (line = {}, context = {}) => {
   }
 
   const sacValue = line.sacCode ?? line.SACCode ?? line.SACEntry;
-  if (hasValue(sacValue)) {
+  if (hasValue(sacValue) && hasFieldMetadata(fieldMetadata, 'SACEntry')) {
     const sacEntry = await hsnCodeDbService.resolveSACCodeToAbsEntry(sacValue);
     if (sacEntry !== null && sacEntry !== undefined) {
       documentLine.SACEntry = sacEntry;
@@ -990,22 +1108,11 @@ const getReferenceData = async (companyId) => {
       }
     }
 
-    const currencyCodes = new Set(currencies.map((currency) => String(currency.CurrCode || '').trim()).filter(Boolean));
-    [
-      { CurrCode: data.local_currency || 'INR', CurrName: data.local_currency || 'INR' },
-      { CurrCode: data.system_currency || '', CurrName: data.system_currency || '' },
-      { CurrCode: 'CAN', CurrName: 'Canadian Dollar' },
-      { CurrCode: 'EUR', CurrName: 'Euro' },
-      { CurrCode: 'GBP', CurrName: 'British Pound' },
-      { CurrCode: 'USD', CurrName: 'US Dollar' },
-    ].forEach((currency) => {
-      const code = String(currency.CurrCode || '').trim();
-      if (code && !currencyCodes.has(code)) {
-        currencies.push(currency);
-        currencyCodes.add(code);
-      }
+    currencies = mergeCompanyCurrencyRows({
+      currencies,
+      localCurrency: data.local_currency,
+      systemCurrency: data.system_currency,
     });
-    currencies = currencies.sort((left, right) => String(left.CurrCode || '').localeCompare(String(right.CurrCode || '')));
 
     console.log("Reference data:",data.tax_codes);
     return {
@@ -1031,6 +1138,9 @@ const getReferenceData = async (companyId) => {
       shipping_types: [],
       branches: [],
       branches_enabled: false,
+      local_currency: '',
+      system_currency: '',
+      currencies: [],
       countries: [],
       distribution_rules: [],
       tax_codes: [],
@@ -1215,8 +1325,12 @@ const getSalesOrder = async (docEntry) => {
       salesOrderDb.getCompanyCurrencyInfo(),
     ]);
     const header = result?.sales_order?.header;
+    const companyCurrencyInfo = companyCurrencyRows?.[0] || {};
+    if (header && !String(header.currency || '').trim()) {
+      header.currency = String(companyCurrencyInfo.MainCurncy || '').trim();
+    }
     if (header?.exchangeRate) {
-      header.exchangeRate = String(fromSapStoredRate(header.exchangeRate, companyCurrencyRows?.[0] || {}));
+      header.exchangeRate = String(fromSapStoredRate(header.exchangeRate, companyCurrencyInfo));
     }
     return result;
   } catch (error) {
@@ -1354,6 +1468,7 @@ const submitSalesOrder = async (payload) => {
     };
     applyDocumentCurrency(sapPayload, {
       ...payload.header,
+      currency: resolveSalesOrderDocumentCurrency(payload.header, refData),
       exchangeRate: toSapStoredRate(payload.header.exchangeRate, refData.exchange_rate_settings),
     });
 
@@ -1551,6 +1666,7 @@ const updateSalesOrder = async (docEntry, payload) => {
     };
     applyDocumentCurrency(sapPayload, {
       ...payload.header,
+      currency: resolveSalesOrderDocumentCurrency(payload.header, refData),
       exchangeRate: toSapStoredRate(payload.header.exchangeRate, refData.exchange_rate_settings),
     });
 
@@ -1873,6 +1989,9 @@ module.exports = {
   getCurrencyRate,
   getExchangeRatesForMonth,
   setCurrencyRate,
+  _mergeCompanyCurrencyRows: mergeCompanyCurrencyRows,
+  _resolveSalesOrderDocumentCurrency: resolveSalesOrderDocumentCurrency,
+  _buildDocumentLinePayload: buildDocumentLinePayload,
   getOpenSalesOrders:          async (customerCode = '') => { try { return { documents: await salesOrderDb.getOpenSalesOrders(customerCode) }; } catch(e) { return { documents: [] }; } },
   getSalesOrderForCopy:        async (d) => salesOrderDb.getSalesOrderForCopy(d),
   getOpenSalesQuotations:      async (customerCode = '') => { try { const sq = require('./salesQuotationDbService'); return { documents: await sq.getOpenSalesQuotations(customerCode) }; } catch(e) { return { documents: [] }; } },

@@ -3,6 +3,7 @@ import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { fetchAccountingTransactionLookups, fetchAccountingTransactionReport } from "../api/accountingTransactionReportsApi";
 import useFloatingWindow from "../components/reports/useFloatingWindow";
 import { useSapWindowTaskbarActions } from "../components/SapWindowTaskbarContext";
+import { createActiveCompanyScopedRouteState } from "../utils/companyStorageScope";
 import "../styles/sales-analysis-report.css";
 import "../styles/accounting-transaction-reports.css";
 
@@ -192,7 +193,9 @@ function FinancialAccountingReportPage() {
       openJournalEntry(row.transId);
       return;
     }
-    navigate(route[0], { state: { [route[1]]: row.sourceDocEntry } });
+    navigate(route[0], {
+      state: createActiveCompanyScopedRouteState({ [route[1]]: row.sourceDocEntry }),
+    });
   };
 
   const toggleSeries = (code) => {

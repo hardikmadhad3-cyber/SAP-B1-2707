@@ -1,13 +1,9 @@
-const metadataCache = new Map();
+const {
+  createTableFieldMetadataReader,
+  normalizeRecordset,
+} = require('./salesDocumentDbCompatibility');
 
-const safeRows = async (promise) => {
-  try {
-    const result = await promise;
-    return result.recordset || [];
-  } catch (_error) {
-    return [];
-  }
-};
+const metadataReaders = new WeakMap();
 
 const normalizeDateText = (value) => {
   if (!value) return new Date().toISOString().split('T')[0];
@@ -18,31 +14,10 @@ const normalizeDateText = (value) => {
 const normalizeText = (value) => String(value || '').trim().toUpperCase();
 
 const getTableFieldMetadata = async (db, tableName) => {
-  const normalizedTableName = String(tableName || '').trim();
-  if (!normalizedTableName) return {};
-
-  let databaseName = 'default';
-  try {
-    databaseName = String(await db.resolveDatabaseName() || 'default');
-  } catch (_error) {
-    databaseName = 'default';
+  if (!metadataReaders.has(db)) {
+    metadataReaders.set(db, createTableFieldMetadataReader({ database: db }));
   }
-
-  const cacheKey = `${databaseName}:${normalizedTableName}`;
-  if (!metadataCache.has(cacheKey)) {
-    metadataCache.set(cacheKey, safeRows(db.query(`
-      SELECT COLUMN_NAME, DATA_TYPE
-      FROM INFORMATION_SCHEMA.COLUMNS
-      WHERE TABLE_NAME = @tableName
-      ORDER BY ORDINAL_POSITION
-    `, { tableName: normalizedTableName })).then((rows) => rows.reduce((acc, row) => {
-      const columnName = String(row.COLUMN_NAME || '').trim();
-      if (columnName) acc[columnName] = String(row.DATA_TYPE || '').trim().toLowerCase();
-      return acc;
-    }, {})));
-  }
-
-  return metadataCache.get(cacheKey);
+  return metadataReaders.get(db)(tableName);
 };
 
 const getTableFieldName = (metadata, columnName) => {
@@ -209,7 +184,7 @@ const getMarketingDocumentSeries = async ({
     : '';
   const docSubTypeSelect = optionalColumn(seriesMetadata, 'T0', 'DocSubType', 'DocSubType', "''");
 
-  const runSeriesQuery = (withPeriod, branchFilterSql, params) => safeRows(db.query(`
+  const runSeriesQuery = (withPeriod, branchFilterSql, params) => db.query(`
     SELECT
       T0.Series,
       T0.SeriesName,
@@ -235,7 +210,7 @@ const getMarketingDocumentSeries = async ({
       ${docSubTypeFilter}
       ${withPeriod ? 'AND CAST(@targetDate AS date) BETWEEN T1.F_RefDate AND T1.T_RefDate' : ''}
     ORDER BY IsDefault DESC, T0.SeriesName, T0.Series
-  `, params));
+  `, params).then(normalizeRecordset);
 
   const datedParams = {
     objectCode: normalizedObjectCode,

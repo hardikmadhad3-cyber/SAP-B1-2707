@@ -113,7 +113,13 @@ const ENTITY_CONFIGS = [
     path: '/admin/user-companies',
     group: 'Security',
     lookupLabelColumns: ['Id'],
-    listColumns: ['Id', 'UserId', 'CompanyId', 'IsDefault'],
+    listColumns: ['Id', 'UserId', 'CompanyId', 'SapUserCode', 'IsDefault'],
+    columnLabels: {
+      SapUserCode: 'SAP User Code',
+    },
+    columnHelpText: {
+      SapUserCode: 'Optional SAP OUSR user code used to scope this user’s dashboard inside the selected company.',
+    },
   },
   {
     key: 'user-roles',

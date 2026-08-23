@@ -16,7 +16,7 @@ const DOCUMENT_OBJECT_TYPES = {
   SERVICE_AR_CREDIT_MEMO: '14',
 };
 
-const getDocumentLayout = ({ companyDb, userCode, documentType, objectType }) => {
+const getDocumentLayout = ({ companyDb, userCode, documentType, objectType, refresh = false }) => {
   const resolvedDocumentType = String(documentType || '').trim().toUpperCase() || undefined;
   const resolvedObjectType = String(objectType || DOCUMENT_OBJECT_TYPES[resolvedDocumentType] || '').trim() || undefined;
 
@@ -26,6 +26,7 @@ const getDocumentLayout = ({ companyDb, userCode, documentType, objectType }) =>
       userCode,
       documentType: resolvedDocumentType,
       objectType: resolvedObjectType,
+      refresh: refresh ? '1' : undefined,
     },
   });
 };

@@ -22,9 +22,11 @@ export const resolveDocumentCurrency = ({
   currentCurrency = '',
   localCurrency = DEFAULT_LOCAL_CURRENCY,
   systemCurrency = '',
+  fallbackLocalCurrency = DEFAULT_LOCAL_CURRENCY,
 } = {}) => {
   const normalizedMode = normalizeCurrencyMode(mode);
-  const resolvedLocalCurrency = String(localCurrency || '').trim() || DEFAULT_LOCAL_CURRENCY;
+  const resolvedLocalCurrency = String(localCurrency || '').trim()
+    || String(fallbackLocalCurrency || '').trim();
   const resolvedSystemCurrency = String(systemCurrency || '').trim() || resolvedLocalCurrency;
   const bpCurrency = findBusinessPartnerCurrency(businessPartners, cardCode);
   const existingCurrency = String(currentCurrency || '').trim();
@@ -41,9 +43,11 @@ export const inferDocumentCurrencyMode = ({
   businessPartners = [],
   localCurrency = DEFAULT_LOCAL_CURRENCY,
   systemCurrency = '',
+  fallbackLocalCurrency = DEFAULT_LOCAL_CURRENCY,
 } = {}) => {
   const normalizedCurrency = String(currency || '').trim();
-  const resolvedLocalCurrency = String(localCurrency || '').trim() || DEFAULT_LOCAL_CURRENCY;
+  const resolvedLocalCurrency = String(localCurrency || '').trim()
+    || String(fallbackLocalCurrency || '').trim();
   const resolvedSystemCurrency = String(systemCurrency || '').trim() || resolvedLocalCurrency;
   const bpCurrency = findBusinessPartnerCurrency(businessPartners, cardCode);
 

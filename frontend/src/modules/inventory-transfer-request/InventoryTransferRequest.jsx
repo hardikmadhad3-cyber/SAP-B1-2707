@@ -8,6 +8,7 @@ import ContentsTab from './components/ContentsTab';
 import AttachmentsTab from './components/AttachmentsTab';
 import FormSettingsPanel from '../../components/purchase-order/FormSettingsPanel';
 import HeaderUdfSidebar from '../../components/purchase-order/HeaderUdfSidebar';
+import InventoryPrintLayoutActions from '../../components/print-layout/InventoryPrintLayoutActions';
 import ItemSelectionModal from '../../components/common/ItemSelectionModal';
 import LineValueLookupModal from '../../components/sales-document/LineValueLookupModal';
 import {
@@ -1188,20 +1189,20 @@ function InventoryTransferRequest() {
 
   return (
     <form className={`po-page sap-document-page itr-transfer-request__page inventory-document-page${isRightSidebarOpen ? ' po-page--sidebar-open inventory-document-page--sidebar-open' : ''}`} onSubmit={handleSubmit} onChangeCapture={markDirty}>
-      <div className="po-toolbar">
-        <div className="po-toolbar__title">
+      <div className="po-toolbar sap-document-toolbar">
+        <div className="po-toolbar__title sap-document-toolbar__title">
           Inventory Transfer Request
           {currentDocEntry ? ` - #${header.number || currentDocEntry}` : ''}
         </div>
         <span className={`po-mode-badge po-mode-badge--${currentDocEntry ? 'update' : 'add'}`}>
           {currentDocEntry ? 'Update' : 'Add'} Mode
         </span>
-        <button type="submit" className="po-btn po-btn--primary" disabled={pageState.posting} title={primaryActionLabel}>
+        <button type="submit" className="po-btn po-btn--primary sap-document-toolbar__primary" disabled={pageState.posting} title={primaryActionLabel}>
           {primaryActionLabel}
         </button>
         <button
           type="button"
-          className="po-btn"
+          className="po-btn sap-document-toolbar__cancel"
           onClick={resetForm}
           disabled={pageState.posting}
         >
@@ -1209,12 +1210,12 @@ function InventoryTransferRequest() {
         </button>
         <button
           type="button"
-          className="po-btn"
+          className="po-btn sap-document-toolbar__find"
           onClick={() => navigate('/inventory-transfer-request/find')}
         >
           Find
         </button>
-        <button type="button" className="po-btn" onClick={resetForm}>
+        <button type="button" className="po-btn sap-document-toolbar__new" onClick={resetForm}>
           New
         </button>
         <button
@@ -1225,7 +1226,7 @@ function InventoryTransferRequest() {
         >
           Duplicate
         </button>
-        <button type="button" className="po-btn" onClick={() => {
+        <button type="button" className="po-btn sap-document-toolbar__udf" onClick={() => {
           setFormSettingsOpen(false);
           setSidebarOpen((open) => !open);
         }}>
@@ -1233,7 +1234,7 @@ function InventoryTransferRequest() {
         </button>
         <button
           type="button"
-          className="po-btn"
+          className="po-btn sap-document-toolbar__settings"
           onClick={() => {
             setSidebarOpen(false);
             setFormSettingsOpen((open) => !open);
@@ -1241,6 +1242,16 @@ function InventoryTransferRequest() {
         >
           Form Settings
         </button>
+        <InventoryPrintLayoutActions
+          documentKey="inventoryTransferRequest"
+          docEntry={currentDocEntry}
+          docNumber={header.number}
+          series={header.series}
+          cardCode={header.businessPartner}
+          disabled={pageState.posting || pageState.loading}
+          onSuccess={(message) => setPageState((current) => ({ ...current, error: '', success: message }))}
+          onError={(message) => setPageState((current) => ({ ...current, success: '', error: message }))}
+        />
       </div>
 
       {pageState.loading && <div className="po-alert po-alert--success">Loading...</div>}

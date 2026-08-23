@@ -17,6 +17,7 @@ import {
   fetchSalesEmployeeSalesAnalysisReport,
 } from '../api/salesAnalysisApi';
 import { exportReportAsExcel, exportReportAsPdf } from '../utils/reportExportUtils';
+import { createActiveCompanyScopedRouteState } from '../utils/companyStorageScope';
 import '../styles/sales-analysis-report.css';
 
 const TAB_OPTIONS = [
@@ -699,9 +700,9 @@ function SalesAnalysisReportPage() {
     }
 
     navigate('/ar-invoice', {
-      state: {
+      state: createActiveCompanyScopedRouteState({
         arInvoiceDocEntry: docEntry,
-      },
+      }),
     });
   };
 

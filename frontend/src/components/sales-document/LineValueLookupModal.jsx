@@ -15,6 +15,7 @@ export default function LineValueLookupModal({
   columns = null,
   createValueLabel = 'Value',
   createDescriptionLabel = 'Description',
+  portalTarget,
 }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(-1);
@@ -131,6 +132,7 @@ export default function LineValueLookupModal({
       width={820}
       bodyClassName="sap-line-value-modal__body"
       loading={saving}
+      portalTarget={portalTarget}
       footer={(
         <>
           {allowCreate && showCreateForm ? (

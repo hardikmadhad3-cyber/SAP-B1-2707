@@ -73,6 +73,7 @@ const ensureCompanyColumns = (database) => {
   ensureColumn(database, 'Companies', 'DbDialect', "DbDialect TEXT NOT NULL DEFAULT 'sqlserver'");
   ensureColumn(database, 'Companies', 'DbPort', 'DbPort INTEGER NULL');
   ensureColumn(database, 'Companies', 'ReportServiceDbInstance', 'ReportServiceDbInstance TEXT NULL');
+  ensureColumn(database, 'UserCompanies', 'SapUserCode', 'SapUserCode TEXT NULL');
 };
 
 const getCached = (key) => {
@@ -426,7 +427,8 @@ const getUserCompanies = async (userId) => {
   return cachedQuery(`userCompanies:${userId}`, () => queryRows(`
   SELECT
 ${qualifyCompanyColumns('c')},
-    uc.IsDefault
+    uc.IsDefault,
+    uc.SapUserCode AS AssignedSapUserCode
   FROM UserCompanies uc
   INNER JOIN Companies c
     ON c.CompanyId = uc.CompanyId
@@ -441,7 +443,8 @@ const getAssignedCompanyForUser = async (userId, companyId) => {
   return cachedQuery(`assignedCompany:${userId}:${companyId}`, () => queryOne(`
   SELECT
 ${qualifyCompanyColumns('c')},
-    uc.IsDefault
+    uc.IsDefault,
+    uc.SapUserCode AS AssignedSapUserCode
   FROM UserCompanies uc
   INNER JOIN Companies c
     ON c.CompanyId = uc.CompanyId

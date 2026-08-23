@@ -663,8 +663,8 @@ export default function JournalEntryPage() {
           {saving ? "Loading..." : currentTransId ? "OK" : "Add"}
         </button>
         <button type="button" className="po-btn sap-document-toolbar__cancel" onClick={handleCancel} disabled={saving}>Cancel</button>
-        <button type="button" className="po-btn sap-document-toolbar__new" onClick={handleCancel} disabled={saving}>New</button>
         <button type="button" className="po-btn sap-document-toolbar__find" onClick={() => navigate("/journal-entry/find")} disabled={saving}>Find</button>
+        <button type="button" className="po-btn sap-document-toolbar__new" onClick={handleCancel} disabled={saving}>New</button>
         <button type="button" className="po-btn sap-document-toolbar__settings" onClick={toggleFormSettings}>Form Settings</button>
       </div>
 

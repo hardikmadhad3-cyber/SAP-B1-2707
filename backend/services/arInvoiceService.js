@@ -5,6 +5,14 @@ const { buildDocumentAdditionalExpenses } = require('./freightPayloadUtils');
 const { buildMarketingDocumentAddressPayload } = require('./documentAddressPayloadUtils');
 const { getUdfDefinitions } = require('./udfMetadataService');
 const { applyUdfValues, isBlankUdfValue, normalizeUdfValue } = require('./udfPayloadUtils');
+const hsnCodeDbService = require('./hsnCodeDbService');
+const {
+  buildMetadataValidatedStandardLine,
+  filterMetadataValidatedUdfDefinitions,
+  filterMetadataValidatedUdfs,
+  intersectPhysicalUdfKeys,
+  resolveMetadataUdfKey,
+} = require('./salesDocumentLinePayloadUtils');
 
 const normalizeBranchId = (branch) => {
   const normalized = String(branch || '').trim();
@@ -143,7 +151,7 @@ const getLineUnitPrice = (line = {}) => {
     return total / quantity / discountFactor;
   }
 
-  return parseLineNumber(line.unitPrice, 0);
+  return normalizeOptionalNumber(line.unitPrice);
 };
 
 const getLineDiscountPercent = (line = {}) => normalizeOptionalNumber(
@@ -154,13 +162,72 @@ const getLineDiscountPercent = (line = {}) => normalizeOptionalNumber(
 );
 
 const getUdfDefinitionsByKey = async (tableId) => {
-  const definitions = await getUdfDefinitions(tableId);
+  const definitions = await getUdfDefinitions(tableId).catch((error) => {
+    console.warn(`[ARInvoiceService] Live ${tableId} UDF metadata is unavailable; UDFs will be omitted.`, error.message);
+    return [];
+  });
   return new Map(definitions.map((field) => [field.key, field]));
 };
 
 const getAllowedUdfKeys = async (tableId) => {
-  const definitions = await getUdfDefinitions(tableId);
+  const definitions = await getUdfDefinitions(tableId).catch((error) => {
+    console.warn(`[ARInvoiceService] Live ${tableId} UDF metadata is unavailable; UDFs will be omitted.`, error.message);
+    return [];
+  });
   return new Set(definitions.map((field) => field.key));
+};
+
+const buildARInvoiceStandardLine = async ({
+  line: sourceLine = {},
+  fieldMetadata = {},
+  allowedLineUdfs = new Set(),
+  includeLineNum = false,
+  omitItemCodeForBaseDocument = false,
+  includeBatches = false,
+  defaultDiscountPercent,
+} = {}) => {
+  const rawBaseType = sourceLine.baseType ?? sourceLine.BaseType;
+  const rawBaseEntry = sourceLine.baseEntry ?? sourceLine.BaseEntry;
+  const rawBaseLine = sourceLine.baseLine ?? sourceLine.BaseLine;
+  const hasBaseDocument = [rawBaseType, rawBaseEntry, rawBaseLine]
+    .every((value) => value !== undefined && value !== null && String(value).trim() !== '');
+  const line = await buildMetadataValidatedStandardLine({
+    line: {
+      ...sourceLine,
+      unitPrice: getLineUnitPrice(sourceLine),
+      cogsDistRule: sourceLine.cogsDistRule || sourceLine.distRule,
+    },
+    fieldMetadata,
+    includeLineNum,
+    includeItemCode: !(omitItemCodeForBaseDocument && hasBaseDocument),
+    defaultDiscountPercent,
+    resolveUomEntry: salesOrderDb.resolveSalesOrderLineUomEntry,
+    resolveHsnEntry: hsnCodeDbService.resolveHSNCodeToAbsEntry,
+    resolveSacEntry: hsnCodeDbService.resolveSACCodeToAbsEntry,
+  });
+
+  if (
+    includeBatches
+    && Number(rawBaseType) !== 15
+    && Array.isArray(sourceLine.batches)
+    && sourceLine.batches.length > 0
+  ) {
+    const batchNumbers = sourceLine.batches
+      .filter((batch) => String(batch.batchNumber || '').trim() && Number(batch.quantity) > 0)
+      .map((batch) => ({
+        BatchNumber: String(batch.batchNumber).trim(),
+        Quantity: Number(batch.quantity),
+      }));
+    if (batchNumbers.length) line.BatchNumbers = batchNumbers;
+  }
+
+  const physicalUdfKeys = intersectPhysicalUdfKeys(allowedLineUdfs, fieldMetadata);
+  applyUdfValues(
+    line,
+    filterMetadataValidatedUdfs(sourceLine.udf, physicalUdfKeys, fieldMetadata),
+    physicalUdfKeys,
+  );
+  return line;
 };
 
 const normalizeUdfAlias = (value) =>
@@ -408,11 +475,32 @@ const submitARInvoice = async (payload) => {
       throw error;
     }
     const documentAdditionalExpenses = buildDocumentAdditionalExpenses(payload.freightCharges);
-    const [allowedHeaderUdfs, allowedLineUdfs, headerUdfDefinitionsByKey] = await Promise.all([
-      getAllowedUdfKeys('OINV'),
+    const [allowedLineUdfs, headerUdfDefinitionsByKey, headerFieldMetadata, lineFieldMetadata] = await Promise.all([
       getAllowedUdfKeys('INV1'),
       getUdfDefinitionsByKey('OINV'),
+      arInvoiceDb.getARInvoiceHeaderTableFieldMetadata().catch((error) => {
+        console.warn('[ARInvoiceService] Live OINV field metadata is unavailable; header UDFs will be omitted.', error.message);
+        return {};
+      }),
+      arInvoiceDb.getARInvoiceLineTableFieldMetadata().catch((error) => {
+        console.warn('[ARInvoiceService] Live INV1 field metadata is unavailable; using SAP-standard line fields only.', error.message);
+        return {};
+      }),
     ]);
+    const documentLines = await Promise.all(submittedLines.map((line) => (
+      buildARInvoiceStandardLine({
+        line,
+        fieldMetadata: lineFieldMetadata,
+        allowedLineUdfs,
+        omitItemCodeForBaseDocument: true,
+        includeBatches: true,
+      })
+    )));
+    const physicalHeaderUdfDefinitions = filterMetadataValidatedUdfDefinitions(
+      headerUdfDefinitionsByKey,
+      headerFieldMetadata,
+    );
+    const physicalHeaderUdfs = new Set(physicalHeaderUdfDefinitions.keys());
 
     // Transform payload to SAP format
     const sapPayload = {
@@ -450,57 +538,7 @@ const submitARInvoice = async (payload) => {
       Rounding: yesNo(payload.header.rounding),
       ...buildMarketingDocumentAddressPayload(payload.header),
 
-      DocumentLines: submittedLines.map((l, index) => {
-        console.log(`🔍 [ARInvoiceService] Processing line ${index}:`, l);
-        const warehouseCode = String(l.whse || l.warehouse || '').trim();
-        const rawBaseType = l.baseType ?? l.BaseType;
-        const rawBaseEntry = l.baseEntry ?? l.BaseEntry;
-        const rawBaseLine = l.baseLine ?? l.BaseLine;
-        const hasBaseDocument =
-          rawBaseType !== undefined && rawBaseType !== null && String(rawBaseType).trim() !== '' &&
-          rawBaseEntry !== undefined && rawBaseEntry !== null && String(rawBaseEntry).trim() !== '' &&
-          rawBaseLine !== undefined && rawBaseLine !== null && String(rawBaseLine).trim() !== '';
-
-        const line = {
-          ...(hasBaseDocument ? {} : { ItemCode: l.itemNo }),
-          Quantity: Number(l.quantity),
-          UnitPrice: getLineUnitPrice(l),
-          TaxCode: l.taxCode || undefined,
-          UoMCode: l.uomCode || undefined,
-          WTLiable: yesNo(l.wTaxLiable ?? l.wtaxLiable),
-          AccountCode: l.glAccount || undefined,
-          CostingCode: l.distRule || undefined,
-          COGSCostingCode: l.cogsDistRule || l.distRule || undefined,
-          CountryOrg: l.countryOfOrigin || undefined,
-        };
-
-        if (warehouseCode) {
-          line.WarehouseCode = warehouseCode;
-        }
-
-        if (Number(rawBaseType) !== 15 && Array.isArray(l.batches) && l.batches.length > 0) {
-          line.BatchNumbers = l.batches
-            .filter((batch) => String(batch.batchNumber || '').trim() && Number(batch.quantity) > 0)
-            .map((batch) => ({
-              BatchNumber: String(batch.batchNumber || '').trim(),
-              Quantity: Number(batch.quantity),
-            }));
-        }
-
-        const lineDiscountPercent = getLineDiscountPercent(l);
-        if (lineDiscountPercent !== undefined) line.DiscountPercent = lineDiscountPercent;
-
-        // Base document integration
-        if (hasBaseDocument) {
-          line.BaseType = Number(rawBaseType);
-          line.BaseEntry = Number(rawBaseEntry);
-          line.BaseLine = Number(rawBaseLine);
-        }
-
-        console.log(`🔍 [ARInvoiceService] Transformed line ${index}:`, line);
-        applyUdfValues(line, l.udf, allowedLineUdfs);
-        return line;
-      })
+      DocumentLines: documentLines,
     };
     lastSapPayload = sapPayload;
 
@@ -512,9 +550,11 @@ const submitARInvoice = async (payload) => {
     if (payload.header.confirmed != null) {
       sapPayload.Confirmed = payload.header.confirmed ? 'tYES' : 'tNO';
     }
-    if (allowedHeaderUdfs.has('U_PlaceOfSupply')) {
-      addIfPresent(sapPayload, 'U_PlaceOfSupply', payload.header.placeOfSupply);
-    }
+    const placeOfSupplyKey = resolveMetadataUdfKey(
+      physicalHeaderUdfDefinitions,
+      ['U_PlaceOfSupply', 'U_PLACE_OF_SUPPLY'],
+    );
+    if (placeOfSupplyKey) addIfPresent(sapPayload, placeOfSupplyKey, payload.header.placeOfSupply);
     const withholdingTaxData = buildWithholdingTaxData(payload.withholdingTaxRows);
     if (withholdingTaxData.length) {
       sapPayload.WithholdingTaxDataWTXCollection = withholdingTaxData;
@@ -522,14 +562,14 @@ const submitARInvoice = async (payload) => {
 
     console.log("🔥 [ARInvoiceService] SAP AR INVOICE PAYLOAD:", JSON.stringify(sapPayload, null, 2));
 
-    applyUdfValues(sapPayload, payload.header_udfs, allowedHeaderUdfs, headerUdfDefinitionsByKey);
+    applyUdfValues(sapPayload, payload.header_udfs, physicalHeaderUdfs, physicalHeaderUdfDefinitions);
     setKnownUdfValue(
       sapPayload,
-      headerUdfDefinitionsByKey,
+      physicalHeaderUdfDefinitions,
       ['TransactionType', 'TransType', 'DocumentType', 'DocType'],
       payload.header.transactionTypeCode || payload.header.transactionType,
     );
-    setKnownUdfValue(sapPayload, headerUdfDefinitionsByKey, ['Indicator'], payload.header.indicator);
+    setKnownUdfValue(sapPayload, physicalHeaderUdfDefinitions, ['Indicator'], payload.header.indicator);
 
     let response;
     try {
@@ -613,11 +653,32 @@ const updateARInvoice = async (docEntry, payload) => {
     // Use vendor or customerCode (frontend sends vendor)
     const customerCode = payload.header.vendor || payload.header.customerCode || payload.header.customer;
     const documentAdditionalExpenses = buildDocumentAdditionalExpenses(payload.freightCharges);
-    const [allowedHeaderUdfs, allowedLineUdfs, headerUdfDefinitionsByKey] = await Promise.all([
-      getAllowedUdfKeys('OINV'),
+    const [allowedLineUdfs, headerUdfDefinitionsByKey, headerFieldMetadata, lineFieldMetadata] = await Promise.all([
       getAllowedUdfKeys('INV1'),
       getUdfDefinitionsByKey('OINV'),
+      arInvoiceDb.getARInvoiceHeaderTableFieldMetadata().catch((error) => {
+        console.warn('[ARInvoiceService] Live OINV field metadata is unavailable; header UDFs will be omitted.', error.message);
+        return {};
+      }),
+      arInvoiceDb.getARInvoiceLineTableFieldMetadata().catch((error) => {
+        console.warn('[ARInvoiceService] Live INV1 field metadata is unavailable; using SAP-standard line fields only.', error.message);
+        return {};
+      }),
     ]);
+    const documentLines = await Promise.all((payload.lines || []).map((line) => (
+      buildARInvoiceStandardLine({
+        line,
+        fieldMetadata: lineFieldMetadata,
+        allowedLineUdfs,
+        includeLineNum: true,
+        defaultDiscountPercent: 0,
+      })
+    )));
+    const physicalHeaderUdfDefinitions = filterMetadataValidatedUdfDefinitions(
+      headerUdfDefinitionsByKey,
+      headerFieldMetadata,
+    );
+    const physicalHeaderUdfs = new Set(physicalHeaderUdfDefinitions.keys());
 
     // Transform payload to SAP format (similar to submit)
     const sapPayload = {
@@ -638,32 +699,7 @@ const updateARInvoice = async (docEntry, payload) => {
       DocumentAdditionalExpenses: documentAdditionalExpenses,
       ...buildMarketingDocumentAddressPayload(payload.header),
 
-      DocumentLines: payload.lines.map((l) => {
-        const warehouseCode = String(l.whse || l.warehouse || '').trim();
-        const lineNum = l.lineNum ?? l.LineNum;
-        const line = {
-          ...(lineNum !== undefined && lineNum !== null && lineNum !== '' ? { LineNum: Number(lineNum) } : {}),
-          ItemCode: l.itemNo,
-          Quantity: Number(l.quantity),
-          UnitPrice: getLineUnitPrice(l),
-          TaxCode: l.taxCode || undefined,
-          UoMCode: l.uomCode || undefined,
-          WTLiable: yesNo(l.wTaxLiable ?? l.wtaxLiable),
-          AccountCode: l.glAccount || undefined,
-          CostingCode: l.distRule || undefined,
-          COGSCostingCode: l.cogsDistRule || l.distRule || undefined,
-          CountryOrg: l.countryOfOrigin || undefined,
-          DiscountPercent: getLineDiscountPercent(l) ?? 0,
-          BaseType: l.baseType ? Number(l.baseType) : undefined,
-          BaseEntry: l.baseEntry ? Number(l.baseEntry) : undefined,
-          BaseLine: l.baseLine !== undefined ? Number(l.baseLine) : undefined,
-        };
-        if (warehouseCode) {
-          line.WarehouseCode = warehouseCode;
-        }
-        applyUdfValues(line, l.udf, allowedLineUdfs);
-        return line;
-      })
+      DocumentLines: documentLines,
     };
 
     addIfPresent(sapPayload, 'ShipToCode', payload.header.shipToCode);
@@ -674,22 +710,24 @@ const updateARInvoice = async (docEntry, payload) => {
     if (payload.header.confirmed != null) {
       sapPayload.Confirmed = payload.header.confirmed ? 'tYES' : 'tNO';
     }
-    if (allowedHeaderUdfs.has('U_PlaceOfSupply')) {
-      addIfPresent(sapPayload, 'U_PlaceOfSupply', payload.header.placeOfSupply);
-    }
+    const placeOfSupplyKey = resolveMetadataUdfKey(
+      physicalHeaderUdfDefinitions,
+      ['U_PlaceOfSupply', 'U_PLACE_OF_SUPPLY'],
+    );
+    if (placeOfSupplyKey) addIfPresent(sapPayload, placeOfSupplyKey, payload.header.placeOfSupply);
     const withholdingTaxData = buildWithholdingTaxData(payload.withholdingTaxRows);
     if (withholdingTaxData.length) {
       sapPayload.WithholdingTaxDataWTXCollection = withholdingTaxData;
     }
 
-    applyUdfValues(sapPayload, payload.header_udfs, allowedHeaderUdfs, headerUdfDefinitionsByKey);
+    applyUdfValues(sapPayload, payload.header_udfs, physicalHeaderUdfs, physicalHeaderUdfDefinitions);
     setKnownUdfValue(
       sapPayload,
-      headerUdfDefinitionsByKey,
+      physicalHeaderUdfDefinitions,
       ['TransactionType', 'TransType', 'DocumentType', 'DocType'],
       payload.header.transactionTypeCode || payload.header.transactionType,
     );
-    setKnownUdfValue(sapPayload, headerUdfDefinitionsByKey, ['Indicator'], payload.header.indicator);
+    setKnownUdfValue(sapPayload, physicalHeaderUdfDefinitions, ['Indicator'], payload.header.indicator);
 
     // Use Service Layer for PATCH operations
     const response = await sapService.request({
