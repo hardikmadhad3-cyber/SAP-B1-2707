@@ -111,7 +111,7 @@ test('writes packing type to the exact live SAP metadata key', () => {
   expect(payload).toEqual({ U_PackingStatus: 'Pallet' });
 });
 
-test('writes GRPO mapped UDF values to configured SAP keys when metadata is not loaded yet', () => {
+test('rejects configured pseudo-UDF values until current-company metadata confirms them', () => {
   const payload = buildGRPOLineUdfPayload(
     {
       packingType: 'Bag',
@@ -124,10 +124,5 @@ test('writes GRPO mapped UDF values to configured SAP keys when metadata is not 
     {}
   );
 
-  expect(payload).toEqual({
-    U_PackingType: 'Bag',
-    U_GrossWt: '1200.0000',
-    U_TotalPackage: '122',
-    U_Brok_Buyer: '15.50',
-  });
+  expect(payload).toEqual({});
 });

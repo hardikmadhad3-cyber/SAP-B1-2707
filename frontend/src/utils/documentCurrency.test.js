@@ -1,7 +1,9 @@
 import {
+  convertDocumentAmountForDisplay,
   findBusinessPartnerCurrency,
   inferDocumentCurrencyMode,
   normalizeCurrencyMode,
+  resolveDisplayCurrency,
   resolveDocumentCurrency,
 } from './documentCurrency';
 
@@ -66,4 +68,37 @@ test('infers loaded document currency mode', () => {
   })).toBe('BP');
   expect(inferDocumentCurrencyMode({ currency: 'EUR', localCurrency: 'INR', systemCurrency: 'EUR' })).toBe('SYSTEM');
   expect(inferDocumentCurrencyMode({ currency: 'GBP', localCurrency: 'INR', systemCurrency: 'EUR' })).toBe('CUSTOM');
+});
+
+test('changes display currency without changing the document currency', () => {
+  expect(resolveDisplayCurrency({ mode: 'LOCAL', documentCurrency: 'USD', localCurrency: 'INR', systemCurrency: 'EUR' })).toBe('INR');
+  expect(resolveDisplayCurrency({ mode: 'SYSTEM', documentCurrency: 'USD', localCurrency: 'INR', systemCurrency: 'EUR' })).toBe('EUR');
+  expect(resolveDisplayCurrency({ mode: 'BP', documentCurrency: 'USD', localCurrency: 'INR', systemCurrency: 'EUR' })).toBe('USD');
+});
+
+test('converts direct-rate document totals for local and system display', () => {
+  const options = {
+    documentCurrency: 'USD',
+    localCurrency: 'INR',
+    systemCurrency: 'EUR',
+    documentRate: 80,
+    systemRate: 100,
+    postingMethod: 'direct',
+  };
+  expect(convertDocumentAmountForDisplay(10, { ...options, mode: 'LOCAL' })).toBe(800);
+  expect(convertDocumentAmountForDisplay(10, { ...options, mode: 'SYSTEM' })).toBe(8);
+  expect(convertDocumentAmountForDisplay(10, { ...options, mode: 'BP' })).toBe(10);
+});
+
+test('converts indirect-rate document totals for local and system display', () => {
+  const options = {
+    documentCurrency: 'USD',
+    localCurrency: 'INR',
+    systemCurrency: 'EUR',
+    documentRate: 0.0125,
+    systemRate: 0.01,
+    postingMethod: 'indirect',
+  };
+  expect(convertDocumentAmountForDisplay(10, { ...options, mode: 'LOCAL' })).toBe(800);
+  expect(convertDocumentAmountForDisplay(10, { ...options, mode: 'SYSTEM' })).toBe(8);
 });

@@ -1,3 +1,8 @@
+import {
+  createServiceDocumentFormSettings,
+  readServiceDocumentFormSettings,
+} from '../utils/serviceDocumentFormSettingsConfig';
+
 const FORM_SETTINGS_STORAGE_KEY = 'sapb1.serviceApInvoice.formSettings.v10';
 
 const HEADER_UDF_DEFINITIONS = [];
@@ -53,30 +58,11 @@ const normalizeUdfState = (definitions = [], values = {}) =>
     return acc;
   }, {});
 
-const buildVisibilitySettings = (definitions = []) =>
-  definitions.reduce((acc, field) => {
-    acc[field.key] = { visible: field.visible !== undefined ? field.visible : true, active: true };
-    return acc;
-  }, {});
-
 const createDefaultFormSettings = (
   headerUdfs = HEADER_UDF_DEFINITIONS,
   rowUdfs = ROW_UDF_DEFINITIONS,
   matrixColumns = [],
-) => ({
-  matrixColumns: buildVisibilitySettings(matrixColumns),
-  headerUdfs: buildVisibilitySettings(headerUdfs),
-  rowUdfs: buildVisibilitySettings(rowUdfs),
-});
-
-const mergeNestedSettings = (defaults, saved = {}) =>
-  Object.keys(defaults).reduce((acc, groupKey) => {
-    acc[groupKey] = {
-      ...defaults[groupKey],
-      ...(saved[groupKey] || {}),
-    };
-    return acc;
-  }, {});
+) => createServiceDocumentFormSettings(headerUdfs, rowUdfs, matrixColumns);
 
 const readSavedFormSettings = (
   headerUdfs = HEADER_UDF_DEFINITIONS,
@@ -84,15 +70,7 @@ const readSavedFormSettings = (
   matrixColumns = [],
   storageKey = FORM_SETTINGS_STORAGE_KEY,
 ) => {
-  const defaults = createDefaultFormSettings(headerUdfs, rowUdfs, matrixColumns);
-
-  try {
-    const raw = localStorage.getItem(storageKey);
-    if (!raw) return defaults;
-    return mergeNestedSettings(defaults, JSON.parse(raw));
-  } catch (_error) {
-    return defaults;
-  }
+  return readServiceDocumentFormSettings({ headerUdfs, rowUdfs, matrixColumns, storageKey });
 };
 
 export {

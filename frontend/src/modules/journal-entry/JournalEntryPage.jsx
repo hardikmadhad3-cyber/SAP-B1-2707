@@ -17,6 +17,7 @@ import {
   readSavedBankingFormSettings,
 } from "../../config/bankingFormSettings";
 import { useCompanyScopedFormSettings } from "../../utils/formSettingsStorage";
+import { getOrderedVisibleMatrixColumns } from "../../utils/formSettingsColumns";
 import "../purchase-order/styles/purchaseOrder.css";
 import "./journalEntry.css";
 
@@ -238,10 +239,11 @@ export default function JournalEntryPage() {
   const [message, setMessage] = useState(null);
   const [saving, setSaving] = useState(false);
   const [currentTransId, setCurrentTransId] = useState(0);
-  const [formSettings, setFormSettings] = useCompanyScopedFormSettings(
+  const [formSettings, setFormSettings, , , formSettingsStatus] = useCompanyScopedFormSettings(
     JOURNAL_ENTRY_FORM_SETTINGS_STORAGE_KEY,
     readSavedBankingFormSettings,
     [JOURNAL_ENTRY_COLUMNS],
+    { saveMode: 'explicit' },
   );
   const [formSettingsOpen, setFormSettingsOpen] = useState(false);
 
@@ -540,10 +542,9 @@ export default function JournalEntryPage() {
     },
   }));
   const toggleFormSettings = () => setFormSettingsOpen((open) => !open);
-  const isColumnVisible = (column) => formSettings.matrixColumns?.[column.key]?.visible !== false;
   const isColumnActive = (columnKey) => formSettings.matrixColumns?.[columnKey]?.active !== false;
   const visibleJournalColumns = (() => {
-    const visibleColumns = JOURNAL_ENTRY_COLUMNS.filter(isColumnVisible);
+    const visibleColumns = getOrderedVisibleMatrixColumns(JOURNAL_ENTRY_COLUMNS, formSettings);
     return visibleColumns.length ? visibleColumns : JOURNAL_ENTRY_COLUMNS.slice(0, 1);
   })();
   const journalColumnCount = Math.max(1, visibleJournalColumns.length);
@@ -842,7 +843,15 @@ export default function JournalEntryPage() {
         headerUdfFields={[]}
         rowUdfFields={[]}
         formSettings={formSettings}
-        onSettingChange={updateFormSetting}
+          onSettingChange={updateFormSetting}
+          onColumnOrderChange={formSettingsStatus.reorder}
+          settingsLoaded={formSettingsStatus.loaded}
+          isSaving={formSettingsStatus.saving}
+          hasUnsavedChanges={formSettingsStatus.hasUnsavedChanges}
+          saveError={formSettingsStatus.error}
+          onSave={formSettingsStatus.save}
+          onCancel={formSettingsStatus.discard}
+          settingsScopeLabel={formSettingsStatus.scopeLabel}
       />
       </div>
 

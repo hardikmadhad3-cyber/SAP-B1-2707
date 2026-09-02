@@ -3,6 +3,7 @@ import {
   ROW_UDF_DEFINITIONS,
   createUdfState,
 } from './APInvoiceForm';
+import { filterSafePurchaseMatrixColumns } from '../utils/purchaseDocumentFormSettings';
 
 export {
   HEADER_UDF_DEFINITIONS,
@@ -12,7 +13,7 @@ export {
 
 export const FORM_SETTINGS_STORAGE_KEY = 'sapb1.apCreditMemo.formSettings.v1';
 
-export const BASE_MATRIX_COLUMNS = [
+const CONFIGURED_MATRIX_COLUMNS = [
   { key: 'itemNo', label: 'Item No.', minWidth: 160 },
   { key: 'itemDescription', label: 'Item Description', minWidth: 240 },
   { key: 'quantity', label: 'Quantity', minWidth: 90 },
@@ -65,6 +66,8 @@ export const BASE_MATRIX_COLUMNS = [
   { key: 'sellerTermsOfPaymentRepeat', label: 'Seller - Terms of Payment', minWidth: 205, lookup: 'paymentTerm', udfLabels: ['U_Seller_Payment_Term', 'U_Seller_Payment_Terms'] },
 ];
 
+export const BASE_MATRIX_COLUMNS = filterSafePurchaseMatrixColumns(CONFIGURED_MATRIX_COLUMNS);
+
 const buildVisibilitySettings = (definitions = []) =>
   definitions.reduce((acc, field) => {
     acc[field.key] = {
@@ -74,9 +77,13 @@ const buildVisibilitySettings = (definitions = []) =>
     return acc;
   }, {});
 
-const createDefaultFormSettingsForCreditMemo = (headerUdfs = [], rowUdfs = []) => ({
+const createDefaultFormSettingsForCreditMemo = (
+  headerUdfs = [],
+  rowUdfs = [],
+  matrixColumns = BASE_MATRIX_COLUMNS,
+) => ({
   headerUdfs: buildVisibilitySettings(headerUdfs),
-  matrixColumns: buildVisibilitySettings(BASE_MATRIX_COLUMNS),
+  matrixColumns: buildVisibilitySettings(matrixColumns),
   rowUdfs: buildVisibilitySettings(rowUdfs),
 });
 
@@ -94,12 +101,15 @@ const mergeNestedSettings = (defaults, saved = {}) =>
 export const readSavedFormSettings = (
   headerUdfs = [],
   rowUdfs = [],
+  matrixColumns = BASE_MATRIX_COLUMNS,
   storageKey = FORM_SETTINGS_STORAGE_KEY,
 ) => {
-  const defaults = createDefaultFormSettingsForCreditMemo(headerUdfs, rowUdfs);
+  const effectiveMatrixColumns = Array.isArray(matrixColumns) ? matrixColumns : BASE_MATRIX_COLUMNS;
+  const effectiveStorageKey = typeof matrixColumns === 'string' ? matrixColumns : storageKey;
+  const defaults = createDefaultFormSettingsForCreditMemo(headerUdfs, rowUdfs, effectiveMatrixColumns);
 
   try {
-    const raw = localStorage.getItem(storageKey);
+    const raw = localStorage.getItem(effectiveStorageKey);
     if (!raw) return defaults;
     return mergeNestedSettings(defaults, JSON.parse(raw));
   } catch (_error) {

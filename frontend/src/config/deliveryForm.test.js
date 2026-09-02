@@ -33,7 +33,7 @@ test('keeps Delivery metadata authoritative except for saved line visibility', (
     unitPrice: {
       visible: false,
       active: true,
-      order: 5,
+      order: 1,
       minWidth: 110,
       sapControlled: true,
     },

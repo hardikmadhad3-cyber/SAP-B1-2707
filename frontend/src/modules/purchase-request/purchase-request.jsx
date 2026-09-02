@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import './styles/purchase-request.css';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { useAuth } from '../../auth/AuthContext';
 import FormSettingsPanel from '../../components/purchase-order/FormSettingsPanel';
 import HeaderUdfSidebar from '../../components/purchase-order/HeaderUdfSidebar';
 import ContentsTab from './components/ContentsTab';
@@ -30,7 +31,9 @@ import { duplicateDocumentInPlace, refreshDuplicateSeries } from '../../utils/do
 import useValidationHighlights from '../../utils/useValidationHighlights';
 import useClosedDocumentViewMode from '../../hooks/useClosedDocumentViewMode';
 import { getDocumentLayout } from '../../api/sapLayoutApi';
-import { buildMatrixColumnsFromSapLayout, mergeLiveMatrixSettings } from '../../utils/liveDocumentLayout';
+import { fetchSalesDocumentSchema } from '../../api/salesDocumentSchemaApi';
+import { buildSalesDocumentLiveFields } from '../../utils/salesDocumentLiveFields';
+import { mergeLiveMatrixSettings } from '../../utils/liveDocumentLayout';
 import {
   fetchPurchaseRequestByDocEntry,
   fetchPurchaseRequestReferenceData,
@@ -43,7 +46,6 @@ import {
   fetchFreightCharges,
 } from '../../api/purchaseRequestApi';
 import { fetchHSNCodes, fetchHSNCodeFromItem } from '../../api/hsnCodeApi';
-import { PURCHASE_ORDER_COMPANY_ID } from '../../config/appConfig';
 import { FALLBACK_TAX_CODES } from '../../utils/fallbackTaxCodes';
 import { summarizeFreightRows } from '../../components/freight/freightUtils';
 import {
@@ -53,7 +55,7 @@ import {
   ROW_UDF_DEFINITIONS,
   createUdfState,
   readSavedFormSettings,
-} from '../../config/purchaseOrderForm';
+} from '../../config/purchaseRequestForm';
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 const getErrMsg = (e, fb) => {
@@ -196,6 +198,8 @@ const INIT_ATTACH = Array.from({ length: 9 }, (_, i) => ({
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 function PurchaseRequest() {
+  const { company } = useAuth();
+  const activeCompanyId = company?.companyId || '';
   const location = useLocation();
   const navigate = useNavigate();
   const initialPurchaseRequestDocEntryRef = useRef(location.state?.purchaseRequestDocEntry || null);
@@ -209,10 +213,11 @@ function PurchaseRequest() {
   const [attachments] = useState(INIT_ATTACH);
   const [activeTab, setActiveTab] = useState('Contents');
   const [headerUdfs, setHeaderUdfs] = useState(() => createUdfState(HEADER_UDF_DEFINITIONS));
-  const [formSettings, setFormSettings, formSettingsStorageKey] = useCompanyScopedFormSettings(
+  const [formSettings, setFormSettings, formSettingsStorageKey, , formSettingsStatus] = useCompanyScopedFormSettings(
     FORM_SETTINGS_STORAGE_KEY,
     readSavedFormSettings,
     [headerUdfDefinitions, rowUdfDefinitions, matrixColumnDefinitions],
+    { saveMode: 'explicit' },
   );
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [formSettingsOpen, setFormSettingsOpen] = useState(false);
@@ -320,34 +325,58 @@ function PurchaseRequest() {
     const load = async () => {
       setPageState(p => ({ ...p, loading: true, error: '', success: '' }));
       try {
-        const [refDataRes, seriesRes, hsnRes, layoutRes] = await Promise.all([
-          fetchPurchaseRequestReferenceData(PURCHASE_ORDER_COMPANY_ID),
+        setHeaderUdfDefinitions([]);
+        setRowUdfDefinitions([]);
+        setMatrixColumnDefinitions([]);
+        setHeaderUdfs({});
+        setLines([createLine([])]);
+        if (!activeCompanyId) return;
+        const [refDataRes, seriesRes, hsnRes, layoutRes, schema] = await Promise.all([
+          fetchPurchaseRequestReferenceData(activeCompanyId),
           fetchPurchaseRequestDocumentSeries({ date: today() }),
           fetchHSNCodes(),
-          getDocumentLayout({ documentType: 'PURCHASE_REQUEST' }).catch((error) => ({
+          getDocumentLayout({ documentType: 'PURCHASE_REQUEST', companyDb: company?.dbName }).catch((error) => ({
             data: {
               success: false,
               columns: [],
               warning: getErrMsg(error, 'Failed to load SAP layout.'),
             },
           })),
+          fetchSalesDocumentSchema({ documentType: 'PURCHASE_REQUEST' }).catch(() => null),
         ]);
 
         if (!ignore) {
           const liveMatrixColumns = refDataRes.data.line_field_metadata?.matrix_columns?.length
             ? refDataRes.data.line_field_metadata.matrix_columns
             : BASE_MATRIX_COLUMNS;
-          const nextMatrixColumns = buildMatrixColumnsFromSapLayout({
-            baseColumns: liveMatrixColumns,
-            layoutColumns: layoutRes?.data?.columns || [],
-            fallbackColumns: BASE_MATRIX_COLUMNS,
+          const liveFields = buildSalesDocumentLiveFields({
+            schema,
+            documentType: 'PURCHASE_REQUEST',
+            objectType: '1470000113',
+            headerTable: 'OPRQ',
+            lineTable: 'PRQ1',
+            companyId: activeCompanyId,
+            companyDb: company?.dbName || '',
+            layoutResponse: layoutRes,
+            referenceMatrixColumns: liveMatrixColumns,
+            referenceSapForm: refDataRes.data.line_field_metadata?.sap_form || {},
+            includeLineNumber: false,
+            safeFallbackMatrixColumns: BASE_MATRIX_COLUMNS,
+            useSafeFallbackWithoutLayout: true,
           });
+          const nextMatrixColumns = liveFields.matrixColumns?.length
+            ? liveFields.matrixColumns
+            : BASE_MATRIX_COLUMNS;
           const hasSapMatrixPreferences = Boolean(
-            Number(refDataRes.data.line_field_metadata?.sap_form?.preferenceRows || 0) ||
-            ((layoutRes?.data?.columns || []).length && layoutRes?.data?.source !== 'fallback')
+            liveFields.usedSapLayout ||
+            Number(refDataRes.data.line_field_metadata?.sap_form?.preferenceRows || 0)
           );
-          const nextHeaderUdfs = refDataRes.data.udf_metadata?.header || [];
-          const nextRowUdfs = refDataRes.data.udf_metadata?.rows || [];
+          const nextHeaderUdfs = liveFields.liveAvailable
+            ? liveFields.headerUdfFields
+            : (refDataRes.data.udf_metadata?.header || []);
+          const nextRowUdfs = liveFields.liveAvailable
+            ? liveFields.rowUdfFields
+            : (refDataRes.data.udf_metadata?.rows || []);
           setHeaderUdfDefinitions(nextHeaderUdfs);
           setRowUdfDefinitions(nextRowUdfs);
           setHeaderUdfs((prev) => ({ ...createUdfState(nextHeaderUdfs), ...prev }));
@@ -411,7 +440,7 @@ function PurchaseRequest() {
     };
     load();
     return () => { ignore = true; };
-  }, [formSettingsStorageKey]);
+  }, [activeCompanyId, company?.dbName, formSettingsStorageKey]);
 
   // ── load existing order ───────────────────────────────────────────────────
   useEffect(() => {
@@ -980,6 +1009,13 @@ function PurchaseRequest() {
   };
 
   const handleHeaderUdfChange = (k, v) => setHeaderUdfs(p => ({ ...p, [k]: v }));
+  const handleRowUdfChange = (lineIndex, key, value) => {
+    setLines((previousLines) => previousLines.map((line, index) => (
+      index === lineIndex
+        ? { ...line, udf: { ...(line.udf || {}), [key]: value } }
+        : line
+    )));
+  };
   const updateFormSetting = (g, k, prop, val) => setFormSettings(p => ({ ...p, [g]: { ...p[g], [k]: { ...p[g][k], [prop]: val } } }));
   const toggleHeaderUdfs = () => {
     setFormSettingsOpen(false);
@@ -1323,7 +1359,7 @@ function PurchaseRequest() {
         ...line,
         udf: buildVisibleEnteredRowUdfPayload(rowUdfDefinitions, line.udf || {}, formSettings),
       }));
-      const payload = { company_id: PURCHASE_ORDER_COMPANY_ID, header: prep, lines: payloadLines, freightCharges: freightModal.freightCharges, header_udfs: headerUdfs };
+      const payload = { company_id: activeCompanyId, header: prep, lines: payloadLines, freightCharges: freightModal.freightCharges, header_udfs: headerUdfs };
       const r = currentDocEntry
         ? await updatePurchaseRequest(currentDocEntry, payload)
         : await submitPurchaseRequest(payload);
@@ -1679,6 +1715,8 @@ function PurchaseRequest() {
                 hsnCodes={refData.hsn_codes || []}
                 formSettings={formSettings}
                 matrixFields={matrixColumnDefinitions}
+                rowUdfFields={rowUdfDefinitions}
+                onRowUdfChange={handleRowUdfChange}
                 valErrors={valErrors}
               />
             )}
@@ -1843,9 +1881,17 @@ function PurchaseRequest() {
             onClose={() => setFormSettingsOpen(false)}
             matrixFields={matrixColumnDefinitions}
             headerUdfFields={headerUdfDefinitions}
-            rowUdfFields={rowUdfDefinitions}
+            rowUdfFields={[]}
             formSettings={formSettings}
-            onSettingChange={updateFormSetting}
+          onSettingChange={updateFormSetting}
+          onColumnOrderChange={formSettingsStatus.reorder}
+          settingsLoaded={formSettingsStatus.loaded}
+          isSaving={formSettingsStatus.saving}
+          hasUnsavedChanges={formSettingsStatus.hasUnsavedChanges}
+          saveError={formSettingsStatus.error}
+          onSave={formSettingsStatus.save}
+          onCancel={formSettingsStatus.discard}
+          settingsScopeLabel={formSettingsStatus.scopeLabel}
           />
         </div>
 

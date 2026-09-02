@@ -1,7 +1,9 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import './styles/APCreditMemo.css';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { useAuth } from '../../auth/AuthContext';
 import FormSettingsPanel from '../../components/ap-invoice/FormSettingsPanel';
+import DocumentCurrencySelect from '../../components/document/DocumentCurrencySelect';
 import HeaderUdfSidebar from '../../components/ap-invoice/HeaderUdfSidebar';
 import LineValueLookupModal from '../../components/sales-document/LineValueLookupModal';
 import ContentsTab from './components/ContentsTab';
@@ -35,6 +37,9 @@ import {
   isValidManualDocumentNumber,
 } from '../../utils/documentSeries';
 import { useCompanyScopedFormSettings } from '../../utils/formSettingsStorage';
+import { getDocumentLayout } from '../../api/sapLayoutApi';
+import { fetchSalesDocumentSchema } from '../../api/salesDocumentSchemaApi';
+import { buildSalesDocumentLiveFields } from '../../utils/salesDocumentLiveFields';
 import { readGeneralSettings } from '../../utils/generalSettingsStorage';
 import { buildVisibleEnteredRowUdfPayload } from '../../utils/rowUdfPayload';
 import { getStateCodeValue, getStateDisplayName } from '../../utils/stateDisplay';
@@ -60,7 +65,6 @@ import {
   fetchAPInvoices,
   fetchAPInvoiceByDocEntry,
 } from '../../api/apInvoiceApi';
-import { PURCHASE_ORDER_COMPANY_ID } from '../../config/appConfig';
 import { fetchHSNCodeFromItem } from '../../api/hsnCodeApi';
 import { normaliseDocumentHeader, normaliseDocumentLine, unwrapCopyFromDocument } from '../../api/copyFromApi';
 import {
@@ -75,7 +79,7 @@ import {
   hydratePurchaseOrderLineUdfFields,
 } from '../purchase-order/purchaseOrderLineUdfMapping';
 
-// ─── helpers ─────────────────────────────────────────────────────────────────
+// â”€â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const getErrMsg = (e, fb) => {
   const d = e?.response?.data?.detail;
   if (typeof d === 'string' && d.trim()) return d;
@@ -152,7 +156,7 @@ const findPreferredGstTaxCode = ({ taxCodes = [], gstType = '', currentTaxCode =
   return availableTaxCodes.find((taxCode) => Number(taxCode.Rate) === 18) || availableTaxCodes[0];
 };
 
-// ─── constants ────────────────────────────────────────────────────────────────
+// â”€â”€â”€ constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const DEC = { QtyDec: 2, PriceDec: 2, SumDec: 2, RateDec: 2, PercentDec: 2 };
 const TAB_NAMES = ['Contents', 'Logistics', 'Accounting', 'Tax', 'Electronic Documents', 'Attachments'];
 const GENERAL_SETTINGS = readGeneralSettings();
@@ -262,7 +266,9 @@ const INIT_HEADER = {
   contactPerson: '',
   salesContractNo: '',
   transactionType: '',
+  currencyMode: 'BP',
   currency: '',
+  exchangeRate: '',
   branch: '',
   warehouse: GENERAL_SETTINGS.apCreditMemoWarehouse || '',
   docNo: '',
@@ -427,7 +433,7 @@ const buildAPCreditMemoLineUdfPayload = (line = {}, rowUdfDefinitions = [], form
     if (!hasEnteredLineValue(value)) return;
     const actualUdfKey = udfKeys
       .map((key) => knownUdfKeyByToken.get(normalizeLineUdfToken(key)))
-      .find(Boolean) || udfKeys[0];
+      .find(Boolean);
     if (actualUdfKey) udf[actualUdfKey] = value;
   });
 
@@ -468,10 +474,12 @@ const hydrateAPCreditMemoLineUdfFields = (line = {}) => {
   return next;
 };
 
-// ─── Main Component ───────────────────────────────────────────────────────────
+// â”€â”€â”€ Main Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const FALLBACK_UOM = ['EA', 'PCS', 'KG', 'LTR', 'MTR', 'BOX', 'SET', 'NOS', 'PKT', 'DZN'];
 
 function APCreditMemo() {
+  const { company } = useAuth();
+  const activeCompanyId = company?.companyId || '';
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -479,14 +487,16 @@ function APCreditMemo() {
   const [header, setHeader] = useState(INIT_HEADER);
   const [headerUdfDefinitions, setHeaderUdfDefinitions] = useState(HEADER_UDF_DEFINITIONS);
   const [rowUdfDefinitions, setRowUdfDefinitions] = useState(ROW_UDF_DEFINITIONS);
+  const [matrixColumnDefinitions, setMatrixColumnDefinitions] = useState(BASE_MATRIX_COLUMNS);
   const [lines, setLines] = useState([createLine(ROW_UDF_DEFINITIONS)]);
   const [attachments] = useState(INIT_ATTACH);
   const [activeTab, setActiveTab] = useState('Contents');
   const [headerUdfs, setHeaderUdfs] = useState(() => createUdfState(HEADER_UDF_DEFINITIONS));
-  const [formSettings, setFormSettings, formSettingsStorageKey] = useCompanyScopedFormSettings(
+  const [formSettings, setFormSettings, formSettingsStorageKey, , formSettingsStatus] = useCompanyScopedFormSettings(
     FORM_SETTINGS_STORAGE_KEY,
     readSavedFormSettings,
-    [headerUdfDefinitions, rowUdfDefinitions],
+    [headerUdfDefinitions, rowUdfDefinitions, matrixColumnDefinitions],
+    { saveMode: 'explicit' },
   );
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [formSettingsOpen, setFormSettingsOpen] = useState(false);
@@ -494,6 +504,9 @@ function APCreditMemo() {
     company: '',
     company_state: '',
     company_currency: '',
+    local_currency: '',
+    system_currency: '',
+    currencies: [],
     vendors: [],
     contacts: [],
     pay_to_addresses: [],
@@ -626,12 +639,12 @@ function APCreditMemo() {
   const hasUnsavedChanges = Boolean(currentDocEntry && isDirty);
   const updateActionLabel = hasUnsavedChanges ? 'Update' : 'OK';
   const primaryActionLabel = pageState.posting
-    ? 'Saving…'
+    ? 'Savingâ€¦'
     : currentDocEntry
       ? updateActionLabel
       : 'Add';
   const secondaryActionLabel = pageState.posting
-    ? 'Saving…'
+    ? 'Savingâ€¦'
     : currentDocEntry
       ? updateActionLabel
       : 'Add & New';
@@ -704,13 +717,29 @@ function APCreditMemo() {
     if (currentDocEntry) setIsDirty(true);
   }, [currentDocEntry]);
 
-  // ── load reference data ───────────────────────────────────────────────────
+  // â”€â”€ load reference data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     let ignore = false;
     const load = async () => {
       setPageState(p => ({ ...p, loading: true, error: '', success: '' }));
       try {
-        const refDataRes = await fetchAPCreditMemoReferenceData(PURCHASE_ORDER_COMPANY_ID);
+        setHeaderUdfDefinitions([]);
+        setRowUdfDefinitions([]);
+        setMatrixColumnDefinitions([]);
+        setHeaderUdfs({});
+        setLines([createLine([])]);
+        if (!activeCompanyId) return;
+
+        const [refDataRes, layoutRes, schema] = await Promise.all([
+          fetchAPCreditMemoReferenceData(activeCompanyId),
+          getDocumentLayout({
+            companyDb: company?.dbName || undefined,
+            documentType: 'AP_CREDIT_MEMO',
+          }).catch((error) => ({
+            data: { source: 'fallback', columns: [], warning: getErrMsg(error, 'Failed to load SAP layout.') },
+          })),
+          fetchSalesDocumentSchema({ documentType: 'AP_CREDIT_MEMO' }).catch(() => null),
+        ]);
         let seriesRes = { data: { series: [] } };
         try {
           seriesRes = await fetchAPCreditMemoSeries({
@@ -723,11 +752,39 @@ function APCreditMemo() {
         }
 
         if (!ignore) {
-          const nextHeaderUdfs = refDataRes.data.udf_metadata?.header || [];
-          const nextRowUdfs = refDataRes.data.udf_metadata?.rows || [];
-          const nextDefaults = readSavedFormSettings(nextHeaderUdfs, nextRowUdfs, formSettingsStorageKey);
+          const liveFields = buildSalesDocumentLiveFields({
+            schema,
+            documentType: 'AP_CREDIT_MEMO',
+            objectType: '19',
+            headerTable: 'ORPC',
+            lineTable: 'RPC1',
+            companyId: activeCompanyId,
+            companyDb: company?.dbName || '',
+            layoutResponse: layoutRes,
+            referenceMatrixColumns: refDataRes.data.line_field_metadata?.matrix_columns || BASE_MATRIX_COLUMNS,
+            referenceSapForm: refDataRes.data.line_field_metadata?.sap_form || {},
+            includeLineNumber: false,
+            safeFallbackMatrixColumns: BASE_MATRIX_COLUMNS,
+            useSafeFallbackWithoutLayout: true,
+          });
+          const nextHeaderUdfs = liveFields.liveAvailable
+            ? liveFields.headerUdfFields
+            : (refDataRes.data.udf_metadata?.header || []);
+          const nextRowUdfs = liveFields.liveAvailable
+            ? liveFields.rowUdfFields
+            : (refDataRes.data.udf_metadata?.rows || []);
+          const nextMatrixColumns = liveFields.matrixColumns?.length
+            ? liveFields.matrixColumns
+            : BASE_MATRIX_COLUMNS;
+          const nextDefaults = readSavedFormSettings(
+            nextHeaderUdfs,
+            nextRowUdfs,
+            nextMatrixColumns,
+            formSettingsStorageKey,
+          );
           setHeaderUdfDefinitions(nextHeaderUdfs);
           setRowUdfDefinitions(nextRowUdfs);
+          setMatrixColumnDefinitions(nextMatrixColumns);
           setHeaderUdfs((prev) => createUdfState(nextHeaderUdfs, prev));
           setLines((prev) => prev.map((line) => ({
             ...line,
@@ -750,6 +807,9 @@ function APCreditMemo() {
             company: refDataRes.data.company || '',
             company_state: refDataRes.data.company_state || '',
             company_currency: refDataRes.data.company_currency || '',
+            local_currency: refDataRes.data.local_currency || refDataRes.data.company_currency || '',
+            system_currency: refDataRes.data.system_currency || refDataRes.data.company_currency || '',
+            currencies: refDataRes.data.currencies || [],
             vendors: refDataRes.data.vendors || [],
             contacts: refDataRes.data.contacts || [],
             pay_to_addresses: refDataRes.data.pay_to_addresses || [],
@@ -775,7 +835,10 @@ function APCreditMemo() {
             uom_groups: refDataRes.data.uom_groups || [],
             decimal_settings: { ...DEC, ...(refDataRes.data.decimal_settings || {}) },
             udf_metadata: refDataRes.data.udf_metadata || { header: [], rows: [] },
-            warnings: refDataRes.data.warnings || [],
+            warnings: [
+              ...(refDataRes.data.warnings || []),
+              ...(layoutRes?.data?.warning ? [layoutRes.data.warning] : []),
+            ],
             series: normalizeDocumentSeriesList(seriesRes.data.series || []),
           });
 
@@ -800,9 +863,9 @@ function APCreditMemo() {
     };
     load();
     return () => { ignore = true; };
-  }, []);
+  }, [activeCompanyId, company?.dbName, formSettingsStorageKey]);
 
-  // ── load existing order ───────────────────────────────────────────────────
+  // â”€â”€ load existing order â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     const docEntry = location.state?.APCreditMemoDocEntry;
     if (!docEntry) return;
@@ -928,7 +991,7 @@ function APCreditMemo() {
     return () => { ignore = true; };
   }, [currentDocEntry]);
 
-  // ── derived / computed ────────────────────────────────────────────────────
+  // â”€â”€ derived / computed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const vendorContacts = refData.contacts.filter(c => String(c.CardCode || '') === String(header.vendor || ''));
   const contactOptions = header.contactPerson && !vendorContacts.some(c => String(c.CntctCode || '') === String(header.contactPerson || ''))
     ? [{ CardCode: header.vendor, CntctCode: header.contactPerson, Name: header.contactPerson }, ...vendorContacts]
@@ -946,16 +1009,6 @@ function APCreditMemo() {
   const shipTypeOpts = refData.shipping_types.length
     ? refData.shipping_types.map(s => ({ value: String(s.TrnspCode), label: s.TrnspName }))
     : [{ value: 'Air', label: 'Air' }, { value: 'Sea', label: 'Sea' }, { value: 'Road', label: 'Road' }];
-
-  const currencyOptions = useMemo(() => {
-    const values = [
-      header.currency,
-      refData.company_currency,
-      'INR',
-      ...refData.vendors.map((vendor) => vendor.Currency),
-    ];
-    return Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)));
-  }, [header.currency, refData.company_currency, refData.vendors]);
 
   const lineItemOptions = lines.reduce((acc, line, i) => {
     const code = String(line.itemNo || '').trim();
@@ -1144,7 +1197,7 @@ function APCreditMemo() {
     return name ? `${code} - ${name}` : code;
   };
 
-  // ── calculations ──────────────────────────────────────────────────────────
+  // â”€â”€ calculations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const calcLineTotal = (line) => {
     const qty = parseNum(line.quantity), price = parseNum(line.unitPrice), disc = parseNum(line.stdDiscount);
     return roundTo(qty * price * (1 - disc / 100), numDec.total);
@@ -1196,7 +1249,7 @@ function APCreditMemo() {
   const derivedGstType = getDerivedGstType(header.vendorState, header.placeOfSupply);
   const inferredGstType = formatDerivedGstType(derivedGstType);
 
-  // ── GST Logic ─────────────────────────────────────────────────────────────
+  // â”€â”€ GST Logic â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const applyGstLogic = useCallback(async () => {
     if (!derivedGstType) {
       return;
@@ -1230,7 +1283,7 @@ function APCreditMemo() {
     setHeader(prev => prev.gstType === inferredGstType ? prev : { ...prev, gstType: inferredGstType });
   }, [inferredGstType]);
 
-  // ── address sync ──────────────────────────────────────────────────────────
+  // â”€â”€ address sync â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Sync branch to all lines when header branch changes
   useEffect(() => {
     if (header.branch) {
@@ -1296,7 +1349,7 @@ function APCreditMemo() {
     });
   }, [header.vendor, vendorEffectiveBillToAddresses]);
 
-  // ── vendor details ────────────────────────────────────────────────────────
+  // â”€â”€ vendor details â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const loadVendorDetails = async (code) => {
     if (!code) {
       setRefData(p => ({ ...p, contacts: [], pay_to_addresses: [], ship_to_addresses: [], bill_to_addresses: [] }));
@@ -1346,7 +1399,11 @@ function APCreditMemo() {
       nextHeader: {
         ...hdr,
         name: m.CardName || m.Name || hdr.name,
-        currency: m.Currency || hdr.currency || refData.company_currency || 'INR',
+        currencyMode: 'BP',
+        currency: m.Currency && m.Currency !== '##'
+          ? m.Currency
+          : (hdr.currency || refData.local_currency || refData.company_currency || ''),
+        exchangeRate: '',
         paymentTerms: m.GroupNum != null ? String(m.GroupNum) : hdr.paymentTerms,
         contactPerson: '',
         shipTo: '',
@@ -1362,7 +1419,7 @@ function APCreditMemo() {
     };
   };
 
-  // ── handlers ──────────────────────────────────────────────────────────────
+  // â”€â”€ handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleHeaderChange = (e) => {
     const { name, value, type, checked } = e.target;
     setValErrors(p => ({ ...p, header: { ...p.header, [name]: '' }, form: '' }));
@@ -1415,7 +1472,11 @@ function APCreditMemo() {
       setHeader(p => ({ ...p, [name]: sanitize(value, numDec[name]) }));
       return;
     }
-    setHeader(p => ({ ...p, [name]: type === 'checkbox' ? checked : value }));
+    setHeader(p => ({
+      ...p,
+      [name]: type === 'checkbox' ? checked : value,
+      ...(['currency', 'postingDate'].includes(name) ? { exchangeRate: '' } : {}),
+    }));
   };
 
   const handleShipToCodeChange = (e) => {
@@ -1438,6 +1499,8 @@ function APCreditMemo() {
     setLines(prev => prev.map((line, idx) => {
       if (idx !== i) return line;
       const next = { ...line, [name]: numDec[name] !== undefined ? sanitize(value, numDec[name]) : value };
+                if (name === 'uomName') next.uomNameEdited = true;
+                if (name === 'uomCode') { next.uomName = value; next.uomNameEdited = false; }
 
       if (name === 'taxCode') {
         next.taxCodeManuallyOverridden = true;
@@ -1671,7 +1734,7 @@ function APCreditMemo() {
     setFormSettingsOpen(p => !p);
   };
 
-  // ── Series and Auto-Numbering handlers ────────────────────────────────────
+  // â”€â”€ Series and Auto-Numbering handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleSeriesChange = async (seriesValue) => {
     if (!seriesValue) return;
 
@@ -1711,7 +1774,7 @@ function APCreditMemo() {
     }));
   };
 
-  // ── Address Modal handlers ────────────────────────────────────────────────
+  // â”€â”€ Address Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openAddressModal = (type) => {
     const shipAddress = resolveAddressForModal(
       header.shipToCode,
@@ -1764,7 +1827,7 @@ function APCreditMemo() {
     setAddressForm(p => ({ ...p, [name]: value }));
   };
 
-  // ── Tax Info Modal handlers ───────────────────────────────────────────────
+  // â”€â”€ Tax Info Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openTaxInfoModal = () => {
     setTaxInfoDraft({ ...taxInfoForm });
     setTaxInfoModal(true);
@@ -1779,7 +1842,7 @@ function APCreditMemo() {
     closeTaxInfoModal();
   };
 
-  // ── Item Modal handlers ───────────────────────────────────────────────────
+  // â”€â”€ Item Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openItemModal = async (lineIndex) => {
     setItemModal({ open: true, lineIndex, items: [], loading: true });
     try {
@@ -1849,7 +1912,7 @@ function APCreditMemo() {
     closeHSNModal();
   };
 
-  // ── Business Partner Modal handlers ──────────────────────────────────────
+  // â”€â”€ Business Partner Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openBpModal = () => setBpModal(true);
   const closeBpModal = () => setBpModal(false);
 
@@ -1864,7 +1927,7 @@ function APCreditMemo() {
     closeBpModal();
   };
 
-  // ── State Selection Modal handlers ────────────────────────────────────────
+  // â”€â”€ State Selection Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openStateModal = () => setStateModal(true);
   const closeStateModal = () => setStateModal(false);
 
@@ -1878,7 +1941,7 @@ function APCreditMemo() {
     setTaxInfoDraft(p => ({ ...p, [name]: value }));
   };
 
-  // ── Browse Attachment handler ─────────────────────────────────────────────
+  // â”€â”€ Browse Attachment handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleBrowseAttachment = () => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -1890,7 +1953,7 @@ function APCreditMemo() {
     input.click();
   };
 
-  // ── validation ────────────────────────────────────────────────────────────
+  // â”€â”€ validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleCopyFrom = (data, docType) => {
     const copySource = unwrapCopyFromDocument(data);
     const normalizedHeader = { ...normaliseDocumentHeader(copySource.header) };
@@ -2097,7 +2160,7 @@ function APCreditMemo() {
     return e;
   };
 
-  // ── submit ────────────────────────────────────────────────────────────────
+  // â”€â”€ submit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleSubmit = async (ev) => {
     ev.preventDefault();
     if (!isDocumentEditable) {
@@ -2126,7 +2189,7 @@ function APCreditMemo() {
         ...line,
         udf: buildAPCreditMemoLineUdfPayload(line, rowUdfDefinitions, formSettings),
       }));
-      const payload = { company_id: PURCHASE_ORDER_COMPANY_ID, header: prep, lines: payloadLines, freightCharges: freightModal.freightCharges, header_udfs: headerUdfs };
+      const payload = { company_id: activeCompanyId, header: prep, lines: payloadLines, freightCharges: freightModal.freightCharges, header_udfs: headerUdfs };
       const r = currentDocEntry ? await updateAPCreditMemo(currentDocEntry, payload) : await submitAPCreditMemo(payload);
       const dn = r.data.doc_num ? ` Doc No: ${r.data.doc_num}.` : '';
       const warningMsg = r.data.warning?.message ? ` Warning: ${r.data.warning.message}` : '';
@@ -2166,24 +2229,18 @@ function APCreditMemo() {
   );
   const visHdrUdfs = sidebarHeaderUdfDefinitions.filter(f => formSettings.headerUdfs?.[f.key]?.visible !== false);
   const isRightSidebarOpen = sidebarOpen || formSettingsOpen;
-  const visibleRowUdfs = rowUdfDefinitions
-    .filter(f => formSettings.rowUdfs?.[f.key]?.visible !== false)
-    .map(f => ({
-      ...f,
-      active: formSettings.rowUdfs?.[f.key]?.active !== false && f.active !== false,
-    }));
   const documentBodyRef = useRef(null);
   useClosedDocumentViewMode(documentBodyRef, !isDocumentEditable, [activeTab, sidebarOpen, formSettingsOpen]);
 
   // Continue in next message with render...
 
-  // ── render ────────────────────────────────────────────────────────────────
+  // â”€â”€ render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   return (
     <form className={`po-page sap-document-page ap-credit-memo-page${isRightSidebarOpen ? ' po-page--sidebar-open' : ''}`} onSubmit={handleSubmit} onChangeCapture={markDirty}>
 
-      {/* ── Toolbar ── */}
+      {/* â”€â”€ Toolbar â”€â”€ */}
       <div className="po-toolbar sap-document-toolbar">
-        <span className="po-toolbar__title sap-document-toolbar__title">A/P Credit Memo{currentDocEntry ? ` — #${header.docNo || currentDocEntry}` : ''}</span>
+        <span className="po-toolbar__title sap-document-toolbar__title">A/P Credit Memo{currentDocEntry ? ` â€” #${header.docNo || currentDocEntry}` : ''}</span>
         <button type="submit" className="po-btn po-btn--primary sap-document-toolbar__primary" disabled={pageState.posting}>
           {primaryActionLabel}
         </button>
@@ -2208,7 +2265,7 @@ function APCreditMemo() {
               if (!isActive) dropdown.classList.add('active');
             }}
           >
-            Copy From ▼
+            Copy From â–¼
           </button>
           <div className="po-dropdown-menu">
             <button
@@ -2236,7 +2293,7 @@ function APCreditMemo() {
           </div>
         </div>
         <button type="button" className="po-btn sap-document-toolbar__copy" disabled>
-          Copy To ▼
+          Copy To â–¼
         </button>
         {currentDocEntry && (
           <button type="button" className="po-btn sap-document-toolbar__duplicate" onClick={handleDuplicate}>
@@ -2264,8 +2321,8 @@ function APCreditMemo() {
         </span>
       </div>
 
-      {/* ── Alerts ── */}
-      {pageState.loading && <div className="po-alert po-alert--warning">Loading…</div>}
+      {/* â”€â”€ Alerts â”€â”€ */}
+      {pageState.loading && <div className="po-alert po-alert--warning">Loadingâ€¦</div>}
       {pageState.error   && <div className="po-alert po-alert--error">{pageState.error}</div>}
       {pageState.success && <div className="po-alert po-alert--success">{pageState.success}</div>}
       {refData.warnings?.length > 0 && (
@@ -2279,11 +2336,11 @@ function APCreditMemo() {
         <div className={`po-layout${isRightSidebarOpen ? ' is-sidebar-open' : ''}`}>
           <div className="po-layout__main">
 
-            {/* ══ HEADER CARD ══════════════════════════════════════════════ */}
+            {/* â•â• HEADER CARD â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             <div className="po-header-card">
               <div className="po-field-grid" style={{ gridTemplateColumns: '1fr 1fr' }}>
 
-                {/* LEFT — Vendor info */}
+                {/* LEFT â€” Vendor info */}
                 <div style={{ borderRight: '2px solid #e0e6ed', paddingRight: 16 }}>
                   <div className="po-field">
                     <label className="po-field__label">Vendor *</label>
@@ -2334,14 +2391,17 @@ function APCreditMemo() {
                     <label className="po-field__label">Supplier Invoice No.</label>
                     <input name="salesContractNo" className="po-field__input" value={header.salesContractNo} onChange={handleHeaderChange} />
                   </div>
-                  <div className="po-field">
-                    <label className="po-field__label">Local Currency</label>
-                    <select name="currency" className="po-field__select" value={header.currency || refData.company_currency || 'INR'} onChange={handleHeaderChange}>
-                      {currencyOptions.map((currency) => (
-                        <option key={currency} value={currency}>{currency}</option>
-                      ))}
-                    </select>
-                  </div>
+                  <DocumentCurrencySelect
+                    classPrefix="po"
+                    header={header}
+                    onHeaderChange={handleHeaderChange}
+                    businessPartners={refData.vendors || []}
+                    currencyOptions={refData.currencies || []}
+                    localCurrency={refData.local_currency || refData.company_currency || ''}
+                    systemCurrency={refData.system_currency || refData.local_currency || ''}
+                    fallbackLocalCurrency=""
+                    disabled={!header.vendor || Boolean(currentDocEntry)}
+                  />
                   <div className="po-field">
                     <label className="po-field__label">Place of Supply</label>
                     <div style={{ display: 'flex', gap: 2 }}>
@@ -2371,7 +2431,7 @@ function APCreditMemo() {
                   </div>
                 </div>
 
-                {/* RIGHT — Document info */}
+                {/* RIGHT â€” Document info */}
                 <div style={{ paddingLeft: 16 }}>
                   <div className="po-field">
                     <label className="po-field__label">No.</label>
@@ -2426,14 +2486,14 @@ function APCreditMemo() {
               </div>
             </div>
 
-            {/* ══ TABS ══════════════════════════════════════════════════════ */}
+            {/* â•â• TABS â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             <div className="po-tabs">
               {TAB_NAMES.map(t => (
                 <button type="button" key={t} className={`po-tab${activeTab === t ? ' po-tab--active' : ''}`} onClick={() => setActiveTab(t)}>{t}</button>
               ))}
             </div>
 
-            {/* ══ TAB CONTENT ═══════════════════════════════════════════════ */}
+            {/* â•â• TAB CONTENT â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             <div className={activeTab === 'Tax' ? 'sap-b1-tax-panel' : 'po-tab-panel'}>
             {activeTab === 'Contents' && (
               <ContentsTab
@@ -2454,9 +2514,9 @@ function APCreditMemo() {
                 onOpenLineLookup={openLineLookup}
                 getBranchName={getBranchName}
                 locationLookupOptions={locationLookupOptions}
-                matrixFields={BASE_MATRIX_COLUMNS}
+                matrixFields={matrixColumnDefinitions}
                 formSettings={formSettings}
-                rowUdfFields={visibleRowUdfs}
+                rowUdfFields={rowUdfDefinitions}
                 onRowUdfChange={handleRowUdfChange}
               />
             )}
@@ -2502,7 +2562,7 @@ function APCreditMemo() {
             )}
             </div>{/* end po-tab-panel */}
 
-            {/* ══ TOTALS FOOTER ═════════════════════════════════════════════ */}
+            {/* â•â• TOTALS FOOTER â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             <div className="po-header-card" style={{ marginTop: 10 }}>
               <div style={{ display: 'flex', gap: 20 }}>
                 <div style={{ flex: 1 }}>
@@ -2586,7 +2646,7 @@ function APCreditMemo() {
               </div>
             </div>
 
-            {/* ══ ACTION BUTTONS ════════════════════════════════════════════ */}
+            {/* â•â• ACTION BUTTONS â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {false && (
             <div className="po-toolbar sap-document-toolbar" style={{ justifyContent: 'space-between', marginTop: 10 }}>
               <div style={{ display: 'flex', gap: 6 }}>
@@ -2610,7 +2670,7 @@ function APCreditMemo() {
                       if (!isActive) dropdown.classList.add('active');
                     }}
                   >
-                    Copy From ▼
+                    Copy From â–¼
                   </button>
                   <div className="po-dropdown-menu">
                     <button
@@ -2639,7 +2699,7 @@ function APCreditMemo() {
                 </div>
                 <div className="po-dropdown">
                   <button type="button" className="po-btn" disabled>
-                    Copy To ▼
+                    Copy To â–¼
                   </button>
                 </div>
               </div>
@@ -2663,11 +2723,19 @@ function APCreditMemo() {
             className="po-layout__sidebar"
             isOpen={formSettingsOpen}
             onClose={() => setFormSettingsOpen(false)}
-            matrixFields={BASE_MATRIX_COLUMNS}
+            matrixFields={matrixColumnDefinitions}
             headerUdfFields={sidebarHeaderUdfDefinitions}
-            rowUdfFields={rowUdfDefinitions}
+            rowUdfFields={[]}
             formSettings={formSettings}
-            onSettingChange={updateFormSetting}
+          onSettingChange={updateFormSetting}
+          onColumnOrderChange={formSettingsStatus.reorder}
+          settingsLoaded={formSettingsStatus.loaded}
+          isSaving={formSettingsStatus.saving}
+          hasUnsavedChanges={formSettingsStatus.hasUnsavedChanges}
+          saveError={formSettingsStatus.error}
+          onSave={formSettingsStatus.save}
+          onCancel={formSettingsStatus.discard}
+          settingsScopeLabel={formSettingsStatus.scopeLabel}
           />
         </div>
 

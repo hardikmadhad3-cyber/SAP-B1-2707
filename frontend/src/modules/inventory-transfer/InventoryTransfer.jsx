@@ -239,10 +239,11 @@ function InventoryTransfer() {
   const [headerUdfFields, setHeaderUdfFields] = useState([]);
   const [headerUdfs, setHeaderUdfs] = useState({});
   const [rowUdfFields, setRowUdfFields] = useState([]);
-  const [formSettings, setFormSettings, formSettingsStorageKey] = useCompanyScopedFormSettings(
+  const [formSettings, setFormSettings, formSettingsStorageKey, , formSettingsStatus] = useCompanyScopedFormSettings(
     INVENTORY_TRANSFER_FORM_SETTINGS_STORAGE_KEY,
     readSavedFormSettings,
-    [headerUdfFields, rowUdfFields, INVENTORY_TRANSFER_MATRIX_COLUMNS]
+    [headerUdfFields, rowUdfFields, INVENTORY_TRANSFER_MATRIX_COLUMNS],
+    { saveMode: 'explicit' },
   );
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [formSettingsOpen, setFormSettingsOpen] = useState(false);
@@ -1260,6 +1261,7 @@ function InventoryTransfer() {
             distributionRule5: line.distributionRule5,
             uomCode: line.uomCode,
             uomName: line.uomName,
+        uomNameEdited: line.uomNameEdited,
             branch: line.branch,
             saudaNodeRef: line.saudaNodeRef,
             apInvDocKey: line.apInvDocKey,
@@ -1737,6 +1739,14 @@ function InventoryTransfer() {
           rowUdfFields={rowUdfFields}
           formSettings={formSettings}
           onSettingChange={updateFormSetting}
+          onColumnOrderChange={formSettingsStatus.reorder}
+          settingsLoaded={formSettingsStatus.loaded}
+          isSaving={formSettingsStatus.saving}
+          hasUnsavedChanges={formSettingsStatus.hasUnsavedChanges}
+          saveError={formSettingsStatus.error}
+          onSave={formSettingsStatus.save}
+          onCancel={formSettingsStatus.discard}
+          settingsScopeLabel={formSettingsStatus.scopeLabel}
         />
       </div>
 

@@ -7,6 +7,14 @@ const { getUdfDefinitions } = require('./udfMetadataService');
 const { applyUdfValues, isBlankUdfValue, normalizeUdfValue } = require('./udfPayloadUtils');
 const hsnCodeDbService = require('./hsnCodeDbService');
 const {
+  applySapDocumentCurrency,
+  fromStoredDocumentRate,
+  loadCompanyCurrencyContext,
+  loadDocumentCurrencyReferenceData,
+  mergeCurrencyReferenceData,
+  normalizeCopyDocumentRateForCompany,
+} = require('./salesDocumentCurrencyService');
+const {
   buildMetadataValidatedStandardLine,
   filterMetadataValidatedUdfDefinitions,
   filterMetadataValidatedUdfs,
@@ -111,6 +119,14 @@ const normalizeOptionalNumber = (value) => {
   return Number.isFinite(normalized) ? normalized : undefined;
 };
 
+const getHeaderDiscountPercent = (header = {}) => {
+  const rawValue = header.discount ?? header.DiscountPercent ?? header.DiscPrcnt;
+  if (rawValue === undefined || rawValue === null) return undefined;
+  const textValue = String(rawValue).replace(/,/g, '').trim();
+  if (!textValue) return 0;
+  const parsed = Number(textValue);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
 const parseLineNumber = (value, fallback = 0) => {
   const parsed = Number(String(value ?? '').replace(/,/g, ''));
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -289,7 +305,11 @@ const setKnownUdfValue = (target, definitionsByKey, aliases, value) => {
 const getReferenceData = async (companyId) => {
   try {
     // Use ODBC/Direct SQL for GET operations
-    const data = await arInvoiceDb.getReferenceData();
+    const [rawData, currencyContext] = await Promise.all([
+      arInvoiceDb.getReferenceData(),
+      loadCompanyCurrencyContext(),
+    ]);
+    const data = mergeCurrencyReferenceData(rawData, currencyContext);
     if (data.customers && !data.vendors) {
       data.vendors = data.customers;
       delete data.customers;
@@ -427,7 +447,16 @@ const getARInvoiceList = async ({
 const getARInvoice = async (docEntry) => {
   try {
     // Use ODBC for reading single invoice
-    const result = await arInvoiceDb.getARInvoice(docEntry);
+    const [result, currencyContext] = await Promise.all([
+      arInvoiceDb.getARInvoice(docEntry),
+      loadCompanyCurrencyContext(),
+    ]);
+    const referenceData = mergeCurrencyReferenceData({}, currencyContext);
+    if (result?.ar_invoice?.header?.exchangeRate) {
+      result.ar_invoice.header.exchangeRate = String(
+        fromStoredDocumentRate(result.ar_invoice.header.exchangeRate, referenceData),
+      );
+    }
     return result;
   } catch (error) {
     console.error('[AR Invoice Service] Failed to load AR invoice via ODBC:', error);
@@ -501,7 +530,7 @@ const submitARInvoice = async (payload) => {
       headerFieldMetadata,
     );
     const physicalHeaderUdfs = new Set(physicalHeaderUdfDefinitions.keys());
-
+    const DiscountPercent = getHeaderDiscountPercent(payload.header);
     // Transform payload to SAP format
     const sapPayload = {
       CardCode: String(customerCode).trim(),
@@ -528,6 +557,7 @@ const submitARInvoice = async (payload) => {
       } : {}),
 
       PaymentGroupCode: payload.header.paymentTerms ? Number(payload.header.paymentTerms) : undefined,
+      ...(DiscountPercent !== undefined ? { DiscountPercent } : {}),
 
       // Customer reference
       NumAtCard: payload.header.salesContractNo || payload.header.customerRefNo || undefined,
@@ -540,6 +570,7 @@ const submitARInvoice = async (payload) => {
 
       DocumentLines: documentLines,
     };
+    applySapDocumentCurrency(sapPayload, payload.header, currencyReferenceData);
     lastSapPayload = sapPayload;
 
     addIfPresent(sapPayload, 'ShipToCode', payload.header.shipToCode);
@@ -679,7 +710,7 @@ const updateARInvoice = async (docEntry, payload) => {
       headerFieldMetadata,
     );
     const physicalHeaderUdfs = new Set(physicalHeaderUdfDefinitions.keys());
-
+    const DiscountPercent = getHeaderDiscountPercent(payload.header);
     // Transform payload to SAP format (similar to submit)
     const sapPayload = {
       CardCode: String(customerCode).trim(),
@@ -694,6 +725,7 @@ const updateARInvoice = async (docEntry, payload) => {
           ? Number(payload.header.salesEmployee)
           : undefined,
       PaymentGroupCode: payload.header.paymentTerms ? Number(payload.header.paymentTerms) : undefined,
+      ...(DiscountPercent !== undefined ? { DiscountPercent } : {}),
       NumAtCard: payload.header.salesContractNo || payload.header.customerRefNo || undefined,
       Comments: payload.header.otherInstruction || payload.header.comments || undefined,
       DocumentAdditionalExpenses: documentAdditionalExpenses,
@@ -701,6 +733,7 @@ const updateARInvoice = async (docEntry, payload) => {
 
       DocumentLines: documentLines,
     };
+    applySapDocumentCurrency(sapPayload, payload.header, currencyReferenceData);
 
     addIfPresent(sapPayload, 'ShipToCode', payload.header.shipToCode);
     addIfPresent(sapPayload, 'PayToCode', payload.header.billToCode || payload.header.payToCode);
@@ -847,7 +880,7 @@ module.exports = {
       return { documents: [] }; 
     } 
   },
-  getSalesOrderForCopy:    async (d) => arInvoiceDb.getSalesOrderForCopy(d),
+  getSalesOrderForCopy:    async (d) => normalizeCopyDocumentRateForCompany(await arInvoiceDb.getSalesOrderForCopy(d)),
   getOpenDeliveries:       async (customerCode = null) => { 
     try { 
       return { documents: await arInvoiceDb.getOpenDeliveries(customerCode) }; 
@@ -855,9 +888,9 @@ module.exports = {
       return { documents: [] }; 
     } 
   },
-  getDeliveryForCopy:      async (d) => arInvoiceDb.getDeliveryForCopy(d),
+  getDeliveryForCopy:      async (d) => normalizeCopyDocumentRateForCompany(await arInvoiceDb.getDeliveryForCopy(d)),
   getOpenSalesQuotations:  async (customerCode = null) => { try { return { documents: await arInvoiceDb.getOpenSalesQuotations(customerCode) }; } catch(e) { return { documents: [] }; } },
-  getSalesQuotationForCopy:async (d) => arInvoiceDb.getSalesQuotationForCopy(d),
+  getSalesQuotationForCopy:async (d) => normalizeCopyDocumentRateForCompany(await arInvoiceDb.getSalesQuotationForCopy(d)),
   _getLineUnitPrice: getLineUnitPrice,
   _getLineDiscountPercent: getLineDiscountPercent,
 };

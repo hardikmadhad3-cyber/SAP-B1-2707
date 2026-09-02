@@ -64,6 +64,15 @@ const optionalColumn = (metadata, tableAlias, columnName, alias, fallback = 'NUL
     : `${fallback} AS ${sqlAlias(alias)}`
 );
 
+const buildOptionalHeaderTextExpression = (metadata = {}, candidates = [], fallback = "''") => {
+  const resolvedColumn = candidates
+    .map((candidate) => sqlColumnRef(metadata, 'T0', candidate))
+    .find(Boolean);
+  return resolvedColumn
+    ? `NULLIF(LTRIM(RTRIM(CAST(${resolvedColumn} AS NVARCHAR(254)))), '')`
+    : fallback;
+};
+
 const keepSapVisibleNumberingSeries = (series = []) => {
   return selectSapEligibleSeries(series);
 };
@@ -235,6 +244,24 @@ const getARCreditMemoList = async ({
   const normalizedPage = Math.max(1, Number(page) || 1);
   const normalizedPageSize = Math.min(200, Math.max(1, Number(pageSize) || 25));
   const skip = (normalizedPage - 1) * normalizedPageSize;
+  const headerFieldMetadata = await getARCreditMemoHeaderTableFieldMetadata();
+  const sellerCodeExpression = buildOptionalHeaderTextExpression(headerFieldMetadata, [
+    'U_Seller_Code',
+    'U_To_Code_Vendor',
+    'U_ToCodeVendor',
+    'U_To_Code',
+    'U_ToCode',
+    'U_To_Vendor_Code',
+    'U_Vendor_Code',
+    'U_Party_Code',
+  ]);
+  const sellerNameExpression = buildOptionalHeaderTextExpression(headerFieldMetadata, [
+    'U_Seller_Name',
+    'U_To_Name',
+    'U_ToName',
+    'U_Vendor_Name',
+    'U_Party_Name',
+  ]);
   const { whereClauses, params } = buildMarketingDocumentListFilterQuery({
     query,
     openOnly,
@@ -246,7 +273,11 @@ const getARCreditMemoList = async ({
     status,
     postingDateFrom,
     postingDateTo,
-  }, { includeSellerFields: true });
+  }, {
+    includeSellerFields: true,
+    sellerCodeField: sellerCodeExpression,
+    sellerNameField: sellerNameExpression,
+  });
   whereClauses.push("T0.DocType = 'I'");
 
   const countRows = await safe(db.query(`
@@ -263,8 +294,8 @@ const getARCreditMemoList = async ({
       T0.DocNum AS doc_num,
       T0.CardCode AS customer_code,
       T0.CardName AS customer_name,
-      T0.U_Seller_Code AS seller_code,
-      T0.U_Seller_Name AS seller_name,
+      COALESCE(${sellerCodeExpression}, '') AS seller_code,
+      COALESCE(${sellerNameExpression}, '') AS seller_name,
       T0.DocDate AS posting_date,
       T0.DocDueDate AS delivery_date,
       T0.DocTotal AS total_amount,
@@ -338,6 +369,7 @@ const getARCreditMemo = async (docEntry) => {
       T0.TaxDate AS DocumentDate,
       T0.BPLId AS Branch,
       T0.DocCur AS Currency,
+      T0.DocRate AS ExchangeRate,
       T0.GroupNum AS PaymentTerms,
       T0.Comments AS Remarks,
       T0.JrnlMemo AS JournalRemark,
@@ -660,6 +692,8 @@ const getARCreditMemo = async (docEntry) => {
         billToAddressComponents,
         salesEmployee: header.SalesEmployeeCode ? String(header.SalesEmployeeCode) : '',
         purchaser: header.SalesEmployeeName || '',
+        currency: header.Currency || '',
+        exchangeRate: header.ExchangeRate != null ? String(header.ExchangeRate) : '',
       },
       lines: formattedLines,
       DocumentLines: formattedLines,
@@ -1517,6 +1551,8 @@ const getARCreditMemoForCopy = async (docEntry) => {
     BPLId: header.branch || '',
     BPL_IDAssignedToInvoice: header.branch || '',
     GroupNum: header.paymentTermsCode || header.paymentTerms || '',
+    DocCur: header.currency || '',
+    DocRate: header.exchangeRate || '',
     DiscPrcnt: header.discount || 0,
     Freight: header.freight || 0,
     DocumentLines: (creditMemo.lines || []).map((line, index) => ({

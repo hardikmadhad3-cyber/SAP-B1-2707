@@ -13,6 +13,28 @@ describe('document duplication', () => {
       status: 'Open',
     });
   });
+  test('clears hidden manual document number aliases', () => {
+    expect(buildDuplicateHeader(
+      {
+        docNo: '120',
+        nextNumber: '120',
+        manualDocumentNumber: '120',
+        manualDocNum: '120',
+        orderNumber: '120',
+        series: '-1',
+        status: 'Open',
+      },
+      { docNo: '', series: '', status: 'Open', nextNumber: '' },
+    )).toMatchObject({
+      docNo: '',
+      nextNumber: '',
+      manualDocumentNumber: '',
+      manualDocNum: '',
+      orderNumber: '',
+      series: '-1',
+      status: 'Open',
+    });
+  });
 
   test('removes GRPO base references from duplicated invoice rows', () => {
     const createLine = () => ({ itemNo: '', quantity: '', baseType: null, baseEntry: null, baseLine: null });

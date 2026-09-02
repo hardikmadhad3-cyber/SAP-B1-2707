@@ -45,12 +45,92 @@ const AR_CREDIT_MEMO_DOCUMENT = Object.freeze({
   lineTable: 'RIN1',
 });
 
+const PURCHASE_REQUEST_DOCUMENT = Object.freeze({
+  documentType: 'PURCHASE_REQUEST', objectType: '1470000113', formType: '1470000200', matrixId: '38',
+  headerTable: 'OPRQ', lineTable: 'PRQ1', purchaseDocument: true,
+});
+
+const PURCHASE_QUOTATION_DOCUMENT = Object.freeze({
+  documentType: 'PURCHASE_QUOTATION', objectType: '540000006', formType: '540000988', matrixId: '38',
+  headerTable: 'OPQT', lineTable: 'PQT1', purchaseDocument: true,
+});
+
+const PURCHASE_ORDER_DOCUMENT = Object.freeze({
+  documentType: 'PURCHASE_ORDER', objectType: '22', formType: '142', matrixId: '38',
+  headerTable: 'OPOR', lineTable: 'POR1', purchaseDocument: true,
+});
+
+const GRPO_DOCUMENT = Object.freeze({
+  documentType: 'GRPO', objectType: '20', formType: '143', matrixId: '38',
+  headerTable: 'OPDN', lineTable: 'PDN1', purchaseDocument: true,
+});
+
+const AP_INVOICE_DOCUMENT = Object.freeze({
+  documentType: 'AP_INVOICE', objectType: '18', formType: '141', matrixId: '38',
+  headerTable: 'OPCH', lineTable: 'PCH1', purchaseDocument: true,
+});
+
+const AP_CREDIT_MEMO_DOCUMENT = Object.freeze({
+  documentType: 'AP_CREDIT_MEMO', objectType: '19', formType: '181', matrixId: '38',
+  headerTable: 'ORPC', lineTable: 'RPC1', purchaseDocument: true,
+});
+
+const SERVICE_AR_INVOICE_DOCUMENT = Object.freeze({
+  documentType: 'SERVICE_AR_INVOICE',
+  objectType: '13',
+  formType: '133',
+  matrixId: '38',
+  headerTable: 'OINV',
+  lineTable: 'INV1',
+  serviceLineMode: true,
+});
+
+const SERVICE_AR_CREDIT_MEMO_DOCUMENT = Object.freeze({
+  documentType: 'SERVICE_AR_CREDIT_MEMO',
+  objectType: '14',
+  formType: '179',
+  matrixId: '38',
+  headerTable: 'ORIN',
+  lineTable: 'RIN1',
+  serviceLineMode: true,
+});
+
+const SERVICE_AP_INVOICE_DOCUMENT = Object.freeze({
+  documentType: 'SERVICE_AP_INVOICE',
+  objectType: '18',
+  formType: '141',
+  matrixId: '38',
+  headerTable: 'OPCH',
+  lineTable: 'PCH1',
+  serviceLineMode: true,
+});
+
+const SERVICE_AP_CREDIT_MEMO_DOCUMENT = Object.freeze({
+  documentType: 'SERVICE_AP_CREDIT_MEMO',
+  objectType: '19',
+  formType: '181',
+  matrixId: '38',
+  headerTable: 'ORPC',
+  lineTable: 'RPC1',
+  serviceLineMode: true,
+});
+
 const SALES_DOCUMENTS = Object.freeze({
   SALES_QUOTATION: SALES_QUOTATION_DOCUMENT,
   SALES_ORDER: SALES_ORDER_DOCUMENT,
   DELIVERY: DELIVERY_DOCUMENT,
   AR_INVOICE: AR_INVOICE_DOCUMENT,
   AR_CREDIT_MEMO: AR_CREDIT_MEMO_DOCUMENT,
+  PURCHASE_REQUEST: PURCHASE_REQUEST_DOCUMENT,
+  PURCHASE_QUOTATION: PURCHASE_QUOTATION_DOCUMENT,
+  PURCHASE_ORDER: PURCHASE_ORDER_DOCUMENT,
+  GRPO: GRPO_DOCUMENT,
+  AP_INVOICE: AP_INVOICE_DOCUMENT,
+  AP_CREDIT_MEMO: AP_CREDIT_MEMO_DOCUMENT,
+  SERVICE_AR_INVOICE: SERVICE_AR_INVOICE_DOCUMENT,
+  SERVICE_AR_CREDIT_MEMO: SERVICE_AR_CREDIT_MEMO_DOCUMENT,
+  SERVICE_AP_INVOICE: SERVICE_AP_INVOICE_DOCUMENT,
+  SERVICE_AP_CREDIT_MEMO: SERVICE_AP_CREDIT_MEMO_DOCUMENT,
 });
 
 const resolveSalesDocument = (value = SALES_ORDER_DOCUMENT.documentType) => {
@@ -175,6 +255,13 @@ const SALES_ORDER_HEADER_STANDARD_FIELDS = Object.freeze({
     order: 100,
     width: 320,
   }),
+});
+
+const PURCHASE_DOCUMENT_HEADER_STANDARD_FIELDS = Object.freeze({
+  ...SALES_ORDER_HEADER_STANDARD_FIELDS,
+  CardCode: Object.freeze({ ...SALES_ORDER_HEADER_STANDARD_FIELDS.CardCode, stateKey: 'vendorCode', label: 'Vendor Code' }),
+  CardName: Object.freeze({ ...SALES_ORDER_HEADER_STANDARD_FIELDS.CardName, stateKey: 'vendorName', label: 'Vendor Name' }),
+  NumAtCard: Object.freeze({ ...SALES_ORDER_HEADER_STANDARD_FIELDS.NumAtCard, stateKey: 'vendorReferenceNo', label: 'Vendor Ref. No.' }),
 });
 
 const SALES_ORDER_LINE_STANDARD_FIELDS = Object.freeze({
@@ -312,6 +399,12 @@ const SALES_ORDER_LINE_STANDARD_FIELDS = Object.freeze({
     order: 80,
     width: 145,
   }),
+  CostingCode2: Object.freeze({ stateKey: 'distributionRule2', sapField: 'CostingCode2', databaseField: 'OcrCode2', label: 'Distribution Rule 2', renderer: 'lookup', lookupSource: 'distribution-rules', order: 81, width: 145 }),
+  CostingCode3: Object.freeze({ stateKey: 'distributionRule3', sapField: 'CostingCode3', databaseField: 'OcrCode3', label: 'Distribution Rule 3', renderer: 'lookup', lookupSource: 'distribution-rules', order: 82, width: 145 }),
+  CostingCode4: Object.freeze({ stateKey: 'distributionRule4', sapField: 'CostingCode4', databaseField: 'OcrCode4', label: 'Distribution Rule 4', renderer: 'lookup', lookupSource: 'distribution-rules', order: 83, width: 145 }),
+  CostingCode5: Object.freeze({ stateKey: 'distributionRule5', sapField: 'CostingCode5', databaseField: 'OcrCode5', label: 'Distribution Rule 5', renderer: 'lookup', lookupSource: 'distribution-rules', order: 84, width: 145 }),
+  ProjectCode: Object.freeze({ stateKey: 'projectCode', sapField: 'ProjectCode', databaseField: 'Project', label: 'Project', renderer: 'text', order: 85, width: 125 }),
+  WTLiable: Object.freeze({ stateKey: 'wtaxLiable', sapField: 'WTLiable', databaseField: 'WTLiable', label: 'WTax Liable', renderer: 'checkbox', type: 'checkbox', order: 86, width: 105 }),
   UoMCode: Object.freeze({
     stateKey: 'uomCode',
     sapField: 'UoMCode',
@@ -436,6 +529,31 @@ const SALES_ORDER_LINE_STANDARD_FIELDS = Object.freeze({
   }),
 });
 
+// SAP B1 service rows use the same physical marketing-document tables as item
+// rows, but expose a different matrix and Service Layer write contract.
+const SERVICE_DOCUMENT_LINE_STANDARD_FIELDS = Object.freeze({
+  LineNum: Object.freeze({ stateKey: 'lineNumber', sapField: 'LineNum', databaseField: 'LineNum', label: '#', renderer: 'integer', type: 'integer', storage: 'display-only', readOnly: true, order: 10, width: 55 }),
+  ItemDescription: Object.freeze({ stateKey: 'description', sapField: 'ItemDescription', databaseField: 'Dscription', aliases: Object.freeze(['Description']), label: 'Description', renderer: 'text', required: true, order: 20, width: 240 }),
+  AccountCode: Object.freeze({ stateKey: 'glAccount', sapField: 'AccountCode', databaseField: 'AcctCode', aliases: Object.freeze(['Account', 'G/L Account']), label: 'G/L Account', renderer: 'lookup', required: true, order: 30, width: 145 }),
+  Quantity: Object.freeze({ stateKey: 'sQty', sapField: 'Quantity', databaseField: 'Quantity', label: 'Quantity', renderer: 'number', order: 40, width: 100 }),
+  UnitPrice: Object.freeze({ stateKey: 'unitPrice', sapField: 'UnitPrice', databaseField: 'Price', aliases: Object.freeze(['PriceBefDi']), label: 'Unit Price', renderer: 'number', order: 50, width: 120 }),
+  DiscountPercent: Object.freeze({ stateKey: 'discountPercent', sapField: 'DiscountPercent', databaseField: 'DiscPrcnt', label: 'Discount %', renderer: 'number', order: 60, width: 105 }),
+  TaxCode: Object.freeze({ stateKey: 'taxCode', sapField: 'TaxCode', databaseField: 'VatGroup', aliases: Object.freeze(['TaxCode']), label: 'Tax Code', renderer: 'lookup', lookupSource: 'tax-codes', required: true, order: 70, width: 120 }),
+  CostingCode: Object.freeze({ stateKey: 'distRule', sapField: 'CostingCode', databaseField: 'OcrCode', label: 'Distribution Rule', renderer: 'lookup', lookupSource: 'distribution-rules', order: 80, width: 145 }),
+  CostingCode2: Object.freeze({ stateKey: 'distRule2', sapField: 'CostingCode2', databaseField: 'OcrCode2', label: 'Distribution Rule 2', renderer: 'text', order: 90, width: 145 }),
+  CostingCode3: Object.freeze({ stateKey: 'distRule3', sapField: 'CostingCode3', databaseField: 'OcrCode3', label: 'Distribution Rule 3', renderer: 'text', order: 100, width: 145 }),
+  CostingCode4: Object.freeze({ stateKey: 'distRule4', sapField: 'CostingCode4', databaseField: 'OcrCode4', label: 'Distribution Rule 4', renderer: 'text', order: 110, width: 145 }),
+  CostingCode5: Object.freeze({ stateKey: 'distRule5', sapField: 'CostingCode5', databaseField: 'OcrCode5', label: 'Distribution Rule 5', renderer: 'text', order: 120, width: 145 }),
+  ProjectCode: Object.freeze({ stateKey: 'projectCode', sapField: 'ProjectCode', databaseField: 'Project', label: 'Project', renderer: 'text', order: 130, width: 125 }),
+  WTLiable: Object.freeze({ stateKey: 'wtaxLiable', sapField: 'WTLiable', databaseField: 'WTLiable', label: 'WTax Liable', renderer: 'checkbox', type: 'checkbox', order: 140, width: 105 }),
+  SACEntry: Object.freeze({ stateKey: 'sac', sapField: 'SACEntry', databaseField: 'SacEntry', label: 'SAC', renderer: 'lookup', lookupSource: 'sac-codes', order: 150, width: 110 }),
+  LocationCode: Object.freeze({ stateKey: 'loc', sapField: 'LocationCode', databaseField: 'LocCode', label: 'Loc.', renderer: 'text', order: 160, width: 115 }),
+  AgreementNo: Object.freeze({ stateKey: 'blanketAgreementNo', sapField: 'AgreementNo', databaseField: 'AgrNo', label: 'Blanket Agreement No.', renderer: 'integer', type: 'integer', order: 170, width: 170 }),
+  LineTotal: Object.freeze({ stateKey: 'totalLC', sapField: 'LineTotal', databaseField: 'LineTotal', label: 'Total (LC)', renderer: 'number', storage: 'calculated', readOnly: true, order: 180, width: 120 }),
+  TotalFrgn: Object.freeze({ stateKey: 'totalDocumentCurrency', sapField: 'RowTotalFC', databaseField: 'TotalFrgn', label: 'Total (Doc)', renderer: 'number', storage: 'calculated', readOnly: true, order: 190, width: 120 }),
+  TaxAmount: Object.freeze({ stateKey: 'taxAmountLC', sapField: 'TaxAmount', databaseField: 'VatSum', label: 'Tax Amount (LC)', renderer: 'number', storage: 'calculated', readOnly: true, order: 200, width: 130 }),
+});
+
 const LOOKUP_SOURCES = Object.freeze([
   'items',
   'business-partners',
@@ -526,9 +644,12 @@ const LINKED_TABLE_COLUMN_CANDIDATES = Object.freeze({
 });
 
 module.exports = {
+  AP_CREDIT_MEMO_DOCUMENT,
+  AP_INVOICE_DOCUMENT,
   AR_CREDIT_MEMO_DOCUMENT,
   AR_INVOICE_DOCUMENT,
   DELIVERY_DOCUMENT,
+  GRPO_DOCUMENT,
   FORBIDDEN_LOOKUP_KEYS,
   FORBIDDEN_SCOPE_KEYS,
   LINKED_TABLE_COLUMN_CANDIDATES,
@@ -541,6 +662,15 @@ module.exports = {
   SALES_DOCUMENTS,
   SALES_ORDER_HEADER_STANDARD_FIELDS,
   SALES_ORDER_LINE_STANDARD_FIELDS,
+  PURCHASE_DOCUMENT_HEADER_STANDARD_FIELDS,
+  PURCHASE_ORDER_DOCUMENT,
+  PURCHASE_QUOTATION_DOCUMENT,
+  PURCHASE_REQUEST_DOCUMENT,
+  SERVICE_DOCUMENT_LINE_STANDARD_FIELDS,
+  SERVICE_AP_CREDIT_MEMO_DOCUMENT,
+  SERVICE_AP_INVOICE_DOCUMENT,
+  SERVICE_AR_CREDIT_MEMO_DOCUMENT,
+  SERVICE_AR_INVOICE_DOCUMENT,
   SCHEMA_FORMAT_VERSION,
   resolveSalesDocument,
 };

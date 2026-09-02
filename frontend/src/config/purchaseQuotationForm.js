@@ -1,10 +1,12 @@
+import { filterSafePurchaseMatrixColumns } from '../utils/purchaseDocumentFormSettings';
+
 const FORM_SETTINGS_STORAGE_KEY = 'sapb1.purchaseQuotation.formSettings.v1';
 
 const HEADER_UDF_DEFINITIONS = [];
 
 const ROW_UDF_DEFINITIONS = [];
 
-const BASE_MATRIX_COLUMNS = [
+const CONFIGURED_MATRIX_COLUMNS = [
   { key: 'itemNo', label: 'Item No.', visible: true, minWidth: 160 },
   { key: 'requiredDate', label: 'Required Date', visible: true, minWidth: 125 },
   { key: 'quotedDate', label: 'Quoted Date', visible: true, minWidth: 125 },
@@ -58,6 +60,8 @@ const BASE_MATRIX_COLUMNS = [
 ];
 
 const getOptionValue = (option) => (typeof option === 'string' ? option : option?.value ?? '');
+
+const BASE_MATRIX_COLUMNS = filterSafePurchaseMatrixColumns(CONFIGURED_MATRIX_COLUMNS);
 
 const getUdfIdentity = (field = {}) =>
   [

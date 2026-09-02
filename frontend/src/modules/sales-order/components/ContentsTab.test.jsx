@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import ContentsTab from './ContentsTab';
 
@@ -17,6 +17,7 @@ const renderContentsTab = (overrides = {}) => render(
     valErrors={{ lines: [] }}
     matrixFields={overrides.matrixFields || []}
     shippingTypeOptions={overrides.shippingTypeOptions || []}
+    onLoadLookupOptions={overrides.onLoadLookupOptions}
     formSettings={{}}
   />
 );
@@ -73,6 +74,29 @@ test('allows typing in an editable HSN column', () => {
   expect(onLineChange).toHaveBeenCalledTimes(1);
 });
 
+test('configured lookup overrides a specialized standard line renderer', () => {
+  renderContentsTab({
+    lines: [{ quantity: '1' }],
+    onLoadLookupOptions: jest.fn().mockResolvedValue([]),
+    matrixFields: [{
+      key: 'quantity',
+      valueKey: 'quantity',
+      rendererKey: 'quantity',
+      fieldName: 'Quantity',
+      label: 'Quantity',
+      active: true,
+      readOnly: false,
+      importedLayout: true,
+      schemaDriven: true,
+      lookupConfigured: true,
+      lookupSource: 'warehouses',
+      lookup: { source: 'warehouses', fieldId: 'RDR1.Quantity' },
+    }],
+  });
+
+  expect(screen.getByTitle('List of Quantity')).toBeEnabled();
+});
+
 test('keeps document-line fields readable when SAP supplies narrow column widths', () => {
   renderContentsTab({
     lines: [{
@@ -97,4 +121,26 @@ test('keeps document-line fields readable when SAP supplies narrow column widths
   expect(screen.getByText('HSN').closest('th')).toHaveStyle({ minWidth: '115px' });
   expect(screen.getByText('Tax Code').closest('th')).toHaveStyle({ minWidth: '115px' });
   expect(screen.getByRole('table')).toHaveStyle({ width: 'max-content' });
+});
+test('keeps UoM Name blank after the user clears it', () => {
+  const onLineChange = jest.fn();
+  renderContentsTab({
+    lines: [{ uomName: '', uomCode: 'MTR', uomNameEdited: true }],
+    onLineChange,
+    matrixFields: [{
+      key: 'uomName',
+      label: 'UoM Name',
+      active: true,
+      readOnly: false,
+      importedLayout: true,
+    }],
+  });
+
+  const uomNameInput = screen.getByRole('textbox');
+  expect(uomNameInput).toHaveValue('');
+
+  fireEvent.change(uomNameInput, { target: { value: 'Mtr.' } });
+  expect(onLineChange).toHaveBeenCalledTimes(1);
+  expect(onLineChange.mock.calls[0][0]).toBe(0);
+  expect(onLineChange.mock.calls[0][1].target.name).toBe('uomName');
 });

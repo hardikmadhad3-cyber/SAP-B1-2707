@@ -105,6 +105,50 @@ test('Delivery and Sales Order standard CPRF IDs stay document-specific and pres
   ]);
 });
 
+test('service CPRF IDs resolve to service fields instead of item fields', () => {
+  for (const documentType of [
+    'SERVICE_AR_INVOICE',
+    'SERVICE_AR_CREDIT_MEMO',
+    'SERVICE_AP_INVOICE',
+    'SERVICE_AP_CREDIT_MEMO',
+  ]) {
+    const definitions = getSalesDocumentCprfDefinitions(documentType);
+    assert.equal(findCprfStandardDefinition({
+      row: { ColID: '1' },
+      preferredDefinitions: definitions,
+    })?.fieldName, 'AcctCode');
+    assert.deepEqual(findCprfStandardDefinition({
+      row: { ColID: '3' },
+      preferredDefinitions: definitions,
+    }), definitions.find((definition) => definition.fieldName === 'Dscription'));
+    assert.equal(definitions.some((definition) => definition.fieldName === 'ItemCode'), false);
+    assert.equal(definitions.some((definition) => definition.fieldName === 'WhsCode'), false);
+  }
+});
+
+test('purchase CPRF profiles retain item matrix semantics', () => {
+  for (const documentType of [
+    'PURCHASE_REQUEST',
+    'PURCHASE_QUOTATION',
+    'PURCHASE_ORDER',
+    'GRPO',
+    'AP_INVOICE',
+    'AP_CREDIT_MEMO',
+  ]) {
+    const definitions = getSalesDocumentCprfDefinitions(documentType);
+    assert.equal(findCprfStandardDefinition({
+      row: { ColID: '1' },
+      preferredDefinitions: definitions,
+    })?.fieldName, 'ItemCode');
+    assert.equal(findCprfStandardDefinition({
+      row: { ColID: '3' },
+      preferredDefinitions: definitions,
+    })?.fieldName, 'Dscription');
+    assert.equal(definitions.some((definition) => definition.fieldName === 'WhsCode'), true);
+    assert.equal(definitions.some((definition) => definition.fieldName === 'AcctCode'), false);
+  }
+});
+
 test('numeric CPRF ColID never matches an unrelated CUFD FieldID ordinal', () => {
   const udfDefinitions = [
     { key: 'U_MillName', aliasId: 'MillName', fieldId: 10, label: 'Mill-Name' },

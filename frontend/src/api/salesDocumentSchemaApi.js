@@ -7,10 +7,11 @@ import {
 const unwrap = (response) => response?.data ?? response;
 
 const normalizeLookupSource = (source) => String(source || '').trim().toLowerCase();
+const CUSTOM_LOOKUP_SOURCE = /^custom:\d+$/;
 
 export const requireSalesDocumentLookupSource = (source) => {
   const normalized = normalizeLookupSource(source);
-  if (!SALES_DOCUMENT_SCHEMA_LOOKUP_SOURCES.has(normalized)) {
+  if (!SALES_DOCUMENT_SCHEMA_LOOKUP_SOURCES.has(normalized) && !CUSTOM_LOOKUP_SOURCE.test(normalized)) {
     throw new Error(`Unsupported sales document lookup source: ${source || '(empty)'}`);
   }
   return normalized;

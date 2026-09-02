@@ -18,8 +18,18 @@ const getOrSetContextValue = (key, factory) => {
   return context[key];
 };
 
+const setCompanyContextOverride = (company) => {
+  const context = getRequestContext();
+  if (!context) {
+    throw new Error('A request context is required to select an Admin Panel company.');
+  }
+  context.companyOverride = company || null;
+  context.databaseName = String(company?.DbName || '').trim();
+};
+
 module.exports = {
   runWithRequestContext,
   getRequestContext,
   getOrSetContextValue,
+  setCompanyContextOverride,
 };

@@ -123,6 +123,17 @@ const hasBaseDocumentLink = (line = {}) => (
   hasValue(line.baseLine)
 );
 
+const isTruthyFlag = (value) => (
+  value === true || value === 1 || ['Y', 'YES', 'TRUE', '1'].includes(String(value ?? '').trim().toUpperCase())
+);
+
+const getEditableUomValue = (line = {}) => {
+  if (isTruthyFlag(line.uomNameEdited)) {
+    return line.uomName ?? line.UoMName ?? line.UomName ?? line.UnitMsr ?? line.unitMsr;
+  }
+  return line.uomName || line.UoMName || line.UomName || line.UnitMsr || line.unitMsr || line.uomCode;
+};
+
 /**
  * Build a GRPO line from the current form state.
  *
@@ -136,6 +147,7 @@ const buildGRPODocumentLine = (
 ) => {
   const hasBaseDoc = hasBaseDocumentLink(line);
   const unitPrice = toNumber(line.unitPrice, 0);
+  const uomValue = getEditableUomValue(line);
   const documentLine = {
     ItemCode: String(line.itemNo || '').trim(),
     ItemDescription: String(line.itemDescription || ''),
@@ -147,7 +159,7 @@ const buildGRPODocumentLine = (
       : (hasBaseDoc ? 0 : undefined),
     TaxCode: hasValue(line.taxCode) ? String(line.taxCode).trim() : undefined,
     WarehouseCode: String(line.whse || '').trim(),
-    UoMCode: hasValue(line.uomCode) ? String(line.uomCode).trim() : undefined,
+    UoMCode: hasValue(uomValue) ? String(uomValue).trim() : undefined,
     CommissionPercent: hasValue(line.commPercent)
       ? toNumber(line.commPercent, 0)
       : (hasBaseDoc ? 0 : undefined),

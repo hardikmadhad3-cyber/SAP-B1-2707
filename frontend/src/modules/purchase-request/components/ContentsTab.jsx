@@ -3,6 +3,7 @@ import TaxCodeLookup from '../../../components/TaxCodeLookup';
 import { getLineTotalsForDisplay } from '../../../utils/lineTotals';
 import { useSapItemCodeTab } from '../../../utils/sapTabNavigation';
 import { BASE_MATRIX_COLUMNS } from '../../../config/purchaseOrderForm';
+import { getOrderedVisibleMatrixColumns } from '../../../utils/formSettingsColumns';
 
 const DEFAULT_MATRIX_COLS = [
   { key: 'itemNo', label: 'Item No.', minWidth: 160 },
@@ -37,8 +38,17 @@ const withWidths = (columns = []) => columns.map((column) => ({
   ...column,
   minWidth: Number(column.minWidth || column.width) ||
     DEFAULT_MATRIX_COLS.find((entry) => entry.key === column.key)?.minWidth ||
-    125,
+  125,
 }));
+
+const normalizeUdfKey = (value) =>
+  String(value || '').trim().toUpperCase().replace(/^U_/, '').replace(/[^A-Z0-9]/g, '');
+
+const isUdfColumn = (column = {}) => (
+  Boolean(column.isUdf)
+  || String(column.key || '').trim().toUpperCase().startsWith('U_')
+  || String(column.sapField || '').trim().toUpperCase().startsWith('U_')
+);
 
 export default function ContentsTab({
   lines,
@@ -56,11 +66,79 @@ export default function ContentsTab({
   getBranchName,
   formSettings = {},
   matrixFields = BASE_MATRIX_COLUMNS,
+  rowUdfFields = [],
+  onRowUdfChange,
 }) {
   const sapItemTab = useSapItemCodeTab({ lineItemOptions, onLineChange, onOpenItemModal });
-  const matrixCols = withWidths(Array.isArray(matrixFields) && matrixFields.length ? matrixFields : DEFAULT_MATRIX_COLS)
-    .filter((column) => formSettings.matrixColumns?.[column.key]?.visible !== false);
+  const rowUdfFieldMap = React.useMemo(() => {
+    const map = new Map();
+    (rowUdfFields || []).filter((field) => field?.key).forEach((field) => {
+      map.set(field.key, field);
+      map.set(normalizeUdfKey(field.key), field);
+    });
+    return map;
+  }, [rowUdfFields]);
+  const sourceColumns = withWidths(Array.isArray(matrixFields) && matrixFields.length ? matrixFields : DEFAULT_MATRIX_COLS);
+  const liveColumns = sourceColumns
+    .map((column) => {
+      if (!isUdfColumn(column)) return column;
+      const field = column.field || rowUdfFieldMap.get(column.key) || rowUdfFieldMap.get(normalizeUdfKey(column.key));
+      return { ...column, field };
+    })
+    .filter((column) => !isUdfColumn(column) || Boolean(column.field));
+  const matrixCols = getOrderedVisibleMatrixColumns(liveColumns, formSettings);
   const tableMinWidth = INDEX_COL_WIDTH + ACTION_COL_WIDTH + matrixCols.reduce((total, col) => total + col.minWidth, 0);
+
+  const renderUdfCell = (column, line, index) => {
+    const field = column.field;
+    const value = line.udf?.[field.key] ?? '';
+    const setting = formSettings.matrixColumns?.[column.key]
+      || formSettings.rowUdfs?.[field.key]
+      || {};
+    const disabled = field.readOnly === true
+      || field.active === false
+      || setting.active === false;
+    const updateValue = (nextValue) => onRowUdfChange && onRowUdfChange(index, field.key, nextValue);
+
+    if (field.type === 'select' || (field.options || []).length) {
+      return (
+        <td key={column.key}>
+          <select className="so-grid__input" value={value} disabled={disabled} onChange={(event) => updateValue(event.target.value)}>
+            <option value=""></option>
+            {(field.options || []).map((option) => {
+              const normalized = typeof option === 'object' ? option : { value: option, label: option };
+              return <option key={normalized.value} value={normalized.value}>{normalized.label}</option>;
+            })}
+          </select>
+        </td>
+      );
+    }
+
+    if (field.type === 'checkbox') {
+      return (
+        <td key={column.key}>
+          <input
+            type="checkbox"
+            checked={['Y', 'YES', 'TRUE', '1', 'TYES'].includes(String(value).trim().toUpperCase())}
+            disabled={disabled}
+            onChange={(event) => updateValue(event.target.checked ? 'Y' : 'N')}
+          />
+        </td>
+      );
+    }
+
+    return (
+      <td key={column.key}>
+        <input
+          className="so-grid__input"
+          type={field.type === 'date' ? 'date' : field.type === 'number' ? 'number' : 'text'}
+          value={value}
+          disabled={disabled}
+          onChange={(event) => updateValue(event.target.value)}
+        />
+      </td>
+    );
+  };
 
   const renderTextInput = (key, line, index, options = {}) => (
     <td key={key}>
@@ -88,6 +166,10 @@ export default function ContentsTab({
   );
 
   const renderCell = (column, line, index, uomOpts, lineTotals) => {
+    if (isUdfColumn(column) && column.field) {
+      return renderUdfCell(column, line, index);
+    }
+
     if (column.key === 'itemNo') {
       return (
         <td key={column.key}>

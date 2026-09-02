@@ -33,7 +33,12 @@ import { filterWarehousesByBranch, getWarehouseBranchId } from '../../utils/ware
 import { hydrateDocumentLineFromItem, mergeItemMaster } from '../../utils/documentItemHydration';
 import { getDefaultSeriesForCurrentYear, getSapVisibleDocumentSeries } from '../../utils/seriesDefaults';
 import { readGeneralSettings } from '../../utils/generalSettingsStorage';
-import { resolveDocumentCurrency } from '../../utils/documentCurrency';
+import {
+  convertDocumentAmountForDisplay,
+  inferDocumentCurrencyMode,
+  resolveDisplayCurrency,
+  resolveDocumentCurrency,
+} from '../../utils/documentCurrency';
 import { useCompanyScopedFormSettings } from '../../utils/formSettingsStorage';
 import { updateFormSettingPreference } from '../../utils/formSettingsPreferences';
 import { buildVisibleEnteredRowUdfPayload } from '../../utils/rowUdfPayload';
@@ -61,6 +66,7 @@ import { fetchSalesDocumentLookup, fetchSalesDocumentSchema } from '../../api/sa
 import {
   buildSalesDocumentLiveFields,
   getSalesDocumentCompanyScopeKey,
+  isSalesDocumentFieldMetadataReady,
   loadSalesDocumentFieldLookupOptions,
   stripSalesDocumentTopLevelUdfs,
 } from '../../utils/salesDocumentLiveFields';
@@ -94,7 +100,7 @@ import {
 const SAP_MANUAL_SERIES_VALUE = '__SAP_MANUAL__';
 const GENERAL_SETTINGS = readGeneralSettings();
 
-// ─── helpers ─────────────────────────────────────────────────────────────────
+// â”€â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const getErrMsg = (e, fb) => {
   const body = e?.response?.data || {};
   const d = body.detail || body.details;
@@ -173,19 +179,19 @@ const checkBatchAvailability = async (itemCode, whsCode) => {
   if (!itemCode || !whsCode) return false;
   
   try {
-    console.log('🔍 [AR Credit Memo - checkBatchAvailability] Checking batches for:', { itemCode, whsCode });
+    console.log('ðŸ” [AR Credit Memo - checkBatchAvailability] Checking batches for:', { itemCode, whsCode });
     const response = await fetchBatchesByItem(itemCode, whsCode);
-    console.log('🔍 [AR Credit Memo - checkBatchAvailability] API Response:', response);
+    console.log('ðŸ” [AR Credit Memo - checkBatchAvailability] API Response:', response);
     
     const batches = response.data?.batches || [];
     const hasBatches = batches.length > 0;
     
-    console.log('🔍 [AR Credit Memo - checkBatchAvailability] Found batches:', batches.length, 'Has batches:', hasBatches);
-    console.log('🔍 [AR Credit Memo - checkBatchAvailability] Batch details:', batches);
+    console.log('ðŸ” [AR Credit Memo - checkBatchAvailability] Found batches:', batches.length, 'Has batches:', hasBatches);
+    console.log('ðŸ” [AR Credit Memo - checkBatchAvailability] Batch details:', batches);
     
     return hasBatches;
   } catch (error) {
-    console.error('❌ [AR Credit Memo - checkBatchAvailability] Error:', error);
+    console.error('âŒ [AR Credit Memo - checkBatchAvailability] Error:', error);
     return true; // Assume batches available on error to prevent hiding button
   }
 };
@@ -197,7 +203,7 @@ const isBatchManaged = (item) => {
   return batchFlag === 'Y' || batchFlag === true || batchFlag === 1;
 };
 
-// ─── constants ────────────────────────────────────────────────────────────────
+// â”€â”€â”€ constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const DEC = { QtyDec: 2, PriceDec: 2, SumDec: 2, RateDec: 2, PercentDec: 2 };
 const TAB_NAMES = ['Contents', 'Logistics', 'Accounting', 'Tax', 'Electronic Documents', 'Attachments'];
 const DEFAULT_WAREHOUSE_CODE = '';
@@ -314,7 +320,7 @@ const INIT_HEADER = {
   shippingType: '', confirmed: false, journalRemark: '', paymentTerms: '',
   paymentMethod: '', otherInstruction: '', discount: '', freight: '', tax: '',
   totalPaymentDue: '', rounding: false, roundingAmount: '', owner: '', purchaser: '', salesEmployee: '',
-  placeOfSupply: '', currency: 'INR', exchangeRate: '', useBillToForTax: false,
+  placeOfSupply: '', currencyMode: 'BP', currency: '', exchangeRate: '', useBillToForTax: false,
   billToAddress: '', billToCode: '', shipToAddress: '',
   shipToAddressComponents: null, billToAddressComponents: null,
 };
@@ -324,7 +330,7 @@ const INIT_ATTACH = Array.from({ length: 9 }, (_, i) => ({
   freeText: '', copyToTargetDocument: '', documentType: '', atchDocDate: '', alert: '',
 }));
 
-// ─── Main Component ───────────────────────────────────────────────────────────
+// â”€â”€â”€ Main Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const getARCreditMemoDocumentLines = (creditMemo = {}) => {
   const candidates = [
     creditMemo.lines,
@@ -370,9 +376,11 @@ function ARCreditMemo() {
     [headerUdfDefinitions, rowUdfDefinitions, matrixColumnDefinitions],
     { saveMode: 'explicit' },
   );
-  const companyFormSettingsReady = Boolean(activeCompanyId || activeCompanyDb) && (
-    formSettingsStatus.loaded && hydratedFieldMetadataScope === activeFieldMetadataScope
-  );
+  const companyFormSettingsReady = formSettingsStatus.loaded && isSalesDocumentFieldMetadataReady({
+    companyId: activeCompanyId,
+    companyDb: activeCompanyDb,
+    hydratedScope: hydratedFieldMetadataScope,
+  });
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [formSettingsOpen, setFormSettingsOpen] = useState(false);
   const [refData, setRefData] = useState({
@@ -380,6 +388,8 @@ function ARCreditMemo() {
     warehouses: [], warehouse_addresses: [], company_address: {}, tax_codes: [],
     default_branch: '', default_warehouse: '',
     payment_terms: [], shipping_types: [], branches: [], uom_groups: [],
+    local_currency: '', system_currency: '', company_currency: '', currencies: [],
+    exchange_rate_settings: { postingMethod: 'direct', decimalPlaces: 6 },
     decimal_settings: DEC, warnings: [], series: [], states: [],
     matrix_columns: [],
     line_field_metadata: { matrix_columns: getSapStandardSalesMatrixColumns(), sap_form: {} },
@@ -510,12 +520,12 @@ function ARCreditMemo() {
     return getDefaultSeriesForCurrentYear(compatibleSeries, seriesDate) || compatibleSeries[0];
   };
   const primaryActionLabel = pageState.posting
-    ? 'Saving…'
+    ? 'Saving...'
     : currentDocEntry
       ? updateActionLabel
       : 'Add';
   const secondaryActionLabel = pageState.posting
-    ? 'Saving…'
+    ? 'Saving...'
     : currentDocEntry
       ? updateActionLabel
       : 'Add & New';
@@ -601,7 +611,7 @@ function ARCreditMemo() {
 
   // Continue in next part...
 
-  // ── load reference data ───────────────────────────────────────────────────
+  // â”€â”€ load reference data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     let ignore = false;
     setHydratedFieldMetadataScope('');
@@ -622,12 +632,16 @@ function ARCreditMemo() {
             warehouse_addresses: [], company_address: {}, tax_codes: [], payment_terms: [],
             shipping_types: [], sales_employees: [], branches: [], states: [], gl_accounts: [],
             distribution_rules: [], uom_groups: [], matrix_columns: [],
+            local_currency: '', system_currency: '', company_currency: '', currencies: [],
+            exchange_rate_settings: { postingMethod: 'direct', decimalPlaces: 6 },
             line_field_metadata: { matrix_columns: getSapStandardSalesMatrixColumns(), sap_form: {} },
             udf_metadata: { header: [], rows: [] },
           }));
           return;
         }
 
+        setHeaderUdfDefinitions([]);
+        setRowUdfDefinitions([]);
         setMatrixColumnDefinitions([]);
 
         const [refDataRes, layoutRes, liveSchema] = await Promise.all([
@@ -706,6 +720,11 @@ function ARCreditMemo() {
             gl_accounts: nextRefData.gl_accounts,
             distribution_rules: nextRefData.distribution_rules,
             uom_groups: nextRefData.uom_groups,
+            local_currency: nextRefData.local_currency || nextRefData.company_currency || '',
+            system_currency: nextRefData.system_currency || nextRefData.local_currency || nextRefData.company_currency || '',
+            company_currency: nextRefData.company_currency || nextRefData.local_currency || '',
+            currencies: nextRefData.currencies || [],
+            exchange_rate_settings: nextRefData.exchange_rate_settings || { postingMethod: 'direct', decimalPlaces: 6 },
             decimal_settings: { ...DEC, ...(nextRefData.decimal_settings || {}) },
             matrix_columns: nextLayoutMatrixColumns,
             line_field_metadata: {
@@ -788,7 +807,7 @@ function ARCreditMemo() {
     ));
   }, [companyFormSettingsReady, formSettingsStatus.hasUnsavedChanges, formSettingsStorageKey, headerUdfDefinitions, matrixColumnDefinitions, replaceFormSettings, rowUdfDefinitions]);
 
-  // ── load existing order ───────────────────────────────────────────────────
+  // â”€â”€ load existing order â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     if (currentDocEntry || requestedEditDocEntry) return;
 
@@ -904,6 +923,15 @@ function ARCreditMemo() {
           docNo: so.header?.docNo || so.header?.docNum || '',
           series: so.header?.series || '',
           nextNumber: so.header?.docNo || so.header?.docNum || '',
+          currency: so.header?.currency || refData.local_currency || '',
+          currencyMode: inferDocumentCurrencyMode({
+            currency: so.header?.currency || refData.local_currency || '',
+            cardCode: so.header?.customerCode || so.header?.customer || '',
+            businessPartners: refData.vendors || [],
+            localCurrency: refData.local_currency || '',
+            systemCurrency: refData.system_currency || refData.local_currency || '',
+            fallbackLocalCurrency: '',
+          }),
           exchangeRate: so.header?.exchangeRate || so.header?.docRate || so.header?.DocRate || '',
           rounding: Boolean(so.header?.rounding || parseNum(so.header?.roundingAmount) !== 0),
           roundingAmount: so.header?.roundingAmount ?? '',
@@ -992,7 +1020,7 @@ function ARCreditMemo() {
     return () => { ignore = true; };
   }, [currentDocEntry]);
 
-  // ── load from delivery (Copy To) ──────────────────────────────────────────
+  // â”€â”€ load from delivery (Copy To) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     const deliveryDocEntry = location.state?.deliveryDocEntry;
     if (!deliveryDocEntry) return;
@@ -1064,7 +1092,7 @@ function ARCreditMemo() {
     return () => { ignore = true; };
   }, [location.pathname, location.state, navigate]);
 
-  // ── Copy To: populate form from Sales Order / Delivery ────────────────────
+  // â”€â”€ Copy To: populate form from Sales Order / Delivery â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     const routedCopyFrom = location.state?.copyFrom;
     const persistedCopyState = routedCopyFrom ? null : consumeCopyToState(location.pathname, ['/ar-credit-memo']);
@@ -1141,7 +1169,7 @@ function ARCreditMemo() {
     replaceRouteStatePreservingWindow(navigate, location.pathname, location.state);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── derived / computed ────────────────────────────────────────────────────
+  // â”€â”€ derived / computed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const vendorContacts = refData.contacts.filter(c => String(c.CardCode || '') === String(header.vendor || ''));
   const contactOptions = header.contactPerson && !vendorContacts.some(c => String(c.CntctCode || '') === String(header.contactPerson || ''))
     ? [{ CardCode: header.vendor, CntctCode: header.contactPerson, Name: header.contactPerson }, ...vendorContacts]
@@ -1258,7 +1286,7 @@ function ARCreditMemo() {
     return branch ? branch.BPLName : branchId;
   };
 
-  // ── calculations ──────────────────────────────────────────────────────────
+  // â”€â”€ calculations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const calcLineTotal = (line) => {
     const qty = parseNum(line.quantity), price = parseNum(line.unitPrice), disc = parseNum(line.stdDiscount);
     return roundTo(qty * price * (1 - disc / 100), numDec.total);
@@ -1312,6 +1340,27 @@ function ARCreditMemo() {
   };
 
   const totals = calcTotals();
+  const documentCurrency = String(header.currency || refData.local_currency || refData.company_currency || '').trim();
+  const displayMode = String(header.currencyMode || 'BP').trim().toUpperCase();
+  const displayCurrency = resolveDisplayCurrency({
+    mode: displayMode,
+    documentCurrency,
+    localCurrency: refData.local_currency || refData.company_currency,
+    systemCurrency: refData.system_currency,
+  });
+  const formatDisplayMoney = (value, decimals) => {
+    const converted = convertDocumentAmountForDisplay(value, {
+      mode: displayMode,
+      documentCurrency,
+      localCurrency: refData.local_currency || refData.company_currency,
+      systemCurrency: refData.system_currency,
+      documentRate: header.exchangeRate,
+      systemRate: header.systemExchangeRate,
+      postingMethod: refData.exchange_rate_settings?.postingMethod,
+    });
+    const amount = fmtDec(converted, decimals);
+    return amount !== '' && displayCurrency ? `${amount} ${displayCurrency}` : amount;
+  };
   useRelationshipMapRegistration({
     enabled: Boolean(currentDocEntry),
     objectType: 14,
@@ -1322,7 +1371,7 @@ function ARCreditMemo() {
 
   // Continue in next part...
 
-  // ── address sync ──────────────────────────────────────────────────────────
+  // â”€â”€ address sync â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     setHeader(prev => {
       if (prev.shipToCode) return prev;
@@ -1351,7 +1400,7 @@ function ARCreditMemo() {
     });
   }, [header.vendor, vendorEffectiveBillToAddresses]);
 
-  // ── vendor details ────────────────────────────────────────────────────────
+  // â”€â”€ vendor details â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const loadVendorDetails = async (code) => {
     if (!code) {
       setRefData(p => ({ ...p, contacts: [], pay_to_addresses: [], ship_to_addresses: [], bill_to_addresses: [] }));
@@ -1411,7 +1460,7 @@ function ARCreditMemo() {
         const defaultAddress = payToAddresses[0];
         const formattedAddress = fmtAddr(defaultAddress);
         
-        console.log('🌍 Auto-setting addresses from customer:', {
+        console.log('ðŸŒ Auto-setting addresses from customer:', {
           state: defaultAddress.State,
           addressCode: defaultAddress.Address,
           formattedAddress
@@ -1441,12 +1490,13 @@ function ARCreditMemo() {
     const m = refData.vendors.find(v => String(v.CardCode || '') === String(code || ''));
     if (!m) return { nextHeader: hdr };
     const nextCurrency = resolveDocumentCurrency({
-      mode: hdr.currencyMode || 'BP',
+      mode: 'BP',
       cardCode: code,
       businessPartners: refData.vendors || [],
       currentCurrency: hdr.currency,
-      localCurrency: 'INR',
-      systemCurrency: 'INR',
+      localCurrency: refData.local_currency || refData.company_currency || '',
+      systemCurrency: refData.system_currency || refData.local_currency || refData.company_currency || '',
+      fallbackLocalCurrency: '',
     });
     return {
       nextHeader: {
@@ -1473,10 +1523,10 @@ function ARCreditMemo() {
       setExchangeRatesModal((prev) => ({
         ...prev, loading: false,
         error: error?.response?.data?.detail || error?.message || 'Failed to load exchange rates.',
-        data: buildExchangeRatesFallbackData({ year, month, currencies: [], localCurrency: 'INR', documentCurrency: exchangeRatesModal.currency }),
+        data: buildExchangeRatesFallbackData({ year, month, currencies: refData.currencies || [], localCurrency: refData.local_currency || refData.company_currency || '', documentCurrency: exchangeRatesModal.currency }),
       }));
     }
-  }, [exchangeRatesModal.currency]);
+  }, [exchangeRatesModal.currency, refData.company_currency, refData.currencies, refData.local_currency]);
 
   const saveExchangeRateFromModal = useCallback(async ({ rates = [], currency, postingDate, rate }) => {
     const entries = (Array.isArray(rates) && rates.length ? rates : [{ currency, postingDate, rate }])
@@ -1511,7 +1561,7 @@ function ARCreditMemo() {
   const refreshExchangeRate = useCallback((nextCurrency = header.currency, nextDate = header.postingDate) => {
     const currency = String(nextCurrency || '').trim();
     const postingDate = String(nextDate || '').trim();
-    const localCurrency = 'INR';
+    const localCurrency = String(refData.local_currency || refData.company_currency || '').trim();
     if (!currency || !postingDate || !localCurrency) return;
     if (currency === localCurrency) {
       setHeader((prev) => prev.exchangeRate ? { ...prev, exchangeRate: '' } : prev);
@@ -1528,7 +1578,7 @@ function ARCreditMemo() {
     refreshExchangeRate(header.currency, header.postingDate);
   }, [currentDocEntry, header.vendor, header.currency, header.postingDate, refreshExchangeRate]);
 
-  // ── handlers ──────────────────────────────────────────────────────────────
+  // â”€â”€ handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleHeaderChange = (e) => {
     const { name, value, type, checked } = e.target;
     setValErrors(p => ({ ...p, header: { ...p.header, [name]: '' }, form: '' }));
@@ -1599,22 +1649,7 @@ function ARCreditMemo() {
       return;
     }
     if (name === 'currencyMode') {
-      setHeader((prev) => {
-        const nextCurrency = resolveDocumentCurrency({
-          mode: value,
-          cardCode: prev.vendor,
-          businessPartners: refData.vendors || [],
-          currentCurrency: prev.currency,
-          localCurrency: 'INR',
-          systemCurrency: 'INR',
-        });
-        return {
-          ...prev,
-          currencyMode: value,
-          currency: nextCurrency,
-          exchangeRate: nextCurrency === prev.currency ? prev.exchangeRate : '',
-        };
-      });
+      setHeader((prev) => ({ ...prev, currencyMode: value }));
       return;
     }
     if (name === 'currency') {
@@ -1629,7 +1664,7 @@ function ARCreditMemo() {
       setHeader((prev) => ({
         ...prev,
         postingDate: value,
-        exchangeRate: String(prev.currency || '').trim() === 'INR'
+        exchangeRate: String(prev.currency || '').trim() === String(refData.local_currency || refData.company_currency || '').trim()
           ? prev.exchangeRate
           : '',
       }));
@@ -1828,7 +1863,7 @@ function ARCreditMemo() {
           const hsnResponse = await fetchHSNCodeFromItem(value);
           const hsnData = hsnResponse.data;
           
-          console.log('🔍 Item Selected - HSN Data:', {
+          console.log('ðŸ” Item Selected - HSN Data:', {
             itemCode: value,
             hsnCode: hsnData.hsnCode,
             hsnDescription: hsnData.hsnDescription,
@@ -1852,7 +1887,7 @@ function ARCreditMemo() {
             // Step 3: Get Base Tax Code from Item Master
             const baseTaxCode = item.TaxCodeAR || item.SalTaxCode || '';
             
-            console.log('🔍 Item Selected:', {
+            console.log('ðŸ” Item Selected:', {
               itemCode: item.ItemCode,
               itemName: item.ItemName,
               hsnCode: next.hsnCode,
@@ -1866,7 +1901,7 @@ function ARCreditMemo() {
             
             // Step 5: Validate States
             if (!gstState || !companyState) {
-              console.warn('⚠️ Missing state information for tax determination');
+              console.warn('âš ï¸ Missing state information for tax determination');
               next.taxCode = '';
               next.taxCodeRepeat = '';
               next.total = fmtDec(calcLineTotal(next), numDec.total);
@@ -1886,9 +1921,9 @@ function ARCreditMemo() {
             if (determinedTaxCode) {
               next.taxCode = determinedTaxCode;
               next.taxCodeRepeat = determinedTaxCode;
-              console.log(`✅ Auto-assigned tax code: ${determinedTaxCode} (${getGSTTypeLabel(companyState, gstState)})`);
+              console.log(`âœ… Auto-assigned tax code: ${determinedTaxCode} (${getGSTTypeLabel(companyState, gstState)})`);
             } else {
-              console.warn('⚠️ Could not determine tax code automatically');
+              console.warn('âš ï¸ Could not determine tax code automatically');
               next.taxCode = '';
               next.taxCodeRepeat = '';
             }
@@ -1898,7 +1933,7 @@ function ARCreditMemo() {
           }));
         }
       } catch (error) {
-        console.error('❌ Error fetching HSN code:', error);
+        console.error('âŒ Error fetching HSN code:', error);
         // Fallback to basic item selection without HSN
         setLines(prev => prev.map((line, idx) => {
           if (idx !== i) return line;
@@ -1964,7 +1999,7 @@ function ARCreditMemo() {
           fetchUomConversionFactor(next.itemNo, value)
             .then(response => {
               const { factor, inventoryUOM: invUoM } = response.data;
-              console.log('📦 [AR Credit Memo] UoM conversion:', { 
+              console.log('ðŸ“¦ [AR Credit Memo] UoM conversion:', { 
                 itemCode: next.itemNo, 
                 uomCode: value, 
                 factor, 
@@ -1980,7 +2015,7 @@ function ARCreditMemo() {
               ));
             })
             .catch(error => {
-              console.error('❌ [AR Credit Memo] Error fetching UoM conversion:', error);
+              console.error('âŒ [AR Credit Memo] Error fetching UoM conversion:', error);
             });
         }
         
@@ -1993,6 +2028,8 @@ function ARCreditMemo() {
     setLines(prev => prev.map((line, idx) => {
       if (idx !== i) return line;
       const next = { ...line, [name]: numDec[name] !== undefined ? sanitize(value, numDec[name]) : value };
+                if (name === 'uomName') next.uomNameEdited = true;
+                if (name === 'uomCode') { next.uomName = value; next.uomNameEdited = false; }
       if (name === 'distRule') {
         next.cogsDistRule = value;
       }
@@ -2012,9 +2049,9 @@ function ARCreditMemo() {
     setLines(p => p.map((l, idx) => idx === i ? { ...l, [field]: fmtDec(l[field], d) } : l));
   };
 
-  // ── Freight Selection Modal handlers ──────────────────────────────────────
+  // â”€â”€ Freight Selection Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openFreightModal = async () => {
-    console.log('🚚 Opening freight modal, docEntry:', currentDocEntry);
+    console.log('ðŸšš Opening freight modal, docEntry:', currentDocEntry);
     if (freightModal.freightCharges.length > 0) {
       setFreightModal(prev => ({ ...prev, open: true, loading: false }));
       return;
@@ -2022,10 +2059,10 @@ function ARCreditMemo() {
     setFreightModal(prev => ({ ...prev, open: true, loading: true }));
     
     try {
-      console.log('📡 Fetching freight charges from API...');
+      console.log('ðŸ“¡ Fetching freight charges from API...');
       const response = await fetchFreightCharges(currentDocEntry);
-      console.log('✅ Freight charges received:', response.data);
-      console.log('📊 Freight charges count:', response.data.freightCharges?.length || 0);
+      console.log('âœ… Freight charges received:', response.data);
+      console.log('ðŸ“Š Freight charges count:', response.data.freightCharges?.length || 0);
       
       setFreightModal({
         open: true,
@@ -2033,7 +2070,7 @@ function ARCreditMemo() {
         loading: false
       });
     } catch (error) {
-      console.error('❌ Failed to load freight charges:', error);
+      console.error('âŒ Failed to load freight charges:', error);
       console.error('Error details:', error.response?.data || error.message);
       setFreightModal({
         open: true,
@@ -2048,7 +2085,7 @@ function ARCreditMemo() {
   };
 
   const handleFreightApply = (summary) => {
-    console.log('🚚 Applied freight charges:', summary);
+    console.log('ðŸšš Applied freight charges:', summary);
     setFreightModal(prev => ({
       ...prev,
       open: false,
@@ -2155,7 +2192,7 @@ function ARCreditMemo() {
     setFormSettingsOpen(true);
   };
 
-  // ── Address Modal handlers ────────────────────────────────────────────────
+  // â”€â”€ Address Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openAddressModal = (type) => {
     const shipAddress = resolveARCreditMemoAddress(
       header.shipToCode,
@@ -2261,7 +2298,7 @@ function ARCreditMemo() {
     setAddressForm(p => ({ ...p, [name]: value }));
   };
 
-  // ── Tax Info Modal handlers ───────────────────────────────────────────────
+  // â”€â”€ Tax Info Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openTaxInfoModal = () => {
     setTaxInfoModal(true);
   };
@@ -2274,7 +2311,7 @@ function ARCreditMemo() {
     closeTaxInfoModal();
   };
 
-  // ── BP Modal handlers ─────────────────────────────────────────────────────
+  // â”€â”€ BP Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openBpModal = () => {
     setBpModal(true);
   };
@@ -2283,7 +2320,7 @@ function ARCreditMemo() {
     setBpModal(false);
   };
 
-  // ── State Modal handlers ──────────────────────────────────────────────────
+  // â”€â”€ State Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openStateModal = () => {
     setStateModal(true);
   };
@@ -2296,7 +2333,7 @@ function ARCreditMemo() {
     setHeader(p => ({ ...p, placeOfSupply: getStateCodeValue(state, refData.states) }));
   };
 
-  // ── BP Modal handlers ─────────────────────────────────────────────────────
+  // â”€â”€ BP Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleBpSelect = (bp) => {
     const code = bp.CardCode;
     setHeader(prev => {
@@ -2319,7 +2356,7 @@ function ARCreditMemo() {
     setTaxInfoForm(p => ({ ...p, [name]: value }));
   };
 
-  // ── Browse Attachment handler ─────────────────────────────────────────────
+  // â”€â”€ Browse Attachment handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleBrowseAttachment = () => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -2331,7 +2368,7 @@ function ARCreditMemo() {
     input.click();
   };
 
-  // ── HSN Modal handlers ────────────────────────────────────────────────────
+  // â”€â”€ HSN Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openHSNModal = (lineIndex) => {
     setHsnModal({ open: true, lineIndex });
   };
@@ -2351,14 +2388,14 @@ function ARCreditMemo() {
     closeHSNModal();
   };
 
-  // ── Item Selection Modal handlers ─────────────────────────────────────────
+  // â”€â”€ Item Selection Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openItemModal = async (lineIndex) => {
-    console.log('🔍 Opening item modal for line:', lineIndex);
+    console.log('ðŸ” Opening item modal for line:', lineIndex);
     setItemModal({ open: true, lineIndex, items: [], loading: true });
     
     try {
       const response = await fetchItemsForModal();
-      console.log('📊 Items count:', response.data.items?.length || 0);
+      console.log('ðŸ“Š Items count:', response.data.items?.length || 0);
       
       setItemModal(prev => ({
         ...prev,
@@ -2366,7 +2403,7 @@ function ARCreditMemo() {
         loading: false,
       }));
     } catch (error) {
-      console.error('❌ Failed to load items:', error);
+      console.error('âŒ Failed to load items:', error);
       console.error('Error details:', error.response?.data || error.message);
       setItemModal(prev => ({
         ...prev,
@@ -2406,14 +2443,14 @@ function ARCreditMemo() {
           const uomRes = await fetchUomConversionFactor(mergedItem.ItemCode, selectedUoM);
           uomFactor = uomRes.data.factor || 1;
           inventoryUOM = uomRes.data.inventoryUOM || mergedItem.InventoryUOM || '';
-          console.log('📦 [AR Credit Memo - handleItemSelect] UoM conversion:', { 
+          console.log('ðŸ“¦ [AR Credit Memo - handleItemSelect] UoM conversion:', { 
             itemCode: mergedItem.ItemCode, 
             uomCode: selectedUoM, 
             factor: uomFactor,
             inventoryUOM 
           });
         } catch (uomError) {
-          console.error('❌ [AR Credit Memo - handleItemSelect] Error fetching UoM conversion:', uomError);
+          console.error('âŒ [AR Credit Memo - handleItemSelect] Error fetching UoM conversion:', uomError);
         }
       }
       
@@ -2423,7 +2460,7 @@ function ARCreditMemo() {
         try {
           hasBatchesAvailable = await checkBatchAvailability(mergedItem.ItemCode, currentLine.whse);
         } catch (batchError) {
-          console.error('❌ [AR Credit Memo - handleItemSelect] Error checking batch availability:', batchError);
+          console.error('âŒ [AR Credit Memo - handleItemSelect] Error checking batch availability:', batchError);
         }
       }
       
@@ -2487,18 +2524,18 @@ function ARCreditMemo() {
     }
   };
 
-  // ── Sync warehouse and branch from header to lines ────────────────────────
+  // â”€â”€ Sync warehouse and branch from header to lines â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Sync branch to all lines when header branch changes
   useEffect(() => {
     if (header.branch) {
-      console.log('🔄 Syncing branch to all lines:', header.branch);
+      console.log('ðŸ”„ Syncing branch to all lines:', header.branch);
       setLines(prev => {
         const updated = prev.map(l => ({ 
           ...l, 
           branch: String(header.branch), 
           loc: String(header.branch)
         }));
-        console.log('✅ Lines updated with branch:', updated.map(l => ({ branch: l.branch, loc: l.loc })));
+        console.log('âœ… Lines updated with branch:', updated.map(l => ({ branch: l.branch, loc: l.loc })));
         return updated;
       });
     }
@@ -2531,18 +2568,18 @@ function ARCreditMemo() {
     }
   }, [header.warehouse]);
 
-  // ── Recalculate Tax Codes on State/Address Changes ────────────────────────
+  // â”€â”€ Recalculate Tax Codes on State/Address Changes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     if (!header.vendor || !header.placeOfSupply) return;
 
     const companyState = refData.company_address?.State || selectedBranch?.State || '';
     
     if (!companyState) {
-      console.warn('⚠️ Company state not available for tax recalculation');
+      console.warn('âš ï¸ Company state not available for tax recalculation');
       return;
     }
 
-    console.log('🔄 Recalculating Tax Codes for All Lines:', {
+    console.log('ðŸ”„ Recalculating Tax Codes for All Lines:', {
       placeOfSupply: header.placeOfSupply,
       companyState,
       gstType: getGSTTypeLabel(companyState, header.placeOfSupply),
@@ -2564,18 +2601,28 @@ function ARCreditMemo() {
 
   // Continue in next part...
 
-  // ── validation ────────────────────────────────────────────────────────────
+  // â”€â”€ validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const validate = () => {
-    console.log('🔍 Starting validation...');
+    console.log('ðŸ” Starting validation...');
     const isUpdate = !!currentDocEntry;
     const e = { header: {}, lines: {}, form: '' };
+    const localCurrency = String(refData.local_currency || refData.company_currency || '').trim();
+    const documentCurrency = String(header.currency || '').trim();
+    if (documentCurrency && localCurrency && documentCurrency !== localCurrency) {
+      const rate = Number(header.exchangeRate);
+      if (!Number.isFinite(rate) || rate <= 0) {
+        e.header.exchangeRate = 'Exchange rate is required for foreign currency documents.';
+        e.form = 'Please enter the SAP exchange rate before saving.';
+        return e;
+      }
+    }
     
     try {
       if (!isUpdate) {
-        console.log('🔍 Validating vendor:', header.vendor);
+        console.log('ðŸ” Validating vendor:', header.vendor);
         const vc = String(header.vendor || '').trim();
         if (!vc) { 
-          console.log('❌ Vendor validation failed');
+          console.log('âŒ Vendor validation failed');
           e.header.vendor = 'Select a customer.'; 
           e.form = 'Please correct the highlighted fields.'; 
           return e; 
@@ -2583,36 +2630,36 @@ function ARCreditMemo() {
         
       }
       
-      console.log('🔍 Validating postingDate:', header.postingDate);
+      console.log('ðŸ” Validating postingDate:', header.postingDate);
       if (!String(header.postingDate || '').trim()) { 
-        console.log('❌ Posting date validation failed');
+        console.log('âŒ Posting date validation failed');
         e.header.postingDate = 'Posting date is required.'; 
         e.form = 'Please correct the highlighted fields.'; 
         return e; 
       }
       
-      console.log('🔍 Validating documentDate:', header.documentDate);
+      console.log('ðŸ” Validating documentDate:', header.documentDate);
       if (!String(header.documentDate || '').trim()) { 
-        console.log('❌ Document date validation failed');
+        console.log('âŒ Document date validation failed');
         e.header.documentDate = 'Document date is required.'; 
         e.form = 'Please correct the highlighted fields.'; 
         return e; 
       }
 
-      console.log('🔍 Filtering lines with items...');
+      console.log('ðŸ” Filtering lines with items...');
       const pop = lines.filter(l => String(l.itemNo || '').trim());
-      console.log(`🔍 Found ${pop.length} lines with items out of ${lines.length} total lines`);
+      console.log(`ðŸ” Found ${pop.length} lines with items out of ${lines.length} total lines`);
       
       if (!pop.length) { 
-        console.log('❌ No item lines found');
+        console.log('âŒ No item lines found');
         e.form = 'Add at least one item line.'; 
         return e; 
       }
       
-      console.log('🔍 Validating individual lines...');
+      console.log('ðŸ” Validating individual lines...');
       for (let i = 0; i < lines.length; i++) {
         const l = lines[i];
-        console.log(`🔍 Checking line ${i}:`, { 
+        console.log(`ðŸ” Checking line ${i}:`, { 
           itemNo: l.itemNo, 
           quantity: l.quantity, 
           hsnCode: l.hsnCode,
@@ -2623,57 +2670,57 @@ function ARCreditMemo() {
         });
         
         if (!String(l.itemNo || '').trim()) {
-          console.log(`⏭️ Skipping empty line ${i}`);
+          console.log(`â­ï¸ Skipping empty line ${i}`);
           continue;
         }
 
         if (!l.itemNo) {
-          console.log(`❌ Line ${i}: Item is required`);
+          console.log(`âŒ Line ${i}: Item is required`);
           e.lines[i] = { ...(e.lines[i] || {}), itemNo: 'Item is required' };
           e.form = 'Please correct the highlighted fields.';
           return e;
         }
 
         if (!l.quantity || Number(l.quantity) <= 0) {
-          console.log(`❌ Line ${i}: Quantity validation failed`);
+          console.log(`âŒ Line ${i}: Quantity validation failed`);
           e.lines[i] = { ...(e.lines[i] || {}), quantity: 'Quantity must be > 0' };
           e.form = 'Please correct the highlighted fields.';
           return e;
         }
 
         if (!l.hsnCode && !isUpdate) {
-          console.log(`❌ Line ${i}: HSN Code is required`);
+          console.log(`âŒ Line ${i}: HSN Code is required`);
           e.lines[i] = { ...(e.lines[i] || {}), hsnCode: 'HSN Code is required' };
           e.form = 'Please correct the highlighted fields.';
           return e;
         }
 
         if ((!l.unitPrice || Number(l.unitPrice) <= 0) && !isUpdate) {
-          console.log(`❌ Line ${i}: Unit Price validation failed`);
+          console.log(`âŒ Line ${i}: Unit Price validation failed`);
           e.lines[i] = { ...(e.lines[i] || {}), unitPrice: 'Unit Price must be > 0' };
           e.form = 'Please correct the highlighted fields.';
           return e;
         }
 
         if (!l.uomCode && !isUpdate) {
-          console.log(`❌ Line ${i}: UoM is required`);
+          console.log(`âŒ Line ${i}: UoM is required`);
           e.lines[i] = { ...(e.lines[i] || {}), uomCode: 'UoM is required' };
           e.form = 'Please correct the highlighted fields.';
           return e;
         }
 
         if (!l.whse && !isUpdate) {
-          console.log(`❌ Line ${i}: Warehouse is required`);
+          console.log(`âŒ Line ${i}: Warehouse is required`);
           e.lines[i] = { ...(e.lines[i] || {}), whse: 'Warehouse is required' };
           e.form = 'Please correct the highlighted fields.';
           return e;
         }
         
-        console.log(`🔍 Line ${i}: Validating tax code:`, l.taxCode);
+        console.log(`ðŸ” Line ${i}: Validating tax code:`, l.taxCode);
         const hasTaxCode = String(l.taxCode || '').trim();
         const taxCodeExists = !hasTaxCode || effectiveTaxCodes.some(t => String(t.Code) === String(l.taxCode));
         if (!taxCodeExists) {
-          console.log(`❌ Line ${i}: Tax code '${l.taxCode}' is not valid`);
+          console.log(`âŒ Line ${i}: Tax code '${l.taxCode}' is not valid`);
           e.lines[i] = { ...(e.lines[i] || {}), taxCode: `Tax code '${l.taxCode}' is not valid in SAP B1` };
           e.form = 'Please correct the highlighted fields.';
           return e;
@@ -2681,28 +2728,28 @@ function ARCreditMemo() {
       }
       
       // Validate GST tax code combinations after checking all lines
-      console.log('🔍 Validating GST tax code combinations...');
+      console.log('ðŸ” Validating GST tax code combinations...');
       const taxCodesUsed = new Set(pop.map(l => l.taxCode).filter(Boolean));
-      console.log('🔍 Tax codes used:', Array.from(taxCodesUsed));
+      console.log('ðŸ” Tax codes used:', Array.from(taxCodesUsed));
       
       const sgstCodes = getTaxComponentCodes(taxCodesUsed, effectiveTaxCodes, 'SGST');
       const cgstCodes = getTaxComponentCodes(taxCodesUsed, effectiveTaxCodes, 'CGST');
 
-      console.log('🔍 SGST codes:', sgstCodes);
-      console.log('🔍 CGST codes:', cgstCodes);
+      console.log('ðŸ” SGST codes:', sgstCodes);
+      console.log('ðŸ” CGST codes:', cgstCodes);
 
       if (sgstCodes.length > 0 && cgstCodes.length === 0) {
-        console.log('❌ SGST requires CGST');
+        console.log('âŒ SGST requires CGST');
         e.form = 'SGST requires CGST to be applied as well';
         return e;
       }
       if (cgstCodes.length > 0 && sgstCodes.length === 0) {
-        console.log('❌ CGST requires SGST');
+        console.log('âŒ CGST requires SGST');
         e.form = 'CGST requires SGST to be applied as well';
         return e;
       }
       if (sgstCodes.length > 0 && cgstCodes.length > 0) {
-        console.log('🔍 Validating SGST and CGST rates match...');
+        console.log('ðŸ” Validating SGST and CGST rates match...');
         const sgstRates = sgstCodes.map(code => {
           const tax = findTaxCode(effectiveTaxCodes, code);
           return tax ? parseNum(tax.Rate) : 0;
@@ -2711,45 +2758,45 @@ function ARCreditMemo() {
           const tax = findTaxCode(effectiveTaxCodes, code);
           return tax ? parseNum(tax.Rate) : 0;
         });
-        console.log('🔍 SGST rates:', sgstRates);
-        console.log('🔍 CGST rates:', cgstRates);
+        console.log('ðŸ” SGST rates:', sgstRates);
+        console.log('ðŸ” CGST rates:', cgstRates);
         
         if (sgstRates[0] !== cgstRates[0]) {
-          console.log('❌ SGST and CGST rates do not match');
+          console.log('âŒ SGST and CGST rates do not match');
           e.form = 'SGST and CGST rates must be equal';
           return e;
         }
       }
 
       // Prevent save if total is 0
-      console.log('🔍 Calculating totals...');
+      console.log('ðŸ” Calculating totals...');
       const currentTotals = calcTotals();
-      console.log('🔍 Total:', currentTotals.total);
+      console.log('ðŸ” Total:', currentTotals.total);
       
       if (currentTotals.total <= 0) {
-        console.log('❌ Total is 0 or negative');
+        console.log('âŒ Total is 0 or negative');
         e.form = 'Total amount must be greater than 0. Please add items with valid prices.';
         return e;
       }
 
-      console.log('✅ Validation passed!');
+      console.log('âœ… Validation passed!');
       return e;
       
     } catch (error) {
-      console.error('❌ Validation error:', error);
+      console.error('âŒ Validation error:', error);
       console.error('Error stack:', error.stack);
       e.form = `Validation error: ${error.message}`;
       return e;
     }
   };
 
-  // ── Copy From Modal Handlers ───────────────────────────────────────────────
+  // â”€â”€ Copy From Modal Handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openCopyFromModal = () => {
     if (currentDocEntry) return;
 
-    console.log('🟢 Copy From Clicked');
+    console.log('ðŸŸ¢ Copy From Clicked');
 
-    // ✅ ONLY BUYER VALIDATION
+    // âœ… ONLY BUYER VALIDATION
     if (!header.vendor) {
       setValErrors({
         header: { vendor: 'Select Customer first' },
@@ -2759,14 +2806,14 @@ function ARCreditMemo() {
       return;
     }
 
-    // ✅ CLEAR ALL ERRORS
+    // âœ… CLEAR ALL ERRORS
     setValErrors({ header: {}, lines: {}, form: '' });
     setPageState(p => ({ ...p, error: '', success: '' }));
 
     setCopyFromModal(true);
   };
 
-  // ── Copy From fetch handlers ───────────────────────────────────────────────
+  // â”€â”€ Copy From fetch handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const fetchCopyFromDocuments = async (docType) => {
     try {
       if (docType === 'arInvoice') {
@@ -2793,9 +2840,9 @@ function ARCreditMemo() {
     }
   };
 
-  // ── Copy From handler ─────────────────────────────────────────────────────
+  // â”€â”€ Copy From handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleCopyFrom = (data, sourceType) => {
-    console.log('📥 Copy From:', sourceType, data);
+    console.log('ðŸ“¥ Copy From:', sourceType, data);
     
     const copySource = unwrapCopyFromDocument(data);
     const baseType = BASE_TYPE[sourceType] || 13;
@@ -2852,9 +2899,9 @@ function ARCreditMemo() {
     setPageState(p => ({ ...p, success: `Copied from ${labels[sourceType] || sourceType}` }));
   };
 
-  // ── Copy To handler ───────────────────────────────────────────────────────
+  // â”€â”€ Copy To handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleCopyTo = (targetType) => {
-    console.log('📤 Copy To:', targetType);
+    console.log('ðŸ“¤ Copy To:', targetType);
     const targetConfig = {
       arInvoice: { docType: 'arInvoice', label: 'A/R Invoice', path: '/ar-invoice' },
       return: { docType: 'return', label: 'Return', path: '/return/new' },
@@ -2945,7 +2992,7 @@ function ARCreditMemo() {
     }
   };
 
-  // ── submit ────────────────────────────────────────────────────────────────
+  // â”€â”€ submit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleSubmit = async (ev) => {
     ev.preventDefault();
     if (!companyFormSettingsReady) {
@@ -2982,8 +3029,8 @@ function ARCreditMemo() {
         prep.series = Number(header.series);
       }
       
-      console.log('🔍 [Frontend] Submitting AR Credit Memo with header:', prep);
-      console.log('🔍 [Frontend] Lines:', lines);
+      console.log('ðŸ” [Frontend] Submitting AR Credit Memo with header:', prep);
+      console.log('ðŸ” [Frontend] Lines:', lines);
       
       const payload = {
         company_id: activeCompanyId,
@@ -3016,7 +3063,7 @@ function ARCreditMemo() {
       
       setPageState(p => ({ ...p, success: `${r.data.message || 'AR Credit Memo saved.'}${dn}` }));
     } catch (e) {
-      console.error('❌ [Frontend] AR Credit Memo submission failed:', e);
+      console.error('âŒ [Frontend] AR Credit Memo submission failed:', e);
       setPageState(p => ({ ...p, error: getErrMsg(e, 'AR Credit Memo submission failed.') }));
     } finally {
       setPageState(p => ({ ...p, posting: false }));
@@ -3041,13 +3088,13 @@ function ARCreditMemo() {
 
   // Continue in next part with render...
 
-  // ── render ────────────────────────────────────────────────────────────────
+  // â”€â”€ render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   return (
     <form className={`del-page sap-document-page so-sales-order-page${isRightSidebarOpen ? ' del-page--sidebar-open' : ''}`} onSubmit={handleSubmit} onChangeCapture={markDirty}>
 
       {/* toolbar */}
       <div className="del-toolbar sap-document-toolbar">
-        <span className="del-toolbar__title">A/R Credit Memo{currentDocEntry ? ` — #${header.docNo || currentDocEntry}` : ''}</span>
+        <span className="del-toolbar__title">A/R Credit Memo{currentDocEntry ? ` â€” #${header.docNo || currentDocEntry}` : ''}</span>
         <button type="submit" className="del-btn del-btn--primary sap-document-toolbar__primary" disabled={pageState.posting}>
           {primaryActionLabel}
         </button>
@@ -3096,7 +3143,7 @@ function ARCreditMemo() {
               if (!isActive) dropdown.classList.add('active');
             }}
           >
-            Copy From ▼
+            Copy From
           </button>
           <div className="del-dropdown-menu">
             <button
@@ -3130,7 +3177,7 @@ function ARCreditMemo() {
       </div>
 
       {/* alerts */}
-      {pageState.loading && <div className="del-alert del-alert--success" style={{ marginTop: 0 }}>Loading…</div>}
+      {pageState.loading && <div className="del-alert del-alert--success" style={{ marginTop: 0 }}>Loading...</div>}
       {pageState.error && <div className="del-alert del-alert--error">{pageState.error}</div>}
       {pageState.success && <div className="del-alert del-alert--success">{pageState.success}</div>}
       {refData.warnings?.length > 0 && (
@@ -3138,7 +3185,7 @@ function ARCreditMemo() {
           <strong>SAP warnings:</strong>
           {refData.warnings.map((w, i) => <div key={i}>{w}</div>)}
           <div style={{ marginTop: 4, color: '#555' }}>Dropdowns are showing fallback values. Connect to SAP to load live data.</div>
-          <div style={{ marginTop: 4, color: '#d00', fontWeight: 600 }}>⚠️ Tax codes shown are examples only. Use actual SAP tax codes to avoid submission errors.</div>
+          <div style={{ marginTop: 4, color: '#d00', fontWeight: 600 }}>âš ï¸ Tax codes shown are examples only. Use actual SAP tax codes to avoid submission errors.</div>
         </div>
       )}
 
@@ -3146,7 +3193,7 @@ function ARCreditMemo() {
       <div className={`sap-document-layout so-layout${isRightSidebarOpen ? ' is-sidebar-open' : ' sap-document-layout--no-udf'}`}>
         <div className="sap-document-main so-layout__main">
 
-            {/* ══ HEADER CARD ══════════════════════════════════════════════ */}
+            {/* â•â• HEADER CARD â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             <div className="del-header-card">
               <div className="row g-2">
                 {/* LEFT COLUMN */}
@@ -3224,6 +3271,10 @@ function ARCreditMemo() {
                       header={header}
                       onHeaderChange={handleHeaderChange}
                       businessPartners={refData.vendors || []}
+                      currencyOptions={refData.currencies || []}
+                      localCurrency={refData.local_currency || refData.company_currency || ''}
+                      systemCurrency={refData.system_currency || refData.local_currency || refData.company_currency || ''}
+                      fallbackLocalCurrency=""
                       disabled={pageState.vendorLoading || !header.vendor || !!currentDocEntry}
                     />
 
@@ -3345,7 +3396,7 @@ function ARCreditMemo() {
               </div>
             </div>
 
-            {/* ══ TABS ══════════════════════════════════════════════════════ */}
+            {/* â•â• TABS â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             <div className="del-tabs">
               {TAB_NAMES.map(t => (
                 <button 
@@ -3359,7 +3410,7 @@ function ARCreditMemo() {
               ))}
             </div>
 
-            {/* ══ TAB CONTENT ═══════════════════════════════════════════════ */}
+            {/* â•â• TAB CONTENT â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {activeTab === 'Contents' && (
               <ContentsTab
                 lines={lines}
@@ -3425,7 +3476,7 @@ function ARCreditMemo() {
 
             {/* Continue in next part... */}
 
-            {/* ══ TOTALS FOOTER ═════════════════════════════════════════════ */}
+            {/* â•â• TOTALS FOOTER â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             <div className="del-header-card">
               <div className="del-field-grid del-field-grid--summary">
                 <div>
@@ -3457,7 +3508,7 @@ function ARCreditMemo() {
                       {totals.taxBreakdown.map(t => (
                         <div key={t.taxCode} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 4 }}>
                           <span>{t.taxCode} ({t.taxRate}%)</span>
-                          <span>{fmtDec(t.taxAmount, numDec.tax)}</span>
+                          <span>{formatDisplayMoney(t.taxAmount, numDec.tax)}</span>
                         </div>
                       ))}
                     </div>
@@ -3467,7 +3518,7 @@ function ARCreditMemo() {
                       <tbody>
                         <tr>
                           <td>Total Before Discount</td>
-                          <td className="del-grid__cell--num"><input className="del-grid__input" value={fmtDec(totals.subtotal, numDec.total)} readOnly /></td>
+                          <td className="del-grid__cell--num"><input className="del-grid__input" value={formatDisplayMoney(totals.subtotal, numDec.total)} readOnly /></td>
                         </tr>
                         <tr>
                           <td>Discount %</td>
@@ -3498,21 +3549,21 @@ function ARCreditMemo() {
                               }}
                               title="Select Freight Charge"
                             >
-                              🚚
+                              ðŸšš
                             </button>
                           </td>
                         </tr>
                         <tr>
                           <td><input type="checkbox" className="" name="rounding" checked={header.rounding} onChange={handleHeaderChange} style={{ marginRight: 6 }} /><span>Rounding</span></td>
-                          <td className="del-grid__cell--num"><input className="del-grid__input" value={fmtDec(totals.roundingAmount, numDec.totalPaymentDue)} readOnly /></td>
+                          <td className="del-grid__cell--num"><input className="del-grid__input" value={formatDisplayMoney(totals.roundingAmount, numDec.totalPaymentDue)} readOnly /></td>
                         </tr>
                         <tr>
                           <td>Tax</td>
-                          <td className="del-grid__cell--num"><input className="del-grid__input" value={fmtDec(totals.taxAmt, numDec.tax)} readOnly /></td>
+                          <td className="del-grid__cell--num"><input className="del-grid__input" value={formatDisplayMoney(totals.taxAmt, numDec.tax)} readOnly /></td>
                         </tr>
                         <tr style={{ borderTop: '2px solid #a0aab4' }}>
                           <td style={{ fontWeight: 700, color: '#003366' }}>Total</td>
-                          <td className="del-grid__cell--num" style={{ fontWeight: 700, color: '#003366' }}><input className="del-grid__input" style={{ fontWeight: 700, color: '#003366' }} value={fmtDec(totals.total, numDec.totalPaymentDue)} readOnly /></td>
+                          <td className="del-grid__cell--num" style={{ fontWeight: 700, color: '#003366' }}><input className="del-grid__input" style={{ fontWeight: 700, color: '#003366' }} value={formatDisplayMoney(totals.total, numDec.totalPaymentDue)} readOnly /></td>
                         </tr>
                       </tbody>
                     </table>
@@ -3521,7 +3572,7 @@ function ARCreditMemo() {
               </div>
             </div>
 
-            {/* ══ ACTION BUTTONS ════════════════════════════════════════════ */}
+            {/* â•â• ACTION BUTTONS â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {false && (
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '12px', marginBottom: '12px', gap: '8px' }}>
               <div style={{ display: 'flex', gap: '8px' }}>
@@ -3548,7 +3599,7 @@ function ARCreditMemo() {
                       if (!isActive) dropdown.classList.add('active');
                     }}
                   >
-                    Copy From ▼
+                    Copy From
                   </button>
                   <div className="del-dropdown-menu">
                     {[
@@ -3603,7 +3654,8 @@ function ARCreditMemo() {
             headerUdfFields={headerUdfDefinitions}
             rowUdfFields={rowUdfDefinitions}
             formSettings={formSettings}
-            onSettingChange={updateFormSetting}
+          onSettingChange={updateFormSetting}
+          onColumnOrderChange={formSettingsStatus.reorder}
             settingsLoaded={companyFormSettingsReady}
             editablePropertiesByGroup={{ matrixColumns: ['visible'], rowUdfs: ['visible'] }}
             editableSapControlledProperties={{ matrixColumns: ['visible'], headerUdfs: [], rowUdfs: ['visible'] }}
@@ -3611,6 +3663,7 @@ function ARCreditMemo() {
             hasUnsavedChanges={formSettingsStatus.hasUnsavedChanges}
             saveError={formSettingsStatus.error}
             onSave={formSettingsStatus.save}
+            onCancel={formSettingsStatus.discard}
             settingsScopeLabel={formSettingsStatus.scopeLabel}
           />
         </div>
@@ -3703,7 +3756,7 @@ function ARCreditMemo() {
         freightCharges={freightModal.freightCharges}
         taxCodes={effectiveTaxCodes}
         loading={freightModal.loading}
-        currency={header.currency || 'INR'}
+        currency={header.currency || refData.local_currency || refData.company_currency || ''}
       />
       <LineValueLookupModal
         isOpen={lineLookupModal.open}

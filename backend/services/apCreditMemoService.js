@@ -7,6 +7,13 @@ const { getUdfDefinitions } = require('./udfMetadataService');
 const { applyUdfValues, isBlankUdfValue, normalizeUdfValue } = require('./udfPayloadUtils');
 const { buildDocumentSeriesPayload } = require('./documentSeriesPayloadUtils');
 const { resolveHSNCodeToAbsEntry, resolveSACCodeToAbsEntry } = require('./hsnCodeDbService');
+const {
+  applySapDocumentCurrency,
+  loadCompanyCurrencyContext,
+  loadDocumentCurrencyReferenceData,
+  mergeCurrencyReferenceData,
+  normalizeCopyDocumentRate,
+} = require('./salesDocumentCurrencyService');
 
 const formatDateForSAP = (value) => {
   if (!value) return null;
@@ -286,7 +293,11 @@ const validateAPCreditMemoPayload = async (payload, docEntry = null) => {
 
 const getReferenceData = async () => {
   try {
-    return await apCreditMemoDb.getReferenceData();
+    const [data, currencyContext] = await Promise.all([
+      apCreditMemoDb.getReferenceData(),
+      loadCompanyCurrencyContext(),
+    ]);
+    return mergeCurrencyReferenceData(data, currencyContext);
   } catch (error) {
     return {
       company: '',
@@ -399,7 +410,10 @@ const getAPCreditMemoList = async ({
 
 const getAPCreditMemo = async (docEntry) => {
   try {
-    return await apCreditMemoDb.getAPCreditMemo(docEntry);
+    return normalizeCopyDocumentRate(
+      await apCreditMemoDb.getAPCreditMemo(docEntry),
+      await loadDocumentCurrencyReferenceData(),
+    );
   } catch (error) {
     throw new Error(`Failed to load A/P Credit Memo: ${error.message}`);
   }
@@ -439,7 +453,10 @@ const getOpenGRPO = async (vendorCode = null) => {
 
 const getGRPOForCopy = async (docEntry) => {
   try {
-    return await apCreditMemoDb.getGRPOForCopy(docEntry);
+    return normalizeCopyDocumentRate(
+      await apCreditMemoDb.getGRPOForCopy(docEntry),
+      await loadDocumentCurrencyReferenceData(),
+    );
   } catch (error) {
     throw new Error(`Failed to load GRPO: ${error.message}`);
   }
@@ -511,7 +528,8 @@ const submitAPCreditMemo = async (payload) => {
         if (await isValidTaxCode(l.taxCode)) {
           docLine.TaxCode = String(l.taxCode).trim();
         }
-        if (String(l.uomCode || '').trim()) docLine.UoMCode = String(l.uomCode).trim();
+        const uomValue = l.uomNameEdited ? (l.uomName ?? l.UoMName ?? l.UomName ?? l.UnitMsr ?? l.unitMsr) : (l.uomName || l.UoMName || l.UomName || l.UnitMsr || l.unitMsr || l.uomCode);
+        if (String(uomValue || '').trim()) docLine.UoMCode = String(uomValue).trim();
       }
 
       if (l.stdDiscount && Number(l.stdDiscount) > 0) {
@@ -548,7 +566,6 @@ const submitAPCreditMemo = async (payload) => {
     };
 
     Object.assign(sapPayload, buildDocumentSeriesPayload(header));
-    if (header.currency) sapPayload.DocCurrency = String(header.currency).trim();
     if (header.shipToCode) sapPayload.ShipToCode = String(header.shipToCode).trim();
     if (header.payToCode) sapPayload.PayToCode = String(header.payToCode).trim();
     if (header.branch) sapPayload.BPLId = parseInt(header.branch, 10);
@@ -561,6 +578,11 @@ const submitAPCreditMemo = async (payload) => {
     applyUdfValues(sapPayload, header_udfs, allowedHeaderUdfs, headerUdfDefinitionsByKey);
     setKnownUdfValue(sapPayload, headerUdfDefinitionsByKey, ['TransactionType', 'TransType', 'DocumentType', 'DocType'], header.transactionType);
     setKnownUdfValue(sapPayload, headerUdfDefinitionsByKey, ['Indicator'], header.indicator);
+    applySapDocumentCurrency(
+      sapPayload,
+      header,
+      await loadDocumentCurrencyReferenceData(header),
+    );
     console.log('Constructed SAP Payload:', sapPayload);
 
     const response = await sapService.request({
@@ -604,6 +626,11 @@ const updateAPCreditMemo = async (docEntry, payload) => {
     applyUdfValues(sapPayload, header_udfs, allowedHeaderUdfs, headerUdfDefinitionsByKey);
     setKnownUdfValue(sapPayload, headerUdfDefinitionsByKey, ['TransactionType', 'TransType', 'DocumentType', 'DocType'], header.transactionType);
     setKnownUdfValue(sapPayload, headerUdfDefinitionsByKey, ['Indicator'], header.indicator);
+    applySapDocumentCurrency(
+      sapPayload,
+      header,
+      await loadDocumentCurrencyReferenceData(header),
+    );
 
     await sapService.request({
       method: 'PATCH',

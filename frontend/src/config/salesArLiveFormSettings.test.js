@@ -73,7 +73,7 @@ describe.each(readers)('%s live form settings', (_name, readSettings) => {
       itemNo: {
         visible: false,
         active: true,
-        order: 2,
+        order: 1,
         minWidth: 150,
         sapControlled: true,
       },
@@ -81,7 +81,7 @@ describe.each(readers)('%s live form settings', (_name, readSettings) => {
     expect(settings.rowUdfs.U_Current).toEqual({
       visible: false,
       active: false,
-      order: 3,
+      order: 2,
       minWidth: 120,
       sapControlled: true,
     });

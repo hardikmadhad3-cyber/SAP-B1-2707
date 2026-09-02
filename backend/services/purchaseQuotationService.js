@@ -4,8 +4,15 @@ const { getDocumentFreightCharges } = require('./freightChargesDbService');
 const { buildDocumentAdditionalExpenses } = require('./freightPayloadUtils');
 const { getUdfDefinitions } = require('./udfMetadataService');
 const { isSapUdfKey, normalizeUdfValue, normalizeUdfValues } = require('./udfPayloadUtils');
+const {
+  applySapDocumentCurrency,
+  loadCompanyCurrencyContext,
+  loadDocumentCurrencyReferenceData,
+  mergeCurrencyReferenceData,
+  normalizeCopyDocumentRate,
+} = require('./salesDocumentCurrencyService');
 
-// ───────── HELPERS ─────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€ HELPERS â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const formatDateForInput = (value) => {
   if (!value) return '';
@@ -20,13 +27,16 @@ const formatDocumentStatus = (value) => {
   return normalized;
 };
 
-// ───────── REFERENCE DATA (USING ODBC) ─────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€ REFERENCE DATA (USING ODBC) â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const getReferenceData = async (companyId) => {
   try {
     // Use ODBC/Direct SQL for GET operations
-    const data = await purchaseQuotationDb.getReferenceData();
-    return data;
+    const [data, currencyContext] = await Promise.all([
+      purchaseQuotationDb.getReferenceData(),
+      loadCompanyCurrencyContext(),
+    ]);
+    return mergeCurrencyReferenceData(data, currencyContext);
   } catch (error) {
     // Return empty structure with warnings
     return {
@@ -55,7 +65,7 @@ const getReferenceData = async (companyId) => {
   }
 };
 
-// ───────── VENDOR DETAILS (USING ODBC) ─────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€ VENDOR DETAILS (USING ODBC) â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const getVendorDetails = async (vendorCode) => {
   try {
@@ -68,7 +78,7 @@ const getVendorDetails = async (vendorCode) => {
   }
 };
 
-// ───────── PURCHASE ORDER LIST (USING ODBC) ─────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€ PURCHASE ORDER LIST (USING ODBC) â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const getPurchaseQuotationList = async ({
   query = '',
@@ -140,18 +150,18 @@ const getVendorFilterOptions = async ({
   }
 };
 
-// ───────── GET SINGLE ORDER (USING ODBC) ─────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€ GET SINGLE ORDER (USING ODBC) â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const getPurchaseQuotation = async (docEntry) => {
   try {
     const result = await purchaseQuotationDb.getPurchaseQuotation(docEntry);
-    return result;
+    return normalizeCopyDocumentRate(result, await loadDocumentCurrencyReferenceData());
   } catch (error) {
     throw error;
   }
 };
 
-// ───────── DOCUMENT SERIES (USING ODBC) ─────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€ DOCUMENT SERIES (USING ODBC) â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const getDocumentSeries = async ({ branch, targetDate } = {}) => {
   try {
@@ -176,7 +186,7 @@ const getNextNumber = async (series) => {
   }
 };
 
-// ───────── STATE FROM ADDRESS (USING ODBC) ─────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€ STATE FROM ADDRESS (USING ODBC) â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const getStateFromAddress = async (vendorCode, addressCode) => {
   try {
@@ -196,7 +206,7 @@ const getStateFromWarehouse = async (whsCode) => {
   }
 };
 
-// ───────── CREATE ORDER (USING SERVICE LAYER) ─────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€ CREATE ORDER (USING SERVICE LAYER) â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const toNumberOrUndefined = (value) => {
   if (value === '' || value === null || value === undefined) return undefined;
@@ -435,6 +445,9 @@ const buildDocumentLines = async (lines = []) => {
   return lines
     .filter((line) => String(line.itemNo || '').trim())
     .map((line) => {
+      const uomValue = line.uomNameEdited
+        ? (line.uomName ?? line.UoMName ?? line.UomName ?? line.UnitMsr ?? line.unitMsr)
+        : (line.uomName || line.UoMName || line.UomName || line.UnitMsr || line.unitMsr || line.uomCode);
       const documentLine = cleanObject({
         ItemCode: line.itemNo,
         ItemDescription: line.itemDescription,
@@ -444,7 +457,7 @@ const buildDocumentLines = async (lines = []) => {
         DiscountPercent: toNumberOrUndefined(line.stdDiscount),
         TaxCode: line.taxCode,
         WarehouseCode: line.whse,
-        UoMCode: line.uomCode,
+        UoMCode: uomValue,
         RequiredDate: line.requiredDate,
         ShipDate: line.quotedDate,
         CostingCode: line.distRule,
@@ -473,7 +486,6 @@ const buildPurchaseQuotationPayload = async ({ header = {}, lines = [], header_u
     ...(header.series && Number(header.series) > 0 ? { Series: Number(header.series) } : {}),
     BPLId: header.branch ? Number(header.branch) : undefined,
     BPL_IDAssignedToInvoice: header.branch ? Number(header.branch) : undefined,
-    DocCurrency: header.currency || 'INR',
     PaymentGroupCode: header.paymentTerms ? Number(header.paymentTerms) : undefined,
     SalesPersonCode: header.salesEmployee !== '' && header.salesEmployee != null ? toNumberOrUndefined(header.salesEmployee) : undefined,
     Comments: header.otherInstruction,
@@ -487,6 +499,11 @@ const buildPurchaseQuotationPayload = async ({ header = {}, lines = [], header_u
 
   const headerUdfDefinitionsByKey = await getUdfDefinitionsByKey('OPQT');
   Object.assign(sapPayload, normalizeUdfValues(header_udfs, null, headerUdfDefinitionsByKey));
+  applySapDocumentCurrency(
+    sapPayload,
+    header,
+    await loadDocumentCurrencyReferenceData(header),
+  );
   return sapPayload;
 };
 
@@ -527,7 +544,7 @@ const submitPurchaseQuotation = async (payload) => {
   };
 };
 
-// ───────── UPDATE ORDER (USING SERVICE LAYER) ─────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€ UPDATE ORDER (USING SERVICE LAYER) â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const updatePurchaseQuotation = async (docEntry, payload) => {
   await validatePurchaseQuotationPayload(payload);
@@ -556,7 +573,7 @@ const getFreightCharges = async (docEntry) => {
   }
 };
 
-// ───────── EXPORTS ─────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€ EXPORTS â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 module.exports = {
   getReferenceData,

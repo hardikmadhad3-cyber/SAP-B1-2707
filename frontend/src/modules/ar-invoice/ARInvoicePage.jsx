@@ -39,7 +39,11 @@ import { getDefaultSeriesForCurrentYear, getSapVisibleDocumentSeries } from '../
 import { readGeneralSettings } from '../../utils/generalSettingsStorage';
 import { useCompanyScopedFormSettings } from '../../utils/formSettingsStorage';
 import { updateFormSettingPreference } from '../../utils/formSettingsPreferences';
-import { resolveDocumentCurrency } from '../../utils/documentCurrency';
+import {
+  convertDocumentAmountForDisplay,
+  resolveDisplayCurrency,
+  resolveDocumentCurrency,
+} from '../../utils/documentCurrency';
 import { buildVisibleEnteredRowUdfPayload } from '../../utils/rowUdfPayload';
 import {
   batchQtyMatchesLine,
@@ -63,6 +67,7 @@ import { fetchSalesDocumentLookup, fetchSalesDocumentSchema } from '../../api/sa
 import {
   buildSalesDocumentLiveFields,
   getSalesDocumentCompanyScopeKey,
+  isSalesDocumentFieldMetadataReady,
   loadSalesDocumentFieldLookupOptions,
   stripSalesDocumentTopLevelUdfs,
 } from '../../utils/salesDocumentLiveFields';
@@ -99,7 +104,7 @@ import {
 
 const SAP_MANUAL_SERIES_VALUE = '__SAP_MANUAL__';
 
-// ─── helpers ─────────────────────────────────────────────────────────────────
+// â”€â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const getErrMsg = (e, fb) => {
   const body = e?.response?.data || {};
   const d = body.detail || body.details;
@@ -268,7 +273,7 @@ const mergeUdfValues = (...sources) =>
     return acc;
   }, {});
 
-// ─── constants ────────────────────────────────────────────────────────────────
+// â”€â”€â”€ constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const DEC = { QtyDec: 2, PriceDec: 2, SumDec: 2, RateDec: 2, PercentDec: 2 };
 const GENERAL_SETTINGS = readGeneralSettings();
 const TAB_NAMES = ['Contents', 'Logistics', 'Accounting', 'Tax', 'Electronic Documents', 'Attachments'];
@@ -433,7 +438,7 @@ const INIT_HEADER = {
   shippingType: '', confirmed: false, journalRemark: '', paymentTerms: '',
   paymentMethod: '', otherInstruction: '', discount: '', freight: '', tax: '',
   totalPaymentDue: '', rounding: false, owner: '', purchaser: '', salesEmployee: '',
-  placeOfSupply: '', currencyMode: 'BP', currency: 'INR', exchangeRate: '', useBillToForTax: false,
+  placeOfSupply: '', currencyMode: 'BP', currency: '', exchangeRate: '', useBillToForTax: false,
   billToAddress: '', billToCode: '', shipToAddress: '',
   shipToAddressComponents: null, billToAddressComponents: null,
   ownerCode: '', language: '', trackingNo: '', stampNo: '', pickPackRemarks: '',
@@ -445,7 +450,7 @@ const INIT_ATTACH = Array.from({ length: 9 }, (_, i) => ({
   freeText: '', copyToTargetDocument: '', documentType: '', atchDocDate: '', alert: '',
 }));
 
-// ─── Main Component ───────────────────────────────────────────────────────────
+// â”€â”€â”€ Main Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function ARInvoicePage() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -479,9 +484,11 @@ function ARInvoicePage() {
     [headerUdfDefinitions, rowUdfDefinitions, matrixColumnDefinitions],
     { saveMode: 'explicit' },
   );
-  const companyFormSettingsReady = Boolean(activeCompanyId || activeCompanyDb) && (
-    formSettingsStatus.loaded && hydratedFieldMetadataScope === activeFieldMetadataScope
-  );
+  const companyFormSettingsReady = formSettingsStatus.loaded && isSalesDocumentFieldMetadataReady({
+    companyId: activeCompanyId,
+    companyDb: activeCompanyDb,
+    hydratedScope: hydratedFieldMetadataScope,
+  });
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [formSettingsOpen, setFormSettingsOpen] = useState(false);
   const [refData, setRefData] = useState({
@@ -726,12 +733,12 @@ function ARInvoicePage() {
     return [currentSeriesOption, ...availableSeries];
   };
   const primaryActionLabel = pageState.posting
-    ? 'Saving…'
+    ? 'Saving...'
     : currentDocEntry
       ? updateActionLabel
       : 'Add';
   const secondaryActionLabel = pageState.posting
-    ? 'Saving…'
+    ? 'Saving...'
     : currentDocEntry
       ? updateActionLabel
       : 'Add & New';
@@ -834,7 +841,7 @@ function ARInvoicePage() {
 
   // Continue in next part...
 
-  // ── load reference data ───────────────────────────────────────────────────
+  // â”€â”€ load reference data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     let ignore = false;
     setHydratedFieldMetadataScope('');
@@ -863,6 +870,8 @@ function ARInvoicePage() {
           return;
         }
 
+        setHeaderUdfDefinitions([]);
+        setRowUdfDefinitions([]);
         setMatrixColumnDefinitions([]);
 
         const refDataRes = await fetchARInvoiceReferenceData(activeCompanyId);
@@ -1034,7 +1043,7 @@ function ARInvoicePage() {
     ));
   }, [companyFormSettingsReady, formSettingsStatus.hasUnsavedChanges, formSettingsStorageKey, headerUdfDefinitions, matrixColumnDefinitions, replaceFormSettings, rowUdfDefinitions]);
 
-  // ── load existing order ───────────────────────────────────────────────────
+  // â”€â”€ load existing order â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     if (currentDocEntry || requestedEditDocEntry) return;
 
@@ -1219,7 +1228,7 @@ function ARInvoicePage() {
     return () => { ignore = true; };
   }, [currentDocEntry]);
 
-  // ── Copy To: populate form from Sales Order / Delivery ────────────────────
+  // â”€â”€ Copy To: populate form from Sales Order / Delivery â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     const routedCopyFrom = location.state?.copyFrom;
     const persistedCopyState = routedCopyFrom ? null : consumeCopyToState(location.pathname, ['/ar-invoice']);
@@ -1311,7 +1320,7 @@ function ARInvoicePage() {
     replaceRouteStatePreservingWindow(navigate, location.pathname, location.state || persistedCopyState);
   }, [location.pathname, location.state?.copyFrom, navigate, headerUdfDefinitions, rowUdfDefinitions, getBranchFromWarehouseCode, hydrateARInvoiceBatchLine, refreshBatchAvailabilityForLines]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── derived / computed ────────────────────────────────────────────────────
+  // â”€â”€ derived / computed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const belongsToCurrentVendor = (row) => {
     const rowCardCode = String(row?.CardCode || '').trim();
     return !rowCardCode || rowCardCode === String(header.vendor || '').trim();
@@ -1516,7 +1525,7 @@ function ARInvoicePage() {
     return branch ? branch.BPLName : branchId;
   };
 
-  // ── calculations ──────────────────────────────────────────────────────────
+  // â”€â”€ calculations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const calcLineTotalFromFields = (line) => {
     const qty = parseNum(line.quantity), price = parseNum(line.unitPrice), disc = parseNum(line.stdDiscount);
     return roundTo(qty * price * (1 - disc / 100), numDec.total);
@@ -1564,6 +1573,27 @@ function ARInvoicePage() {
   };
 
   const totals = calcTotals();
+  const documentCurrency = String(header.currency || refData.local_currency || refData.company_currency || '').trim();
+  const displayMode = String(header.currencyMode || 'BP').trim().toUpperCase();
+  const displayCurrency = resolveDisplayCurrency({
+    mode: displayMode,
+    documentCurrency,
+    localCurrency: refData.local_currency || refData.company_currency,
+    systemCurrency: refData.system_currency,
+  });
+  const formatDisplayMoney = (value, decimals) => {
+    const converted = convertDocumentAmountForDisplay(value, {
+      mode: displayMode,
+      documentCurrency,
+      localCurrency: refData.local_currency || refData.company_currency,
+      systemCurrency: refData.system_currency,
+      documentRate: header.exchangeRate,
+      systemRate: header.systemExchangeRate,
+      postingMethod: refData.exchange_rate_settings?.postingMethod,
+    });
+    const amount = fmtDec(converted, decimals);
+    return amount !== '' && displayCurrency ? `${amount} ${displayCurrency}` : amount;
+  };
   useRelationshipMapRegistration({
     enabled: Boolean(currentDocEntry),
     objectType: 13,
@@ -1651,7 +1681,7 @@ function ARInvoicePage() {
 
   // Continue in next part...
 
-  // ── address sync ──────────────────────────────────────────────────────────
+  // â”€â”€ address sync â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     setHeader(prev => {
       if (prev.shipToCode) return prev;
@@ -1680,7 +1710,7 @@ function ARInvoicePage() {
     });
   }, [header.vendor, vendorEffectiveBillToAddresses]);
 
-  // ── vendor details ────────────────────────────────────────────────────────
+  // â”€â”€ vendor details â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const loadVendorDetails = async (code, options = {}) => {
     if (!code) {
       setRefData(p => ({ ...p, contacts: [], pay_to_addresses: [], ship_to_addresses: [], bill_to_addresses: [] }));
@@ -1750,7 +1780,7 @@ function ARInvoicePage() {
         const defaultAddress = payToAddresses[0];
         const formattedAddress = fmtAddr(defaultAddress);
         
-        console.log('🌍 Auto-setting addresses from customer:', {
+        console.log('ðŸŒ Auto-setting addresses from customer:', {
           state: defaultAddress.State,
           addressCode: defaultAddress.Address,
           formattedAddress
@@ -1788,13 +1818,13 @@ function ARInvoicePage() {
         paymentTerms: m.PayTermsGrpCode != null ? String(m.PayTermsGrpCode) : hdr.paymentTerms,
         currencyMode: nextCurrencyMode,
         currency: resolveDocumentCurrency({
-          mode: nextCurrencyMode,
+          mode: 'BP',
           cardCode: code,
           businessPartners: refData.vendors || [],
           currentCurrency: hdr.currency,
-          localCurrency: refData.local_currency || refData.company_currency || 'INR',
-          systemCurrency: refData.system_currency || refData.local_currency || refData.company_currency || 'INR',
-          fallbackLocalCurrency: refData.company_currency || refData.local_currency || 'INR',
+          localCurrency: refData.local_currency || refData.company_currency || '',
+          systemCurrency: refData.system_currency || refData.local_currency || refData.company_currency || '',
+          fallbackLocalCurrency: '',
         }),
         exchangeRate: '',
         contactPerson: '',
@@ -1820,7 +1850,7 @@ function ARInvoicePage() {
           year,
           month,
           currencies: refData.currencies || [],
-          localCurrency: refData.local_currency || refData.company_currency || 'INR',
+          localCurrency: refData.local_currency || refData.company_currency || '',
           documentCurrency: prev.currency,
         }),
       }));
@@ -1879,7 +1909,7 @@ function ARInvoicePage() {
   const refreshExchangeRate = useCallback((nextCurrency = header.currency, nextDate = header.postingDate) => {
     const currency = String(nextCurrency || '').trim();
     const postingDate = String(nextDate || '').trim();
-    const localCurrency = String(refData.local_currency || refData.company_currency || 'INR').trim();
+    const localCurrency = String(refData.local_currency || refData.company_currency || '').trim();
     if (!currency || !postingDate || !localCurrency) return;
     if (currency === localCurrency) {
       setHeader((prev) => prev.exchangeRate ? { ...prev, exchangeRate: '' } : prev);
@@ -1896,7 +1926,7 @@ function ARInvoicePage() {
     refreshExchangeRate(header.currency, header.postingDate);
   }, [currentDocEntry, header.vendor, header.currency, header.postingDate, refreshExchangeRate]);
 
-  // ── handlers ──────────────────────────────────────────────────────────────
+  // â”€â”€ handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openLineLookup = (field, lineIndex, udfField = null) => {
     if (!isDocumentEditable) return;
     const isAccount = field === 'glAccount';
@@ -2092,23 +2122,7 @@ function ARInvoicePage() {
       return;
     }
     if (name === 'currencyMode') {
-      setHeader((prev) => {
-        const nextCurrency = resolveDocumentCurrency({
-          mode: value,
-          cardCode: prev.vendor,
-          businessPartners: refData.vendors || [],
-          currentCurrency: prev.currency,
-          localCurrency: refData.local_currency || refData.company_currency || 'INR',
-          systemCurrency: refData.system_currency || refData.local_currency || refData.company_currency || 'INR',
-          fallbackLocalCurrency: refData.company_currency || refData.local_currency || 'INR',
-        });
-        return {
-          ...prev,
-          currencyMode: value,
-          currency: nextCurrency,
-          exchangeRate: nextCurrency === prev.currency ? prev.exchangeRate : '',
-        };
-      });
+      setHeader((prev) => ({ ...prev, currencyMode: value }));
       return;
     }
     if (name === 'currency') {
@@ -2123,7 +2137,7 @@ function ARInvoicePage() {
       setHeader((prev) => ({
         ...prev,
         postingDate: value,
-        exchangeRate: String(prev.currency || '').trim() === String(refData.local_currency || refData.company_currency || 'INR').trim()
+        exchangeRate: String(prev.currency || '').trim() === String(refData.local_currency || refData.company_currency || '').trim()
           ? prev.exchangeRate
           : '',
       }));
@@ -2246,7 +2260,7 @@ function ARInvoicePage() {
           const hsnResponse = await fetchHSNCodeFromItem(value);
           const hsnData = hsnResponse.data;
           
-          console.log('🔍 Item Selected - HSN Data:', {
+          console.log('ðŸ” Item Selected - HSN Data:', {
             itemCode: value,
             hsnCode: hsnData.hsnCode,
             hsnDescription: hsnData.hsnDescription,
@@ -2281,7 +2295,7 @@ function ARInvoicePage() {
             // Step 3: Get Base Tax Code from Item Master
             const baseTaxCode = item.TaxCodeAR || item.SalTaxCode || '';
             
-            console.log('🔍 Item Selected:', {
+            console.log('ðŸ” Item Selected:', {
               itemCode: item.ItemCode,
               itemName: item.ItemName,
               hsnCode: next.hsnCode,
@@ -2295,7 +2309,7 @@ function ARInvoicePage() {
             
             // Step 5: Validate States
             if (!gstState || !companyState) {
-              console.warn('⚠️ Missing state information for tax determination');
+              console.warn('âš ï¸ Missing state information for tax determination');
               next.taxCode = '';
               next.total = fmtDec(calcLineTotalFromFields(next), numDec.total);
               return next;
@@ -2313,9 +2327,9 @@ function ARInvoicePage() {
             
             if (determinedTaxCode) {
               next.taxCode = determinedTaxCode;
-              console.log(`✅ Auto-assigned tax code: ${determinedTaxCode} (${getGSTTypeLabel(companyState, gstState)})`);
+              console.log(`âœ… Auto-assigned tax code: ${determinedTaxCode} (${getGSTTypeLabel(companyState, gstState)})`);
             } else {
-              console.warn('⚠️ Could not determine tax code automatically');
+              console.warn('âš ï¸ Could not determine tax code automatically');
               next.taxCode = '';
             }
             
@@ -2324,7 +2338,7 @@ function ARInvoicePage() {
           }));
         }
       } catch (error) {
-        console.error('❌ Error fetching HSN code:', error);
+        console.error('âŒ Error fetching HSN code:', error);
         // Fallback to basic item selection without HSN
         setLines(prev => prev.map((line, idx) => {
           if (idx !== i) return line;
@@ -2359,8 +2373,11 @@ function ARInvoicePage() {
     setLines(prev => prev.map((line, idx) => {
       if (idx !== i) return line;
       const next = { ...line, [name]: numDec[name] !== undefined ? sanitize(value, numDec[name]) : value };
+                if (name === 'uomName') next.uomNameEdited = true;
+                if (name === 'uomCode') { next.uomName = value; next.uomNameEdited = false; }
       if (name === 'uomCode') {
         next.uomName = value;
+        next.uomNameEdited = false;
       }
       if (['itemNo', 'whse', 'quantity', 'uomCode'].includes(name)) {
         next.batches = [];
@@ -2402,7 +2419,7 @@ function ARInvoicePage() {
     setLines(p => p.map((l, idx) => idx === i ? { ...l, [field]: fmtDec(l[field], d) } : l));
   };
 
-  // ── Freight Selection Modal handlers ──────────────────────────────────────
+  // â”€â”€ Freight Selection Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openWithholdingTaxTable = useCallback(() => {
     if (!isDocumentEditable) return;
     if (!header.vendor) {
@@ -2420,7 +2437,7 @@ function ARInvoicePage() {
 
   const openFreightModal = async () => {
     if (!isDocumentEditable) return;
-    console.log('🚚 Opening freight modal, docEntry:', currentDocEntry);
+    console.log('ðŸšš Opening freight modal, docEntry:', currentDocEntry);
     if (freightModal.freightCharges.length > 0) {
       setFreightModal(prev => ({ ...prev, open: true, loading: false }));
       return;
@@ -2428,10 +2445,10 @@ function ARInvoicePage() {
     setFreightModal(prev => ({ ...prev, open: true, loading: true }));
     
     try {
-      console.log('📡 Fetching freight charges from API...');
+      console.log('ðŸ“¡ Fetching freight charges from API...');
       const response = await fetchFreightCharges(currentDocEntry);
-      console.log('✅ Freight charges received:', response.data);
-      console.log('📊 Freight charges count:', response.data.freightCharges?.length || 0);
+      console.log('âœ… Freight charges received:', response.data);
+      console.log('ðŸ“Š Freight charges count:', response.data.freightCharges?.length || 0);
       
       setFreightModal({
         open: true,
@@ -2439,7 +2456,7 @@ function ARInvoicePage() {
         loading: false
       });
     } catch (error) {
-      console.error('❌ Failed to load freight charges:', error);
+      console.error('âŒ Failed to load freight charges:', error);
       console.error('Error details:', error.response?.data || error.message);
       setFreightModal({
         open: true,
@@ -2455,7 +2472,7 @@ function ARInvoicePage() {
 
   const handleFreightApply = (summary) => {
     if (!isDocumentEditable) return;
-    console.log('🚚 Applied freight charges:', summary);
+    console.log('ðŸšš Applied freight charges:', summary);
     setFreightModal(prev => ({
       ...prev,
       open: false,
@@ -2586,7 +2603,7 @@ function ARInvoicePage() {
     setFormSettingsOpen(true);
   };
 
-  // ── Address Modal handlers ────────────────────────────────────────────────
+  // â”€â”€ Address Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openAddressModal = (type) => {
     if (!isDocumentEditable) return;
     const shipAddress = resolveARInvoiceAddress(
@@ -2694,7 +2711,7 @@ function ARInvoicePage() {
     setAddressForm(p => ({ ...p, [name]: value }));
   };
 
-  // ── Tax Info Modal handlers ───────────────────────────────────────────────
+  // â”€â”€ Tax Info Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openTaxInfoModal = () => {
     if (!isDocumentEditable) return;
     setTaxInfoModal(true);
@@ -2708,7 +2725,7 @@ function ARInvoicePage() {
     closeTaxInfoModal();
   };
 
-  // ── BP Modal handlers ─────────────────────────────────────────────────────
+  // â”€â”€ BP Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openBpModal = () => {
     if (!isDocumentEditable) return;
     setBpModal(true);
@@ -2718,7 +2735,7 @@ function ARInvoicePage() {
     setBpModal(false);
   };
 
-  // ── State Modal handlers ──────────────────────────────────────────────────
+  // â”€â”€ State Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openStateModal = () => {
     if (!isDocumentEditable) return;
     setStateModal(true);
@@ -2733,7 +2750,7 @@ function ARInvoicePage() {
     setHeader(p => ({ ...p, placeOfSupply: getStateCodeValue(state, refData.states) }));
   };
 
-  // ── BP Modal handlers ─────────────────────────────────────────────────────
+  // â”€â”€ BP Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleBpSelect = (bp) => {
     if (!isDocumentEditable) return;
     const code = bp.CardCode;
@@ -2757,7 +2774,7 @@ function ARInvoicePage() {
     setTaxInfoForm(p => ({ ...p, [name]: value }));
   };
 
-  // ── Browse Attachment handler ─────────────────────────────────────────────
+  // â”€â”€ Browse Attachment handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleBrowseAttachment = () => {
     if (!isDocumentEditable) return;
     const input = document.createElement('input');
@@ -2870,7 +2887,7 @@ function ARInvoicePage() {
     closeBatchModal();
   };
 
-  // ── HSN Modal handlers ────────────────────────────────────────────────────
+  // â”€â”€ HSN Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openHSNModal = (lineIndex) => {
     if (!isDocumentEditable) return;
     setHsnModal({ open: true, lineIndex });
@@ -2892,15 +2909,15 @@ function ARInvoicePage() {
     closeHSNModal();
   };
 
-  // ── Item Selection Modal handlers ─────────────────────────────────────────
+  // â”€â”€ Item Selection Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openItemModal = async (lineIndex) => {
     if (!isDocumentEditable) return;
-    console.log('🔍 Opening item modal for line:', lineIndex);
+    console.log('ðŸ” Opening item modal for line:', lineIndex);
     setItemModal({ open: true, lineIndex, items: [], loading: true });
     
     try {
       const response = await fetchItemsForModal();
-      console.log('📊 Items count:', response.data.items?.length || 0);
+      console.log('ðŸ“Š Items count:', response.data.items?.length || 0);
       
       setItemModal(prev => ({
         ...prev,
@@ -2908,7 +2925,7 @@ function ARInvoicePage() {
         loading: false,
       }));
     } catch (error) {
-      console.error('❌ Failed to load items:', error);
+      console.error('âŒ Failed to load items:', error);
       console.error('Error details:', error.response?.data || error.message);
       setItemModal(prev => ({
         ...prev,
@@ -2987,18 +3004,18 @@ function ARInvoicePage() {
     }
   };
 
-  // ── Sync warehouse and branch from header to lines ────────────────────────
+  // â”€â”€ Sync warehouse and branch from header to lines â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Sync branch to all lines when header branch changes
   useEffect(() => {
     if (header.branch) {
-      console.log('🔄 Syncing branch to all lines:', header.branch);
+      console.log('ðŸ”„ Syncing branch to all lines:', header.branch);
       setLines(prev => {
         const updated = prev.map(l => ({ 
           ...l, 
           branch: String(header.branch), 
           loc: String(header.branch)
         }));
-        console.log('✅ Lines updated with branch:', updated.map(l => ({ branch: l.branch, loc: l.loc })));
+        console.log('âœ… Lines updated with branch:', updated.map(l => ({ branch: l.branch, loc: l.loc })));
         return updated;
       });
     }
@@ -3040,18 +3057,18 @@ function ARInvoicePage() {
     }
   }, [header.warehouse]);
 
-  // ── Recalculate Tax Codes on State/Address Changes ────────────────────────
+  // â”€â”€ Recalculate Tax Codes on State/Address Changes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     if (!header.vendor || !header.placeOfSupply) return;
 
     const companyState = refData.company_address?.State || selectedBranch?.State || '';
     
     if (!companyState) {
-      console.warn('⚠️ Company state not available for tax recalculation');
+      console.warn('âš ï¸ Company state not available for tax recalculation');
       return;
     }
 
-    console.log('🔄 Recalculating Tax Codes for All Lines:', {
+    console.log('ðŸ”„ Recalculating Tax Codes for All Lines:', {
       placeOfSupply: header.placeOfSupply,
       companyState,
       gstType: getGSTTypeLabel(companyState, header.placeOfSupply),
@@ -3073,18 +3090,28 @@ function ARInvoicePage() {
 
   // Continue in next part...
 
-  // ── validation ────────────────────────────────────────────────────────────
+  // â”€â”€ validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const validate = () => {
-    console.log('🔍 Starting validation...');
+    console.log('ðŸ” Starting validation...');
     const isUpdate = !!currentDocEntry;
     const e = { header: {}, lines: {}, form: '' };
+    const localCurrency = String(refData.local_currency || refData.company_currency || '').trim();
+    const documentCurrency = String(header.currency || '').trim();
+    if (documentCurrency && localCurrency && documentCurrency !== localCurrency) {
+      const rate = Number(header.exchangeRate);
+      if (!Number.isFinite(rate) || rate <= 0) {
+        e.header.exchangeRate = 'Exchange rate is required for foreign currency documents.';
+        e.form = 'Please enter the SAP exchange rate before saving.';
+        return e;
+      }
+    }
     
     try {
       if (!isUpdate) {
-        console.log('🔍 Validating vendor:', header.vendor);
+        console.log('ðŸ” Validating vendor:', header.vendor);
         const vc = String(header.vendor || '').trim();
         if (!vc) { 
-          console.log('❌ Vendor validation failed');
+          console.log('âŒ Vendor validation failed');
           e.header.vendor = 'Select a customer.'; 
           e.form = 'Please correct the highlighted fields.'; 
           return e; 
@@ -3092,17 +3119,17 @@ function ARInvoicePage() {
         
       }
       
-      console.log('🔍 Validating postingDate:', header.postingDate);
+      console.log('ðŸ” Validating postingDate:', header.postingDate);
       if (!String(header.postingDate || '').trim()) { 
-        console.log('❌ Posting date validation failed');
+        console.log('âŒ Posting date validation failed');
         e.header.postingDate = 'Posting date is required.'; 
         e.form = 'Please correct the highlighted fields.'; 
         return e; 
       }
       
-      console.log('🔍 Validating documentDate:', header.documentDate);
+      console.log('ðŸ” Validating documentDate:', header.documentDate);
       if (!String(header.documentDate || '').trim()) { 
-        console.log('❌ Document date validation failed');
+        console.log('âŒ Document date validation failed');
         e.header.documentDate = 'Document date is required.'; 
         e.form = 'Please correct the highlighted fields.'; 
         return e; 
@@ -3126,20 +3153,20 @@ function ARInvoicePage() {
         }
       }
 
-      console.log('🔍 Filtering lines with items...');
+      console.log('ðŸ” Filtering lines with items...');
       const pop = lines.filter(l => String(l.itemNo || '').trim());
-      console.log(`🔍 Found ${pop.length} lines with items out of ${lines.length} total lines`);
+      console.log(`ðŸ” Found ${pop.length} lines with items out of ${lines.length} total lines`);
       
       if (!pop.length) { 
-        console.log('❌ No item lines found');
+        console.log('âŒ No item lines found');
         e.form = 'Add at least one item line.'; 
         return e; 
       }
       
-      console.log('🔍 Validating individual lines...');
+      console.log('ðŸ” Validating individual lines...');
       for (let i = 0; i < lines.length; i++) {
         const l = lines[i];
-        console.log(`🔍 Checking line ${i}:`, { 
+        console.log(`ðŸ” Checking line ${i}:`, { 
           itemNo: l.itemNo, 
           quantity: l.quantity, 
           hsnCode: l.hsnCode,
@@ -3150,19 +3177,19 @@ function ARInvoicePage() {
         });
         
         if (!String(l.itemNo || '').trim()) {
-          console.log(`⏭️ Skipping empty line ${i}`);
+          console.log(`â­ï¸ Skipping empty line ${i}`);
           continue;
         }
 
         if (!l.itemNo) {
-          console.log(`❌ Line ${i}: Item is required`);
+          console.log(`âŒ Line ${i}: Item is required`);
           e.lines[i] = { ...(e.lines[i] || {}), itemNo: 'Item is required' };
           e.form = 'Please correct the highlighted fields.';
           return e;
         }
 
         if (!l.quantity || Number(l.quantity) <= 0) {
-          console.log(`❌ Line ${i}: Quantity validation failed`);
+          console.log(`âŒ Line ${i}: Quantity validation failed`);
           e.lines[i] = { ...(e.lines[i] || {}), quantity: 'Quantity must be > 0' };
           e.form = 'Please correct the highlighted fields.';
           return e;
@@ -3176,7 +3203,7 @@ function ARInvoicePage() {
         }
 
         if (!l.hsnCode && !isUpdate) {
-          console.log(`❌ Line ${i}: HSN Code is required`);
+          console.log(`âŒ Line ${i}: HSN Code is required`);
           e.lines[i] = { ...(e.lines[i] || {}), hsnCode: 'HSN Code is required' };
           e.form = 'Please correct the highlighted fields.';
           return e;
@@ -3187,27 +3214,27 @@ function ARInvoicePage() {
           (!l.total || Number(l.total) <= 0) &&
           !isUpdate
         ) {
-          console.log(`❌ Line ${i}: Unit Price/Total validation failed`);
+          console.log(`âŒ Line ${i}: Unit Price/Total validation failed`);
           e.lines[i] = { ...(e.lines[i] || {}), total: 'Total (LC) or Unit Price must be > 0' };
           e.form = 'Please correct the highlighted fields.';
           return e;
         }
 
         if (!l.uomCode && !isUpdate) {
-          console.log(`❌ Line ${i}: UoM is required`);
+          console.log(`âŒ Line ${i}: UoM is required`);
           e.lines[i] = { ...(e.lines[i] || {}), uomCode: 'UoM is required' };
           e.form = 'Please correct the highlighted fields.';
           return e;
         }
 
         if (!l.whse && !isUpdate) {
-          console.log(`❌ Line ${i}: Warehouse is required`);
+          console.log(`âŒ Line ${i}: Warehouse is required`);
           e.lines[i] = { ...(e.lines[i] || {}), whse: 'Warehouse is required' };
           e.form = 'Please correct the highlighted fields.';
           return e;
         }
         
-        console.log(`🔍 Line ${i}: Validating tax code:`, l.taxCode);
+        console.log(`ðŸ” Line ${i}: Validating tax code:`, l.taxCode);
         const item = refData.items.find((candidate) => String(candidate.ItemCode || '') === String(l.itemNo || ''));
         const batchManaged = !isDeliveryBasedLine(l) && isLineBatchManaged(l, item);
         if (batchManaged && !isUpdate) {
@@ -3227,7 +3254,7 @@ function ARInvoicePage() {
         const hasTaxCode = String(l.taxCode || '').trim();
         const taxCodeExists = !hasTaxCode || effectiveTaxCodes.some(t => String(t.Code) === String(l.taxCode));
         if (!taxCodeExists) {
-          console.log(`❌ Line ${i}: Tax code '${l.taxCode}' is not valid`);
+          console.log(`âŒ Line ${i}: Tax code '${l.taxCode}' is not valid`);
           e.lines[i] = { ...(e.lines[i] || {}), taxCode: `Tax code '${l.taxCode}' is not valid in SAP B1` };
           e.form = 'Please correct the highlighted fields.';
           return e;
@@ -3235,28 +3262,28 @@ function ARInvoicePage() {
       }
       
       // Validate GST tax code combinations after checking all lines
-      console.log('🔍 Validating GST tax code combinations...');
+      console.log('ðŸ” Validating GST tax code combinations...');
       const taxCodesUsed = new Set(pop.map(l => l.taxCode).filter(Boolean));
-      console.log('🔍 Tax codes used:', Array.from(taxCodesUsed));
+      console.log('ðŸ” Tax codes used:', Array.from(taxCodesUsed));
       
       const sgstCodes = getTaxComponentCodes(taxCodesUsed, effectiveTaxCodes, 'SGST');
       const cgstCodes = getTaxComponentCodes(taxCodesUsed, effectiveTaxCodes, 'CGST');
 
-      console.log('🔍 SGST codes:', sgstCodes);
-      console.log('🔍 CGST codes:', cgstCodes);
+      console.log('ðŸ” SGST codes:', sgstCodes);
+      console.log('ðŸ” CGST codes:', cgstCodes);
 
       if (sgstCodes.length > 0 && cgstCodes.length === 0) {
-        console.log('❌ SGST requires CGST');
+        console.log('âŒ SGST requires CGST');
         e.form = 'SGST requires CGST to be applied as well';
         return e;
       }
       if (cgstCodes.length > 0 && sgstCodes.length === 0) {
-        console.log('❌ CGST requires SGST');
+        console.log('âŒ CGST requires SGST');
         e.form = 'CGST requires SGST to be applied as well';
         return e;
       }
       if (sgstCodes.length > 0 && cgstCodes.length > 0) {
-        console.log('🔍 Validating SGST and CGST rates match...');
+        console.log('ðŸ” Validating SGST and CGST rates match...');
         const sgstRates = sgstCodes.map(code => {
           const tax = findTaxCode(effectiveTaxCodes, code);
           return tax ? parseNum(tax.Rate) : 0;
@@ -3265,44 +3292,44 @@ function ARInvoicePage() {
           const tax = findTaxCode(effectiveTaxCodes, code);
           return tax ? parseNum(tax.Rate) : 0;
         });
-        console.log('🔍 SGST rates:', sgstRates);
-        console.log('🔍 CGST rates:', cgstRates);
+        console.log('ðŸ” SGST rates:', sgstRates);
+        console.log('ðŸ” CGST rates:', cgstRates);
         
         if (sgstRates[0] !== cgstRates[0]) {
-          console.log('❌ SGST and CGST rates do not match');
+          console.log('âŒ SGST and CGST rates do not match');
           e.form = 'SGST and CGST rates must be equal';
           return e;
         }
       }
 
       // Prevent save if total is 0
-      console.log('🔍 Calculating totals...');
+      console.log('ðŸ” Calculating totals...');
       const currentTotals = calcTotals();
-      console.log('🔍 Total:', currentTotals.total);
+      console.log('ðŸ” Total:', currentTotals.total);
       
       if (currentTotals.total <= 0) {
-        console.log('❌ Total is 0 or negative');
+        console.log('âŒ Total is 0 or negative');
         e.form = 'Total amount must be greater than 0. Please add items with valid prices.';
         return e;
       }
 
-      console.log('✅ Validation passed!');
+      console.log('âœ… Validation passed!');
       return e;
       
     } catch (error) {
-      console.error('❌ Validation error:', error);
+      console.error('âŒ Validation error:', error);
       console.error('Error stack:', error.stack);
       e.form = `Validation error: ${error.message}`;
       return e;
     }
   };
 
-  // ── Copy From Modal Handlers ───────────────────────────────────────────────
+  // â”€â”€ Copy From Modal Handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openCopyFromModal = (docType) => {
     if (!isDocumentEditable || currentDocEntry) return;
-    console.log('🟢 Copy From Clicked');
+    console.log('ðŸŸ¢ Copy From Clicked');
 
-    // ✅ ONLY BUYER VALIDATION
+    // âœ… ONLY BUYER VALIDATION
     if (!header.vendor) {
       setValErrors({
         header: { vendor: 'Select Customer first' },
@@ -3312,7 +3339,7 @@ function ARInvoicePage() {
       return;
     }
 
-    // ✅ CLEAR ALL ERRORS
+    // âœ… CLEAR ALL ERRORS
     setValErrors({ header: {}, lines: {}, form: '' });
     setPageState(p => ({ ...p, error: '', success: '' }));
 
@@ -3320,7 +3347,7 @@ function ARInvoicePage() {
     setCopyFromModal(true);
   };
 
-  // ── Copy From handler ─────────────────────────────────────────────────────
+  // â”€â”€ Copy From handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleCopyFrom = (data, sourceType) => {
     const copySource = unwrapCopyFromDocument(data);
     const baseType = BASE_TYPE[sourceType] || 17;
@@ -3371,7 +3398,7 @@ function ARInvoicePage() {
     setPageState(p => ({ ...p, success: `Copied from ${labels[sourceType] || sourceType}` }));
   };
 
-  // ── Copy From fetch handlers ───────────────────────────────────────────────
+  // â”€â”€ Copy From fetch handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const fetchCopyFromDocuments = async (docType) => {
     try {
       const bpCode = String(header.vendor || '').trim();
@@ -3429,7 +3456,7 @@ function ARInvoicePage() {
     }
   };
 
-  // ── Copy To handler ───────────────────────────────────────────────────────
+  // â”€â”€ Copy To handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleCopyTo = async (targetType = 'ar-credit-memo') => {
     await copyToDocument({
       sourceDocType: 'arInvoice',
@@ -3521,7 +3548,7 @@ function ARInvoicePage() {
     }
   };
 
-  // ── submit ────────────────────────────────────────────────────────────────
+  // â”€â”€ submit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleSubmit = async (ev) => {
     ev.preventDefault();
     if (!companyFormSettingsReady) {
@@ -3577,8 +3604,8 @@ function ARInvoicePage() {
         prep.series = Number(header.series);
       }
       
-      console.log('🔍 [Frontend] Submitting AR Invoice with header:', prep);
-      console.log('🔍 [Frontend] Lines:', lines);
+      console.log('ðŸ” [Frontend] Submitting AR Invoice with header:', prep);
+      console.log('ðŸ” [Frontend] Lines:', lines);
       
       const payload = {
         company_id: activeCompanyId,
@@ -3609,7 +3636,7 @@ function ARInvoicePage() {
       
       setPageState(p => ({ ...p, success: `${r.data.message || 'AR Invoice saved.'}${dn}` }));
     } catch (e) {
-      console.error('❌ [Frontend] AR Invoice submission failed:', e);
+      console.error('âŒ [Frontend] AR Invoice submission failed:', e);
       setPageState(p => ({ ...p, error: getErrMsg(e, 'AR Invoice submission failed.') }));
     } finally {
       setPageState(p => ({ ...p, posting: false }));
@@ -3634,7 +3661,7 @@ function ARInvoicePage() {
 
   // Continue in next part with render...
 
-  // ── render ────────────────────────────────────────────────────────────────
+  // â”€â”€ render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   return (
     <form
       ref={formRef}
@@ -3645,7 +3672,7 @@ function ARInvoicePage() {
 
       {/* toolbar */}
       <div className="del-toolbar sap-document-toolbar">
-        <span className="del-toolbar__title">A/R Invoice{currentDocEntry ? ` — #${header.docNo || currentDocEntry}` : ''}</span>
+        <span className="del-toolbar__title">A/R Invoice{currentDocEntry ? ` â€” #${header.docNo || currentDocEntry}` : ''}</span>
         <button type="submit" className="del-btn del-btn--primary sap-document-toolbar__primary" disabled={pageState.posting || !isDocumentEditable}>
           {primaryActionLabel}
         </button>
@@ -3696,7 +3723,7 @@ function ARInvoicePage() {
               if (!isActive) dropdown.classList.add('active');
             }}
           >
-            Copy From ▼
+            Copy From
           </button>
           <div className="del-dropdown-menu">
             <button
@@ -3731,7 +3758,7 @@ function ARInvoicePage() {
       </div>
 
       {/* alerts */}
-      {pageState.loading && <div className="del-alert del-alert--success" style={{ marginTop: 0 }}>Loading…</div>}
+      {pageState.loading && <div className="del-alert del-alert--success" style={{ marginTop: 0 }}>Loading...</div>}
       {pageState.error && <div className="del-alert del-alert--error">{pageState.error}</div>}
       {pageState.success && <div className="del-alert del-alert--success">{pageState.success}</div>}
       {refData.warnings?.length > 0 && (
@@ -3739,7 +3766,7 @@ function ARInvoicePage() {
           <strong>SAP warnings:</strong>
           {refData.warnings.map((w, i) => <div key={i}>{w}</div>)}
           <div style={{ marginTop: 4, color: '#555' }}>Dropdowns are showing fallback values. Connect to SAP to load live data.</div>
-          <div style={{ marginTop: 4, color: '#d00', fontWeight: 600 }}>⚠️ Tax codes shown are examples only. Use actual SAP tax codes to avoid submission errors.</div>
+          <div style={{ marginTop: 4, color: '#d00', fontWeight: 600 }}>âš ï¸ Tax codes shown are examples only. Use actual SAP tax codes to avoid submission errors.</div>
         </div>
       )}
 
@@ -3747,7 +3774,7 @@ function ARInvoicePage() {
       <div className={`sap-document-layout so-layout${isRightSidebarOpen ? ' is-sidebar-open' : ' sap-document-layout--no-udf'}`}>
         <div className="sap-document-main so-layout__main">
 
-            {/* ══ HEADER CARD ══════════════════════════════════════════════ */}
+            {/* â•â• HEADER CARD â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             <div className="del-header-card">
               <div className="row g-2">
                 {/* LEFT COLUMN */}
@@ -3821,8 +3848,9 @@ function ARInvoicePage() {
                       onHeaderChange={handleHeaderChange}
                       businessPartners={refData.vendors || []}
                       currencyOptions={refData.currencies || []}
-                      localCurrency={refData.local_currency || refData.company_currency || 'INR'}
-                      systemCurrency={refData.system_currency || refData.local_currency || refData.company_currency || 'INR'}
+                      localCurrency={refData.local_currency || refData.company_currency || ''}
+                      systemCurrency={refData.system_currency || refData.local_currency || refData.company_currency || ''}
+                      fallbackLocalCurrency=""
                       disabled={!isDocumentEditable || pageState.vendorLoading || !header.vendor || !!currentDocEntry}
                     />
 
@@ -3984,7 +4012,7 @@ function ARInvoicePage() {
               </div>
             </div>
 
-            {/* ══ TABS ══════════════════════════════════════════════════════ */}
+            {/* â•â• TABS â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             <div className="del-tabs">
               {TAB_NAMES.map(t => (
                 <button 
@@ -3998,7 +4026,7 @@ function ARInvoicePage() {
               ))}
             </div>
 
-            {/* ══ TAB CONTENT ═══════════════════════════════════════════════ */}
+            {/* â•â• TAB CONTENT â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {activeTab === 'Contents' && (
               <ContentsTab
                 lines={lines}
@@ -4068,7 +4096,7 @@ function ARInvoicePage() {
 
             {/* Continue in next part... */}
 
-            {/* ══ TOTALS FOOTER ═════════════════════════════════════════════ */}
+            {/* â•â• TOTALS FOOTER â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             <div className="del-header-card">
               <div className="del-field-grid del-field-grid--summary">
                 <div>
@@ -4100,7 +4128,7 @@ function ARInvoicePage() {
                       {totals.taxBreakdown.map(t => (
                         <div key={t.taxCode} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 4 }}>
                           <span>{t.taxCode} ({t.taxRate}%)</span>
-                          <span>{fmtDec(t.taxAmount, numDec.tax)}</span>
+                          <span>{formatDisplayMoney(t.taxAmount, numDec.tax)}</span>
                         </div>
                       ))}
                     </div>
@@ -4110,7 +4138,7 @@ function ARInvoicePage() {
                       <tbody>
                         <tr>
                           <td>Total Before Discount</td>
-                          <td className="del-grid__cell--num"><input className="del-grid__input" value={fmtDec(totals.subtotal, numDec.total)} readOnly /></td>
+                          <td className="del-grid__cell--num"><input className="del-grid__input" value={formatDisplayMoney(totals.subtotal, numDec.total)} readOnly /></td>
                         </tr>
                         <tr>
                           <td>Discount %</td>
@@ -4143,7 +4171,7 @@ function ARInvoicePage() {
                               title="Select Freight Charge"
                               disabled={!isDocumentEditable}
                             >
-                              🚚
+                              ðŸšš
                             </button>
                           </td>
                         </tr>
@@ -4153,13 +4181,13 @@ function ARInvoicePage() {
                         </tr>
                         <tr>
                           <td>Tax</td>
-                          <td className="del-grid__cell--num"><input className="del-grid__input" value={fmtDec(totals.taxAmt, numDec.tax)} readOnly /></td>
+                          <td className="del-grid__cell--num"><input className="del-grid__input" value={formatDisplayMoney(totals.taxAmt, numDec.tax)} readOnly /></td>
                         </tr>
                         {showWTaxSummaryRow && (
                           <tr>
                             <td>WTax Amount</td>
                             <td className="del-grid__cell--num" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                              <input className="del-grid__input" value={fmtDec(wtaxAmount, numDec.tax)} readOnly style={{ flex: 1 }} />
+                              <input className="del-grid__input" value={formatDisplayMoney(wtaxAmount, numDec.tax)} readOnly style={{ flex: 1 }} />
                               <button
                                 type="button"
                                 onClick={openWithholdingTaxTable}
@@ -4182,7 +4210,7 @@ function ARInvoicePage() {
                         )}
                         <tr style={{ borderTop: '2px solid #a0aab4' }}>
                           <td style={{ fontWeight: 700, color: '#003366' }}>Total Payment Due</td>
-                          <td className="del-grid__cell--num" style={{ fontWeight: 700, color: '#003366' }}><input className="del-grid__input" style={{ fontWeight: 700, color: '#003366' }} value={fmtDec(totalPaymentDueAfterWTax, numDec.totalPaymentDue)} readOnly /></td>
+                          <td className="del-grid__cell--num" style={{ fontWeight: 700, color: '#003366' }}><input className="del-grid__input" style={{ fontWeight: 700, color: '#003366' }} value={formatDisplayMoney(totalPaymentDueAfterWTax, numDec.totalPaymentDue)} readOnly /></td>
                         </tr>
                       </tbody>
                     </table>
@@ -4191,7 +4219,7 @@ function ARInvoicePage() {
               </div>
             </div>
 
-            {/* ══ ACTION BUTTONS ════════════════════════════════════════════ */}
+            {/* â•â• ACTION BUTTONS â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {false && (
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '12px', marginBottom: '12px', gap: '8px' }}>
               <div style={{ display: 'flex', gap: '8px' }}>
@@ -4220,7 +4248,7 @@ function ARInvoicePage() {
                       if (!isActive) dropdown.classList.add('active');
                     }}
                   >
-                    Copy From ▼
+                    Copy From
                   </button>
                   <div className="del-dropdown-menu">
                     {[
@@ -4279,7 +4307,8 @@ function ARInvoicePage() {
             headerUdfFields={headerUdfDefinitions}
             rowUdfFields={rowUdfDefinitions}
             formSettings={formSettings}
-            onSettingChange={updateFormSetting}
+          onSettingChange={updateFormSetting}
+          onColumnOrderChange={formSettingsStatus.reorder}
             settingsLoaded={companyFormSettingsReady}
             editablePropertiesByGroup={{ matrixColumns: ['visible'], rowUdfs: ['visible'] }}
             editableSapControlledProperties={{ matrixColumns: ['visible'], headerUdfs: [], rowUdfs: ['visible'] }}
@@ -4287,6 +4316,7 @@ function ARInvoicePage() {
             hasUnsavedChanges={formSettingsStatus.hasUnsavedChanges}
             saveError={formSettingsStatus.error}
             onSave={formSettingsStatus.save}
+            onCancel={formSettingsStatus.discard}
             settingsScopeLabel={formSettingsStatus.scopeLabel}
           />
         </div>
@@ -4396,7 +4426,7 @@ function ARInvoicePage() {
         freightCharges={freightModal.freightCharges}
         taxCodes={effectiveTaxCodes}
         loading={freightModal.loading}
-        currency={header.currency || refData.local_currency || refData.company_currency || 'INR'}
+        currency={header.currency || refData.local_currency || refData.company_currency || ''}
       />
       <LineValueLookupModal
         isOpen={lineLookupModal.open}

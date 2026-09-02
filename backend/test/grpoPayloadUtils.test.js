@@ -75,3 +75,25 @@ test('keeps manual GRPO line values without adding base references', () => {
   assert.equal(documentLine.BaseType, undefined);
   assert.equal(documentLine.BaseLine, undefined);
 });
+test('serializes edited UoM Name on manual GRPO lines', () => {
+  const documentLine = buildGRPODocumentLine({
+    itemNo: 'RM-004',
+    quantity: 2,
+    unitPrice: 50,
+    uomName: 'Mtr.',
+  });
+
+  assert.equal(documentLine.UoMCode, 'Mtr.');
+});
+test('does not restore UoMCode after GRPO UoM Name is cleared', () => {
+  const documentLine = buildGRPODocumentLine({
+    itemNo: 'RM-005',
+    quantity: 2,
+    unitPrice: 50,
+    uomName: '',
+    uomCode: 'MTR',
+    uomNameEdited: true,
+  });
+
+  assert.equal(documentLine.UoMCode, undefined);
+});

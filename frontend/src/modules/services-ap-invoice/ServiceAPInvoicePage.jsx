@@ -12,14 +12,19 @@ import { copyToDocument } from '../../services/documentCopyService';
 import useStandardDocumentDraftTask from '../../hooks/useStandardDocumentDraftTask';
 import { duplicateDocumentInPlace } from '../../utils/documentDuplicate';
 import { useSapWindowTaskbarActions } from '../../components/SapWindowTaskbarContext';
-import { createActiveCompanyScopedRouteState } from '../../utils/companyStorageScope';
-import { useCompanyScopedFormSettings } from '../../utils/formSettingsStorage';
+import { createActiveCompanyScopedRouteState, isRouteStateForCompany } from '../../utils/companyStorageScope';
+import useServiceDocumentFormSettings from '../../utils/useServiceDocumentFormSettings';
+import { updateFormSettingPreference } from '../../utils/formSettingsPreferences';
+import { getOrderedVisibleMatrixColumns } from '../../utils/formSettingsColumns';
 import { buildVisibleEnteredRowUdfPayload } from '../../utils/rowUdfPayload';
 import { calculateDocumentRounding } from '../../utils/documentRounding';
 import { getSapVisibleDocumentSeries } from '../../utils/seriesDefaults';
 import { resolveLocationDisplayName } from '../../utils/locationLookup';
 import { getDocumentLayout } from '../../api/sapLayoutApi';
-import { buildMatrixColumnsFromSapLayout, mergeLiveMatrixSettings } from '../../utils/liveDocumentLayout';
+import { fetchSalesDocumentSchema } from '../../api/salesDocumentSchemaApi';
+import { useAuth } from '../../auth/AuthContext';
+import { convertDocumentAmountForDisplay, resolveDisplayCurrency } from '../../utils/documentCurrency';
+import { buildServiceDocumentLiveFields, getSapStandardServiceMatrixColumns } from '../../utils/serviceDocumentLiveFields';
 import { BASE_TYPE, normaliseDocumentHeader, unwrapCopyFromDocument } from '../../api/copyFromApi';
 import BusinessPartnerModal from '../sales-order/components/BusinessPartnerModal';
 import StateSelectionModal from '../../components/common/StateSelectionModal';
@@ -79,7 +84,8 @@ const INIT_HEADER = {
   contactPerson: '',
   salesContractNo: '',
   currencyMode: 'BP',
-  currency: 'INR',
+  currency: '',
+  exchangeRate: '',
   transactionType: 'GST Tax Invoice',
   placeOfSupply: '',
   indicator: '',
@@ -288,160 +294,6 @@ const createLine = (rowUdfDefinitions = ROW_UDF_DEFINITIONS) => ({
   udf: createUdfState(rowUdfDefinitions),
 });
 
-const CONTENT_COLUMNS = [
-  { key: 'sac', label: 'SAC', width: 105, lookup: 'sac' },
-  { key: 'description', label: 'Description', width: 220 },
-  { key: 'glAccount', label: 'G/L Account', width: 140, lookup: 'account' },
-  { key: 'distRule', label: 'Distr. Rule', width: 120, lookup: 'distRule' },
-  { key: 'glAccountName', label: 'G/L Account Name', width: 210, readOnly: true },
-  { key: 'taxCode', label: 'Tax Code', width: 150, lookup: 'tax' },
-  { key: 'wtaxLiable', label: 'WTax Liable', width: 95, lookup: 'yesNo' },
-  { key: 'totalLC', label: 'Total (LC)', width: 115, numeric: true },
-  { key: 'loc', label: 'Loc.', width: 100, lookup: 'location' },
-  { key: 'blanketAgreementNo', label: 'Blanket Agreement No.', width: 170 },
-  { key: 'costSheet', label: 'Cost-Sheet', width: 125 },
-  { key: 'packingType', label: 'Packing-Type', width: 135 },
-  { key: 'containerType', label: 'Container Type', width: 135 },
-  { key: 'grossWt', label: 'GrossWt', width: 110, numeric: true },
-  { key: 'totalPackage', label: 'Total-Package', width: 130, numeric: true },
-  { key: 'taxCodeRepeat', label: 'TaxCode', width: 110, readOnly: true },
-  { key: 'price', label: 'Price', width: 95, numeric: true },
-  { key: 'sellerBrokerage', label: 'Seller Brokerage', width: 145 },
-  { key: 'buyerBrokerage', label: 'Buyer Brokerage', width: 140 },
-  { key: 'buyerDelivery', label: 'Buyer - Delivery', width: 140 },
-  { key: 'sellerDelivery', label: 'Seller - Delivery', width: 145 },
-  { key: 'buyerTermsOfPayment', label: 'Buyer - Terms of payment', width: 205 },
-  { key: 'sellerTermsOfPayment', label: 'Seller - Terms of Payment', width: 210 },
-  { key: 'buyerQuality', label: 'Buyer - Quality', width: 135 },
-  { key: 'sellerQuality', label: 'Seller - Quality', width: 140 },
-  { key: 'buyerPrice', label: 'Buyer - Price', width: 125 },
-  { key: 'sellerPrice', label: 'Seller - Price', width: 130 },
-  { key: 'buyerSpecialInstruction', label: 'Buyer - Special Instruction', width: 210 },
-  { key: 'sellerSpecialInstruction', label: 'Seller - Special Instruction', width: 215 },
-  { key: 'sellerBrokerageAmtPer', label: 'Seller Brokerage(Amt./Per)', width: 205 },
-  { key: 'sellerBrokeragePercentage', label: 'Seller Brokerage in Percentage', width: 230, numeric: true },
-  { key: 'stcode', label: 'STCODE', width: 115 },
-  { key: 'sItem', label: 'S_Item', width: 110, lookup: 'item' },
-  { key: 'sQty', label: 'S_Qty', width: 90, numeric: true },
-  { key: 'specialRebate', label: 'Special Rebate', width: 135, numeric: true },
-  { key: 'commision', label: 'Commision', width: 115, numeric: true },
-  { key: 'brokPerQty', label: 'BrokPerQty', width: 105, numeric: true },
-  { key: 'fixBrokBuyer', label: 'FIX Brok BUYER', width: 135, numeric: true },
-  { key: 'fixBrockSeller', label: 'Fix Brock Seller', width: 140, numeric: true },
-  { key: 'sellerTermsOfPaymentRepeat', label: 'Seller - Terms of Payment', width: 210 },
-  { key: 'taxAmountLC', label: 'Tax Amount (LC)', width: 125, readOnly: true, visible: false },
-  { key: 'saudaNodeRef', label: 'Sauda Node Ref', width: 135, visible: false },
-  { key: 'apInvDocKey', label: 'AP Inv DocKey', width: 130, visible: false },
-  { key: 'apInvDocNum', label: 'AP Inv DocNum', width: 135, visible: false },
-  { key: 'apInvLineNum', label: 'AP Inv LineNum', width: 135, visible: false },
-  { key: 'rg23DNo', label: 'RG23DNo', width: 115, visible: false },
-  { key: 'unitPrice', label: 'Unit Price', width: 110, numeric: true, visible: false },
-  { key: 'buyerBillDiscount', label: 'Buyer Bill Discount', width: 165, numeric: true, visible: false },
-  { key: 'sellerBillDiscount', label: 'Seller Bill Discount', width: 170, numeric: true, visible: false },
-  { key: 'freightPurchase', label: 'Freight Purchase', width: 150, numeric: true, visible: false },
-  { key: 'freightSales', label: 'Freight Sales', width: 130, numeric: true, visible: false },
-  { key: 'freightProvider', label: 'Freight Provider', width: 150, visible: false },
-  { key: 'freightProviderName', label: 'Freight Provider Name', width: 190, visible: false },
-  { key: 'documentCreated', label: 'Document Created', width: 150, type: 'date', visible: false },
-  { key: 'brokerageNumber', label: 'Brokerage Number', width: 155, visible: false },
-];
-
-const SERVICE_AP_COLUMN_TOKEN_TO_KEY = {
-  DESCRIPTION: 'description',
-  ITEMDESCRIPTION: 'description',
-  DSCRIPTION: 'description',
-  GLACCOUNT: 'glAccount',
-  ACCOUNT: 'glAccount',
-  ACCOUNTCODE: 'glAccount',
-  ACCTCODE: 'glAccount',
-  DISTRRULE: 'distRule',
-  DISTRIBUTIONRULE: 'distRule',
-  OCRCODE: 'distRule',
-  GLACCOUNTNAME: 'glAccountName',
-  ACCOUNTNAME: 'glAccountName',
-  ACCTNAME: 'glAccountName',
-  TAXCODE: 'taxCode',
-  WTAXLIABLE: 'wtaxLiable',
-  WTLIABLE: 'wtaxLiable',
-  TOTALLC: 'totalLC',
-  TOTAL: 'totalLC',
-  LINETOTAL: 'totalLC',
-  TAXAMOUNTLC: 'taxAmountLC',
-  TAXAMOUNT: 'taxAmountLC',
-  VATSUM: 'taxAmountLC',
-  SAC: 'sac',
-  SACCODE: 'sac',
-  SACENTRY: 'sac',
-  LOC: 'loc',
-  LOCATION: 'loc',
-  LOCATIONCODE: 'loc',
-  LOCCODE: 'loc',
-  BLANKETAGREEMENTNO: 'blanketAgreementNo',
-  AGRNO: 'blanketAgreementNo',
-  COSTSHEET: 'costSheet',
-  COSTSHEETCODE: 'costSheet',
-  PACKINGTYPE: 'packingType',
-  PACKING: 'packingType',
-  CONTAINERTYPE: 'containerType',
-  GROSSWT: 'grossWt',
-  GROSSWEIGHT: 'grossWt',
-  TOTALPACKAGE: 'totalPackage',
-  TOTALPACKAGES: 'totalPackage',
-  TAXCODEREPEAT: 'taxCodeRepeat',
-  TAXCODEUDF: 'taxCodeRepeat',
-  TAXCODE2: 'taxCodeRepeat',
-  PRICE: 'price',
-  PRICEUDF: 'price',
-  SAUDANODEREF: 'saudaNodeRef',
-  SAUDANODHREF: 'saudaNodeRef',
-  APINVDOCKEY: 'apInvDocKey',
-  APINVDOCENTRY: 'apInvDocKey',
-  APINVDOCNUM: 'apInvDocNum',
-  APINVLINENUM: 'apInvLineNum',
-  RG23DNO: 'rg23DNo',
-  SPECIALREBATE: 'specialRebate',
-  COMMISION: 'commision',
-  COMMISSION: 'commision',
-  BROKPERQTY: 'brokPerQty',
-  SITEM: 'sItem',
-  SITEMCODE: 'sItem',
-  UNITPRICE: 'unitPrice',
-  SQTY: 'sQty',
-  QUANTITY: 'sQty',
-  SELLERBROKERAGE: 'sellerBrokerage',
-  BUYERBROKERAGE: 'buyerBrokerage',
-  BUYERDELIVERY: 'buyerDelivery',
-  SELLERDELIVERY: 'sellerDelivery',
-  BUYERQUALITY: 'buyerQuality',
-  SELLERQUALITY: 'sellerQuality',
-  BUYERPRICE: 'buyerPrice',
-  SELLERPRICE: 'sellerPrice',
-  BUYERSPECIALINSTRUCTION: 'buyerSpecialInstruction',
-  SELLERSPECIALINSTRUCTION: 'sellerSpecialInstruction',
-  SELLERBROKERAGEAMTPER: 'sellerBrokerageAmtPer',
-  SELLERBROKERAGEINPERCENTAGE: 'sellerBrokeragePercentage',
-  BUYERBILLDISCOUNT: 'buyerBillDiscount',
-  SELLERBILLDISCOUNT: 'sellerBillDiscount',
-  STCODE: 'stcode',
-  BUYERTERMSOFPAYMENT: 'buyerTermsOfPayment',
-  SELLERTERMSOFPAYMENT: 'sellerTermsOfPayment',
-  SELLERTERMSOFPAYMENTREPEAT: 'sellerTermsOfPaymentRepeat',
-  FIXBROKBUYER: 'fixBrokBuyer',
-  FIXBROCKBUYER: 'fixBrokBuyer',
-  FIXBROKB: 'fixBrokBuyer',
-  FIXBROCKB: 'fixBrokBuyer',
-  FIXBROKSELLER: 'fixBrockSeller',
-  FIXBROCKSELLER: 'fixBrockSeller',
-  FIXBROKS: 'fixBrockSeller',
-  FIXBROCKS: 'fixBrockSeller',
-  FREIGHTPURCHASE: 'freightPurchase',
-  FREIGHTSALES: 'freightSales',
-  FREIGHTPROVIDER: 'freightProvider',
-  FREIGHTPROVIDERNAME: 'freightProviderName',
-  DOCUMENTCREATED: 'documentCreated',
-  BROKERAGENUMBER: 'brokerageNumber',
-};
-
 const includeSelectedSeries = (series = [], selectedSeries = '', selectedSeriesName = '') => {
   const selected = String(selectedSeries || '').trim();
   if (!selected || selected === 'manual' || series.some((item) => String(item.Series || '') === selected)) {
@@ -577,62 +429,6 @@ const pickSeriesForNewDocument = (series = [], preferredSeries = '', sourceSerie
   return available.find((item) => item.IsDefault || item.isDefault) || available[0];
 };
 
-const normalizeServiceApColumnToken = (value) =>
-  String(value || '')
-    .trim()
-    .toUpperCase()
-    .replace(/^U_/, '')
-    .replace(/[^A-Z0-9]+/g, '');
-
-const getServiceApColumnKey = (column = {}) => {
-  const candidates = [
-    column.key,
-    column.valueKey,
-    column.rendererKey,
-    column.sapField,
-    column.fieldName,
-    column.layoutFieldName,
-    column.columnUid,
-    column.columnTitle,
-    column.label,
-  ];
-
-  for (const candidate of candidates) {
-    const token = normalizeServiceApColumnToken(candidate);
-    if (SERVICE_AP_COLUMN_TOKEN_TO_KEY[token]) return SERVICE_AP_COLUMN_TOKEN_TO_KEY[token];
-  }
-
-  return '';
-};
-
-const normalizeServiceApMatrixColumns = (columns = []) => {
-  const liveByKey = new Map();
-  (Array.isArray(columns) ? columns : []).forEach((column) => {
-    const key = getServiceApColumnKey(column);
-    if (key && !liveByKey.has(key)) liveByKey.set(key, column);
-  });
-
-  const orderedColumns = CONTENT_COLUMNS.map((baseColumn, index) => {
-    const liveColumn = liveByKey.get(baseColumn.key) || {};
-    const liveWidth = Number(liveColumn.width || liveColumn.minWidth);
-    return {
-      ...liveColumn,
-      ...baseColumn,
-      key: baseColumn.key,
-      label: baseColumn.label,
-      width: Number.isFinite(liveWidth) && liveWidth > 0 ? Math.max(liveWidth, baseColumn.width || 125) : baseColumn.width,
-      minWidth: Number.isFinite(liveWidth) && liveWidth > 0 ? Math.max(liveWidth, baseColumn.width || 125) : baseColumn.width,
-      order: index + 1,
-      columnOrder: index + 1,
-      visible: baseColumn.visible !== false,
-      active: liveColumn.active !== false,
-      readOnly: Boolean(baseColumn.readOnly || liveColumn.readOnly),
-    };
-  });
-
-  return orderedColumns;
-};
-
 const normalizeFieldName = (value) =>
   String(value || '')
     .replace(/^U_/i, '')
@@ -702,7 +498,7 @@ const isFixedServiceMatrixField = (field = {}) =>
   fieldNameMatches(field, FIXED_SERVICE_MATRIX_FIELD_NAMES);
 
 const applyServiceRowUdfDefaults = (definitions = []) =>
-  definitions.map((field) => ({ ...field, visible: false }));
+  definitions.map((field) => ({ ...field, visible: field.visible === true }));
 
 const LINE_LOOKUP_FIELDS = new Set([
   'sellerBrokerage',
@@ -883,25 +679,40 @@ const normalizeCopyLine = (line, idx, docEntry, baseType, accounts) => {
 function ServiceAPInvoicePage() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { company } = useAuth();
+  const activeCompanyId = company?.companyId || '';
+  const activeCompanyDb = company?.dbName || '';
   const workspaceRef = useRef(null);
   const { removeTask, upsertTask } = useSapWindowTaskbarActions();
-  const requestedDocEntry = location.state?.serviceApInvoiceDocEntry;
+  const requestedDocEntry = isRouteStateForCompany(location.state, company)
+    ? location.state?.serviceApInvoiceDocEntry
+    : null;
   const handledCopyFromRef = useRef('');
   const vendorDetailsRequestRef = useRef(0);
 
   const [currentDocEntry, setCurrentDocEntry] = useState(null);
   const [header, setHeader] = useState(INIT_HEADER);
-  const [headerUdfDefinitions, setHeaderUdfDefinitions] = useState(HEADER_UDF_DEFINITIONS);
-  const [rowUdfDefinitions, setRowUdfDefinitions] = useState(ROW_UDF_DEFINITIONS);
-  const [matrixColumnDefinitions, setMatrixColumnDefinitions] = useState(CONTENT_COLUMNS);
-  const [lines, setLines] = useState([createLine(ROW_UDF_DEFINITIONS)]);
-  const [headerUdfs, setHeaderUdfs] = useState(() => normalizeUdfState(HEADER_UDF_DEFINITIONS));
+  const [headerUdfDefinitions, setHeaderUdfDefinitions] = useState([]);
+  const [rowUdfDefinitions, setRowUdfDefinitions] = useState([]);
+  const [matrixColumnDefinitions, setMatrixColumnDefinitions] = useState(getSapStandardServiceMatrixColumns);
+  const [lines, setLines] = useState([createLine([])]);
+  const [headerUdfs, setHeaderUdfs] = useState({});
   const [withholdingTax, setWithholdingTax] = useState(createEmptyWithholdingTaxState);
-  const [formSettings, setFormSettings, formSettingsStorageKey] = useCompanyScopedFormSettings(
-    FORM_SETTINGS_STORAGE_KEY,
+  const {
+    formSettings,
+    setFormSettings,
+    formSettingsStatus,
+    formSettingsReady: companyFormSettingsReady,
+    hydrateFormSettings,
+    clearMetadataScope: clearFormSettingsMetadataScope,
+  } = useServiceDocumentFormSettings({
+    company,
+    baseStorageKey: FORM_SETTINGS_STORAGE_KEY,
     readSavedFormSettings,
-    [headerUdfDefinitions, rowUdfDefinitions, matrixColumnDefinitions],
-  );
+    headerUdfDefinitions,
+    rowUdfDefinitions,
+    matrixColumnDefinitions,
+  });
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [formSettingsOpen, setFormSettingsOpen] = useState(false);
   const [refData, setRefData] = useState(EMPTY_REF_DATA);
@@ -991,7 +802,7 @@ function ServiceAPInvoicePage() {
   const resolvePartnerCurrency = useCallback((currency, fallback = '') => {
     const normalized = String(currency || '').trim();
     if (normalized && normalized !== '##') return normalized;
-    return fallback || refData.local_currency || refData.company_currency || 'INR';
+    return fallback || refData.local_currency || refData.company_currency || '';
   }, [refData.company_currency, refData.local_currency]);
   useRelationshipMapRegistration({
     enabled: Boolean(currentDocEntry),
@@ -1319,6 +1130,21 @@ function ServiceAPInvoicePage() {
   const balanceDueAfterWTax = currentDocEntry && String(header.balanceDue || '').trim()
     ? totals.balanceDue
     : Math.max(0, totalPaymentDueAfterWTax - totals.appliedAmount);
+  const displayCurrency = resolveDisplayCurrency({
+    mode: header.currencyMode,
+    documentCurrency: header.currency,
+    localCurrency: refData.local_currency || refData.company_currency || '',
+    systemCurrency: refData.system_currency || '',
+  });
+  const displayAmount = (value) => convertDocumentAmountForDisplay(value, {
+    mode: header.currencyMode,
+    documentCurrency: header.currency,
+    localCurrency: refData.local_currency || refData.company_currency || '',
+    systemCurrency: refData.system_currency || '',
+    documentRate: header.exchangeRate,
+    systemRate: refData.system_rate || refData.company_currencies?.systemRate || '',
+    postingMethod: refData.exchange_rate_settings?.postingMethod || 'direct',
+  });
 
   const openWithholdingTaxTable = () => {
     if (!String(header.vendor || '').trim()) {
@@ -1349,10 +1175,33 @@ function ServiceAPInvoicePage() {
   useEffect(() => {
     let ignore = false;
 
+    clearFormSettingsMetadataScope();
+    setHeaderUdfDefinitions([]);
+    setCurrentDocEntry(null);
+    setHeader(INIT_HEADER);
+    setRowUdfDefinitions([]);
+    setMatrixColumnDefinitions(getSapStandardServiceMatrixColumns());
+    setHeaderUdfs({});
+    setLines([createLine([])]);
+    setWithholdingTax(createEmptyWithholdingTaxState());
+    setValErrors({ header: {}, lines: {}, form: '' });
+    setRefData((prev) => ({
+      ...prev,
+      contacts: [],
+      udf_metadata: { header: [], rows: [] },
+      line_field_metadata: null,
+      currencies: [],
+      local_currency: '',
+      system_currency: '',
+      company_currency: '',
+      warnings: [],
+    }));
+    vendorDetailsRequestRef.current += 1;
+
     const load = async () => {
       setPageState((prev) => ({ ...prev, loading: true, error: '' }));
       try {
-        const [refRes, seriesRes, layoutRes] = await Promise.all([
+        const [refRes, seriesRes, layoutRes, liveSchema] = await Promise.all([
           fetchServiceAPInvoiceReferenceData(),
           fetchServiceAPInvoiceSeries(header.postingDate, header.transactionType),
           getDocumentLayout({ documentType: 'SERVICE_AP_INVOICE' }).catch((error) => ({
@@ -1362,6 +1211,7 @@ function ServiceAPInvoicePage() {
               warning: error.response?.data?.message || error.message || 'Failed to load SAP layout.',
             },
           })),
+          fetchSalesDocumentSchema({ documentType: 'SERVICE_AP_INVOICE' }).catch(() => null),
         ]);
         if (ignore) return;
 
@@ -1382,16 +1232,20 @@ function ServiceAPInvoicePage() {
             // Keep the date-filtered response when branch-specific lookup is unavailable.
           }
         }
-        const nextHeaderUdfs = nextRefData.udf_metadata.header;
-        const nextRowUdfs = applyServiceRowUdfDefaults(nextRefData.udf_metadata?.rows || []);
-        const layoutMatrixColumns = buildMatrixColumnsFromSapLayout({
-          baseColumns: CONTENT_COLUMNS,
-          layoutColumns: layoutRes?.data?.columns || [],
-          fallbackColumns: CONTENT_COLUMNS,
+        const liveFields = buildServiceDocumentLiveFields({
+          schema: liveSchema,
+          documentType: 'SERVICE_AP_INVOICE',
+          headerTable: 'OPCH',
+          lineTable: 'PCH1',
+          companyId: activeCompanyId,
+          companyDb: activeCompanyDb,
+          layoutResponse: layoutRes,
         });
-        const nextMatrixColumns = normalizeServiceApMatrixColumns(layoutMatrixColumns);
-        const hasSapMatrixPreferences = Boolean((layoutRes?.data?.columns || []).length && layoutRes?.data?.source !== 'fallback');
-        const nextDefaults = readSavedFormSettings(nextHeaderUdfs, nextRowUdfs, nextMatrixColumns, formSettingsStorageKey);
+        const nextHeaderUdfs = liveFields.liveAvailable ? liveFields.headerUdfFields : [];
+        const nextRowUdfs = applyServiceRowUdfDefaults(liveFields.liveAvailable ? liveFields.rowUdfFields : []);
+        const nextMatrixColumns = liveFields.liveAvailable
+          ? liveFields.matrixColumns
+          : getSapStandardServiceMatrixColumns();
         setHeaderUdfDefinitions(nextHeaderUdfs);
         setRowUdfDefinitions(nextRowUdfs);
         setMatrixColumnDefinitions(nextMatrixColumns);
@@ -1400,16 +1254,21 @@ function ServiceAPInvoicePage() {
           ...line,
           udf: normalizeUdfState(nextRowUdfs, line.udf || {}),
         })));
-        setFormSettings((prev) => mergeLiveMatrixSettings(nextDefaults, prev, hasSapMatrixPreferences));
+        hydrateFormSettings(nextHeaderUdfs, nextRowUdfs, nextMatrixColumns);
         setRefData({
           ...nextRefData,
           line_field_metadata: {
             ...(nextRefData.line_field_metadata || { sap_form: {} }),
             matrix_columns: nextMatrixColumns,
             imported_layout: layoutRes?.data || null,
+            live_schema: liveFields.liveSchema,
+            live_available: liveFields.liveAvailable,
           },
           warnings: [
             ...(nextRefData.warnings || []),
+            ...(!liveFields.liveAvailable
+              ? ['Live Service A/P Invoice field metadata was unavailable; standard service fields are shown.']
+              : []),
             ...(layoutRes?.data?.warning ? [layoutRes.data.warning] : []),
           ],
         });
@@ -1425,6 +1284,23 @@ function ServiceAPInvoicePage() {
         setPageState((prev) => ({ ...prev, loading: false }));
       } catch (error) {
         if (!ignore) {
+          const fallbackColumns = getSapStandardServiceMatrixColumns();
+          setHeaderUdfDefinitions([]);
+          setRowUdfDefinitions([]);
+          setMatrixColumnDefinitions(fallbackColumns);
+          hydrateFormSettings([], [], fallbackColumns);
+          setRefData((prev) => ({
+            ...prev,
+            udf_metadata: { header: [], rows: [] },
+            line_field_metadata: {
+              sap_form: {},
+              matrix_columns: fallbackColumns,
+              imported_layout: null,
+              live_schema: null,
+              live_available: false,
+            },
+            warnings: [...(prev.warnings || []), 'Live Service A/P Invoice field metadata was unavailable; safe SAP service fields are shown.'],
+          }));
           setPageState((prev) => ({ ...prev, loading: false, error: error.response?.data?.message || error.message || 'Failed to load Service A/P Invoice.' }));
         }
       }
@@ -1434,7 +1310,7 @@ function ServiceAPInvoicePage() {
     return () => {
       ignore = true;
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeCompanyId, activeCompanyDb]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!requestedDocEntry) return;
@@ -1571,6 +1447,7 @@ function ServiceAPInvoicePage() {
           name: vendor.CardName || prev.name,
           paymentTerms: vendor.GroupNum != null ? String(vendor.GroupNum) : prev.paymentTerms,
           currency: resolvePartnerCurrency(vendor.Currency, prev.currency),
+          exchangeRate: '',
           contactPerson: contacts.some((contact) => String(contact.CntctCode) === String(prev.contactPerson))
             ? prev.contactPerson
             : String(contacts[0]?.CntctCode ?? ''),
@@ -1599,6 +1476,7 @@ function ServiceAPInvoicePage() {
       vendor: cardCode,
       name: vendor?.CardName || vendor?.name || prev.name,
       currency: resolvePartnerCurrency(vendor?.Currency, prev.currency),
+      exchangeRate: '',
       paymentTerms: vendor?.GroupNum != null ? String(vendor.GroupNum) : prev.paymentTerms,
       contactPerson: '',
       shipToCode: '',
@@ -1680,7 +1558,7 @@ function ServiceAPInvoicePage() {
     }
 
     if (name === 'postingDate') {
-      setHeader((prev) => ({ ...prev, postingDate: value }));
+      setHeader((prev) => ({ ...prev, postingDate: value, exchangeRate: '' }));
       setPageState((prev) => ({ ...prev, seriesLoading: true }));
       try {
         const res = await fetchServiceAPInvoiceSeries(value, header.transactionType, header.branch);
@@ -1830,6 +1708,7 @@ function ServiceAPInvoicePage() {
     setHeader((prev) => ({
       ...prev,
       [name]: nextValue,
+      ...(name === 'currency' ? { exchangeRate: '' } : {}),
       ...(name === 'remarks' ? { otherInstruction: nextValue } : {}),
       ...(name === 'otherInstruction' ? { remarks: nextValue } : {}),
     }));
@@ -1880,13 +1759,9 @@ function ServiceAPInvoicePage() {
     )));
   };
 
-  const updateFormSetting = (groupKey, fieldKey, prop, value) => setFormSettings((prev) => ({
-    ...prev,
-    [groupKey]: {
-      ...(prev[groupKey] || {}),
-      [fieldKey]: { ...((prev[groupKey] || {})[fieldKey] || {}), [prop]: value },
-    },
-  }));
+  const updateFormSetting = (groupKey, fieldKey, prop, value) => setFormSettings((prev) => (
+    updateFormSettingPreference(prev, groupKey, fieldKey, prop, value)
+  ));
 
   const toggleHeaderUdfs = () => {
     setFormSettingsOpen(false);
@@ -1894,6 +1769,7 @@ function ServiceAPInvoicePage() {
   };
 
   const toggleFormSettings = () => {
+    if (!companyFormSettingsReady) return;
     setSidebarOpen(false);
     setFormSettingsOpen((prev) => !prev);
   };
@@ -1986,6 +1862,12 @@ function ServiceAPInvoicePage() {
     if (!String(header.vendor || '').trim()) errors.header.vendor = 'Vendor is required';
     if (!String(header.postingDate || '').trim()) errors.header.postingDate = 'Posting Date is required';
     if (!String(header.documentDate || '').trim()) errors.header.documentDate = 'Document Date is required';
+    if (!String(header.currency || '').trim()) errors.header.currency = 'Document Currency is required';
+    const localCurrency = String(refData.local_currency || refData.company_currency || '').trim();
+    if (header.currency && localCurrency && String(header.currency).trim() !== localCurrency) {
+      const rate = Number(header.exchangeRate);
+      if (!Number.isFinite(rate) || rate <= 0) errors.header.exchangeRate = 'A positive exchange rate is required';
+    }
     if (header.series === 'manual' && parseNum(header.docNo) <= 0) errors.header.docNo = 'Document No. is required for Manual series';
 
     const populated = lines.filter((line) => String(line.description || line.glAccount || line.totalLC || '').trim());
@@ -2074,6 +1956,14 @@ function ServiceAPInvoicePage() {
 
   const handleSubmit = async (event) => {
     event.preventDefault();
+    if (!companyFormSettingsReady) {
+      setPageState((prev) => ({
+        ...prev,
+        success: '',
+        error: 'Select a company and wait for its Form Settings to load before saving this document.',
+      }));
+      return;
+    }
     if (!isDocumentEditable) {
       setPageState((prev) => ({ ...prev, success: '', error: 'Closed Service A/P Invoices cannot be edited.' }));
       return;
@@ -2246,6 +2136,7 @@ function ServiceAPInvoicePage() {
       postingDate: copyDate,
       documentDate: copyDate,
       deliveryDate: copyDate,
+      exchangeRate: '',
       transactionType: copyTransactionType,
       branch: copyBranch,
       wtaxAmount: '',
@@ -2509,7 +2400,7 @@ function ServiceAPInvoicePage() {
         className={`del-grid__input${error ? ' del-field__input--error' : ''}`}
         type={column.type === 'date' ? 'date' : 'text'}
         name={column.key}
-        value={column.key === 'taxCodeRepeat' ? (line.taxCodeRepeat || line.taxCode || '') : (line[column.key] || '')}
+        value={column.readOnly && column.numeric ? String(displayAmount(line[column.key] || 0)) : (column.key === 'taxCodeRepeat' ? (line.taxCodeRepeat || line.taxCode || '') : (line[column.key] || ''))}
         onChange={(event) => handleLineChange(index, event)}
         readOnly={column.readOnly}
         disabled={!isDocumentEditable || column.readOnly}
@@ -2522,23 +2413,20 @@ function ServiceAPInvoicePage() {
   const contactOptions = toArray(refData.contacts, ['contacts']);
   const visibleHeaderUdfs = headerUdfDefinitions.filter((field) => formSettings.headerUdfs?.[field.key]?.visible !== false);
   const configurableRowUdfs = rowUdfDefinitions.filter((field) => !isFixedServiceMatrixField(field));
-  const visibleRowUdfs = configurableRowUdfs.filter((field) => formSettings.rowUdfs?.[field.key]?.visible !== false);
-  const visibleContentColumns = matrixColumnDefinitions.filter((column) => (
-    column.visible !== false && formSettings.matrixColumns?.[column.key]?.visible !== false
-  ));
-  const visibleLineColumns = [
-    ...visibleContentColumns,
-    ...visibleRowUdfs.map((field) => ({
+  const visibleLineColumns = getOrderedVisibleMatrixColumns([
+    ...matrixColumnDefinitions,
+    ...configurableRowUdfs.map((field) => ({
       key: `udf:${field.key}`,
       udfKey: field.key,
       label: field.label,
-      width: Math.max(140, Math.min(Number(field.maxLength || 160), 260)),
+      width: Number(field.minWidth || field.width) || Math.max(140, Math.min(Number(field.maxLength || 160), 260)),
+      order: Number(field.columnOrder ?? field.order) || 1000,
       type: field.type,
       readOnly: field.readOnly,
       isUdf: true,
       options: toArray(field.options, ['options']),
     })),
-  ];
+  ], formSettings);
   const tableMinWidth = 42 + 48 + visibleLineColumns.reduce((sum, column) => sum + column.width, 0);
 
   return (
@@ -2552,7 +2440,7 @@ function ServiceAPInvoicePage() {
         <button type="button" className="del-btn sap-document-toolbar__udf" onClick={toggleHeaderUdfs}>
           {sidebarOpen ? 'Hide UDFs' : 'Show UDFs'}
         </button>
-        <button type="button" className="del-btn sap-document-toolbar__settings" onClick={toggleFormSettings}>Form Settings</button>
+        <button type="button" className="del-btn sap-document-toolbar__settings" onClick={toggleFormSettings} disabled={!companyFormSettingsReady} title={companyFormSettingsReady ? 'Choose document-line fields' : 'Loading company Form Settings'}>Form Settings</button>
         <PrintLayoutToolbar
           documentType="serviceApInvoice"
           documentLabel="Service A/P Invoice"
@@ -2618,6 +2506,9 @@ function ServiceAPInvoicePage() {
       {pageState.loading && <div className="alert alert-success py-2">Loading...</div>}
       {pageState.error && <div className="alert alert-danger py-2">{pageState.error}</div>}
       {pageState.success && <div className="alert alert-success py-2">{pageState.success}</div>}
+      {(refData.warnings || []).length > 0 && (
+        <div className="alert alert-warning py-2">{(refData.warnings || []).join(' ')}</div>
+      )}
 
       <fieldset disabled={pageState.posting} style={{ border: 0, padding: 0, margin: 0 }}>
         <div className={`so-layout${isRightSidebarOpen ? ' is-sidebar-open' : ''}`}>
@@ -2657,8 +2548,10 @@ function ServiceAPInvoicePage() {
                 header={header}
                 onHeaderChange={handleHeaderChange}
                 businessPartners={refData.vendors || []}
-                localCurrency={refData.local_currency || refData.company_currency || 'INR'}
-                systemCurrency={refData.system_currency || refData.local_currency || refData.company_currency || 'INR'}
+                currencyOptions={refData.currencies || refData.company_currencies?.currencies || []}
+                localCurrency={refData.local_currency || refData.company_currency || ''}
+                systemCurrency={refData.system_currency || refData.local_currency || refData.company_currency || ''}
+                fallbackLocalCurrency={''}
                 disabled={!isDocumentEditable || !header.vendor}
               />
 
@@ -2838,26 +2731,26 @@ function ServiceAPInvoicePage() {
             <div className="service-ap-summary">
               <table className="del-grid service-ap-summary-table">
                 <tbody>
-                  <tr><td>Total Before Discount</td><td><input className="del-grid__input" value={fmt(totals.subtotal)} readOnly /></td></tr>
+                  <tr><td>Total Before Discount</td><td><input className="del-grid__input" value={fmt(displayAmount(totals.subtotal))} readOnly /></td></tr>
                   <tr><td>Discount %</td><td><input className="del-grid__input" name="discount" value={header.discount} onChange={handleHeaderChange} disabled={!isDocumentEditable} /></td></tr>
                   <tr><td>Total Down Payment</td><td><input className="del-grid__input" name="totalDownPayment" value={header.totalDownPayment} onChange={handleHeaderChange} disabled={!isDocumentEditable} /></td></tr>
                   <tr><td>Freight</td><td><input className="del-grid__input" name="freight" value={header.freight} onChange={handleHeaderChange} disabled={!isDocumentEditable} /></td></tr>
-                  <tr><td><label className="service-ap-checkbox"><input type="checkbox" name="rounding" checked={header.rounding || parseNum(header.roundingAmount) !== 0} onChange={handleHeaderChange} disabled={!isDocumentEditable} /> Rounding</label></td><td><input className="del-grid__input" value={`INR ${fmt(totals.roundingAmount)}`} readOnly /></td></tr>
-                  <tr><td>Tax</td><td><input className="del-grid__input" value={fmt(totals.tax)} readOnly /></td></tr>
+                  <tr><td><label className="service-ap-checkbox"><input type="checkbox" name="rounding" checked={header.rounding || parseNum(header.roundingAmount) !== 0} onChange={handleHeaderChange} disabled={!isDocumentEditable} /> Rounding</label></td><td><input className="del-grid__input" value={`${displayCurrency} ${fmt(displayAmount(totals.roundingAmount))}`.trim()} readOnly /></td></tr>
+                  <tr><td>Tax</td><td><input className="del-grid__input" value={fmt(displayAmount(totals.tax))} readOnly /></td></tr>
                   {hasWTaxLiableLines && (
                     <tr>
                       <td>WTax Amount</td>
                       <td>
                         <div className="service-ap-wtax-cell">
-                          <input className="del-grid__input service-ap-wtax-input" value={fmt(wtaxAmount)} readOnly />
+                          <input className="del-grid__input service-ap-wtax-input" value={fmt(displayAmount(wtaxAmount))} readOnly />
                           <button type="button" className="del-btn service-ap-wtax-btn" onClick={openWithholdingTaxTable} disabled={!isDocumentEditable}>→</button>
                         </div>
                       </td>
                     </tr>
                   )}
-                  <tr style={{ borderTop: '2px solid #a0aab4' }}><td style={{ fontWeight: 700 }}>Total</td><td><input className="del-grid__input" value={fmt(totalPaymentDueAfterWTax)} readOnly style={{ fontWeight: 700 }} /></td></tr>
+                  <tr style={{ borderTop: '2px solid #a0aab4' }}><td style={{ fontWeight: 700 }}>Total</td><td><input className="del-grid__input" value={fmt(displayAmount(totalPaymentDueAfterWTax))} readOnly style={{ fontWeight: 700 }} /></td></tr>
                   <tr><td>Applied Amount</td><td><input className="del-grid__input" name="appliedAmount" value={header.appliedAmount} onChange={handleHeaderChange} disabled={!isDocumentEditable} /></td></tr>
-                  <tr><td>Balance Due</td><td><input className="del-grid__input" value={fmt(balanceDueAfterWTax)} readOnly /></td></tr>
+                  <tr><td>Balance Due</td><td><input className="del-grid__input" value={fmt(displayAmount(balanceDueAfterWTax))} readOnly /></td></tr>
                 </tbody>
               </table>
             </div>
@@ -2884,7 +2777,17 @@ function ServiceAPInvoicePage() {
             headerUdfFields={headerUdfDefinitions}
             rowUdfFields={configurableRowUdfs}
             formSettings={formSettings}
-            onSettingChange={updateFormSetting}
+          onSettingChange={updateFormSetting}
+          onColumnOrderChange={formSettingsStatus.reorder}
+            settingsLoaded={companyFormSettingsReady}
+            editablePropertiesByGroup={{ matrixColumns: ['visible'], rowUdfs: ['visible'] }}
+            editableSapControlledProperties={{ matrixColumns: ['visible'], headerUdfs: [], rowUdfs: ['visible'] }}
+            isSaving={formSettingsStatus.saving}
+            hasUnsavedChanges={formSettingsStatus.hasUnsavedChanges}
+            saveError={formSettingsStatus.error}
+            onSave={formSettingsStatus.save}
+            onCancel={formSettingsStatus.discard}
+            settingsScopeLabel={formSettingsStatus.scopeLabel}
           />
         </div>
       </fieldset>
@@ -2982,7 +2885,7 @@ function ServiceAPInvoicePage() {
         onOpenSource={() => {
           setJournalPreview((prev) => ({ ...prev, open: false }));
           if (currentDocEntry) {
-            navigate('/services/ap-invoice', { state: { serviceApInvoiceDocEntry: currentDocEntry } });
+            navigate('/services/ap-invoice', { state: createActiveCompanyScopedRouteState({ serviceApInvoiceDocEntry: currentDocEntry }) });
           }
         }}
       />

@@ -52,7 +52,7 @@ test('merges only saved visibility for current SAP-controlled line fields', () =
     itemNo: {
       visible: false,
       active: true,
-      order: 2,
+      order: 1,
       minWidth: 150,
       sapControlled: true,
     },
@@ -60,7 +60,7 @@ test('merges only saved visibility for current SAP-controlled line fields', () =
   expect(merged.rowUdfs.U_Current).toEqual({
     visible: false,
     active: false,
-    order: 3,
+    order: 2,
     minWidth: 120,
     sapControlled: true,
   });
@@ -116,7 +116,7 @@ test('keeps fallback line activity authoritative while retaining non-line behavi
       note: {
         visible: false,
         active: true,
-        order: 4,
+        order: 1,
         minWidth: 90,
         sapControlled: false,
       },
@@ -132,6 +132,47 @@ test('keeps fallback line activity authoritative while retaining non-line behavi
       },
     },
   });
+});
+
+test('keeps saved user order and appends newly discovered SAP fields', () => {
+  const defaults = {
+    matrixColumns: {
+      itemNo: { visible: true, order: 1, sapControlled: true },
+      quantity: { visible: true, order: 2, sapControlled: true },
+      newSapField: { visible: true, order: 0, sapControlled: true },
+    },
+    rowUdfs: {},
+  };
+  const merged = mergeSavedFormSettings(defaults, {
+    matrixColumns: {
+      quantity: { visible: true, order: 1 },
+      itemNo: { visible: true, order: 2 },
+      staleCompanyField: { visible: true, order: 0 },
+    },
+  });
+
+  expect(merged.matrixColumns.quantity.order).toBe(1);
+  expect(merged.matrixColumns.itemNo.order).toBe(2);
+  expect(merged.matrixColumns.newSapField.order).toBe(3);
+  expect(merged.matrixColumns.staleCompanyField).toBeUndefined();
+});
+
+test('updates line order but rejects invalid order values', () => {
+  const reordered = updateFormSettingPreference(
+    liveDefaults,
+    'matrixColumns',
+    'itemNo',
+    'order',
+    7,
+  );
+  expect(reordered.matrixColumns.itemNo.order).toBe(7);
+  expect(updateFormSettingPreference(
+    reordered,
+    'matrixColumns',
+    'itemNo',
+    'order',
+    -1,
+  )).toBe(reordered);
 });
 
 test('updates live line visibility but rejects SAP activity and unknown fields', () => {

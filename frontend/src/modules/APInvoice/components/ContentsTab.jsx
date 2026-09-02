@@ -3,6 +3,7 @@ import TaxCodeLookup from '../../../components/TaxCodeLookup';
 import { useSapItemCodeTab } from '../../../utils/sapTabNavigation';
 import { getLineTotalsForDisplay } from '../../../utils/lineTotals';
 import { resolveLocationDisplayName } from '../../../utils/locationLookup';
+import { getOrderedVisibleMatrixColumns } from '../../../utils/formSettingsColumns';
 
 const FALLBACK_MATRIX_COLS = [
   { key: 'itemNo', label: 'Item No.', minWidth: 160 },
@@ -231,11 +232,14 @@ const findMatchingUdfField = (column = {}, rowUdfFields = []) => {
   });
 };
 
-const isColumnVisible = (column = {}, formSettings = {}) =>
-  formSettings?.matrixColumns?.[column.key]?.visible !== false;
-
 const isColumnActive = (column = {}, formSettings = {}) =>
   formSettings?.matrixColumns?.[column.key]?.active !== false;
+
+const isLiveUdfColumn = (column = {}) => (
+  Boolean(column.isUdf)
+  || String(column.key || '').trim().toUpperCase().startsWith('U_')
+  || String(column.sapField || '').trim().toUpperCase().startsWith('U_')
+);
 
 export default function ContentsTab({
   lines,
@@ -260,33 +264,27 @@ export default function ContentsTab({
 }) {
   const sapItemTab = useSapItemCodeTab({ lineItemOptions, onLineChange, onOpenItemModal });
   const baseColumns = (matrixFields?.length ? matrixFields : FALLBACK_MATRIX_COLS)
-    .filter((column) => isColumnVisible(column, formSettings))
     .map((column) => {
-      const matchedUdfField = DIRECT_LINE_FIELDS.has(column.key)
-        ? null
-        : findMatchingUdfField(column, rowUdfFields);
+      const matchedUdfField = column.field
+        || (DIRECT_LINE_FIELDS.has(column.key) && !isLiveUdfColumn(column)
+          ? null
+          : findMatchingUdfField(column, rowUdfFields));
+      const udfSetting = matchedUdfField
+        ? (formSettings.matrixColumns?.[column.key] || formSettings.rowUdfs?.[matchedUdfField.key])
+        : null;
       return {
         ...column,
         minWidth: column.minWidth || 125,
-        active: isColumnActive(column, formSettings),
+        active: isLiveUdfColumn(column)
+          ? udfSetting?.active !== false && matchedUdfField?.active !== false
+          : isColumnActive(column, formSettings),
         matchedUdfField,
         udfField: matchedUdfField,
+        field: isLiveUdfColumn(column) ? matchedUdfField : column.field,
       };
-    });
-  const representedUdfKeys = new Set(baseColumns.map((column) => column.matchedUdfField?.key).filter(Boolean));
-  const matrixCols = [
-    ...baseColumns,
-    ...rowUdfFields
-      .filter((field) => !representedUdfKeys.has(field.key))
-      .map((field) => ({
-        key: field.key,
-        label: field.label || field.key,
-        minWidth: field.type === 'textarea' ? 180 : 125,
-        isUdf: true,
-        field,
-        active: field.active !== false,
-      })),
-  ];
+    })
+    .filter((column) => !isLiveUdfColumn(column) || Boolean(column.field));
+  const matrixCols = getOrderedVisibleMatrixColumns(baseColumns, formSettings);
   const tableMinWidth = INDEX_COL_WIDTH + ACTION_COL_WIDTH + matrixCols.reduce((total, col) => total + col.minWidth, 0);
 
   const renderUdfCell = (field, line, rowIndex) => {
@@ -425,7 +423,7 @@ export default function ContentsTab({
     const disabled = column.active === false || column.readOnly === true;
     const taxRate = getTaxRate(line, effectiveTaxCodes);
 
-    if (column.isUdf) {
+    if (isLiveUdfColumn(column) && column.field) {
       return renderUdfCell(column.field, line, rowIndex);
     }
 

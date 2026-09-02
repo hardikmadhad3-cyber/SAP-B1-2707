@@ -4,6 +4,7 @@ import { useSapItemCodeTab } from '../../../utils/sapTabNavigation';
 import { filterSalesOrderRowUdfDefinitions } from '../../../config/sodaSalesOrderForm';
 
 import { getLineTotalsForDisplay } from '../../../utils/lineTotals';
+import { getOrderedVisibleMatrixColumns } from '../../../utils/formSettingsColumns';
 
 const TABLE_MIN_WIDTH = 2700;
 
@@ -160,13 +161,7 @@ export default function ContentsTab({
     })),
   ];
 
-  const visibleColumns = matrixColumns.filter(col => {
-    if (col.isUdf) {
-      return formSettings.rowUdfs?.[col.key]?.visible !== false;
-    }
-    const setting = formSettings.matrixColumns?.[col.key];
-    return setting?.visible !== false;
-  });
+  const visibleColumns = getOrderedVisibleMatrixColumns(matrixColumns, formSettings);
 
   // Helper to check if a column is visible
   const isColumnVisible = (columnKey) => {
@@ -659,9 +654,9 @@ export default function ContentsTab({
         <td key="uomName">
           <input
             className="so-grid__input"
-            value={line.uomName || line.uomCode || ''}
-            readOnly
-            style={{ background: '#f5f8fc' }}
+            name="uomName"
+            value={line.uomNameEdited ? (line.uomName ?? '') : (line.uomName || line.uomCode || '')}
+            onChange={(e) => onLineChange(i, e)}
           />
         </td>
       ),

@@ -30,6 +30,17 @@ const hasBaseDocumentLink = (line = {}) => (
   hasValue(line.baseLine)
 );
 
+const isTruthyFlag = (value) => (
+  value === true || value === 1 || ['Y', 'YES', 'TRUE', '1'].includes(String(value ?? '').trim().toUpperCase())
+);
+
+const getEditableUomValue = (line = {}) => {
+  if (isTruthyFlag(line.uomNameEdited)) {
+    return line.uomName ?? line.UoMName ?? line.UomName ?? line.UnitMsr ?? line.unitMsr;
+  }
+  return line.uomName || line.UoMName || line.UomName || line.UnitMsr || line.unitMsr || line.uomCode;
+};
+
 /**
  * Builds an A/P Invoice line from the destination form state.
  *
@@ -42,6 +53,7 @@ const buildAPInvoiceDocumentLine = (
 ) => {
   const hasBaseDoc = hasBaseDocumentLink(line);
   const unitPrice = toNumber(line.unitPrice, 0);
+  const uomValue = getEditableUomValue(line);
   const documentLine = {
     ...(hasBaseDoc ? {} : { ItemCode: String(line.itemNo || '').trim() }),
     ItemDescription: String(line.itemDescription || ''),
@@ -52,7 +64,7 @@ const buildAPInvoiceDocumentLine = (
       ? toNumber(line.stdDiscount, 0)
       : (hasBaseDoc ? 0 : undefined),
     TaxCode: hasValue(line.taxCode) ? String(line.taxCode).trim() : undefined,
-    UoMCode: hasValue(line.uomCode) ? String(line.uomCode).trim() : undefined,
+    UoMCode: hasValue(uomValue) ? String(uomValue).trim() : undefined,
     WarehouseCode: String(line.whse || '').trim(),
   };
 

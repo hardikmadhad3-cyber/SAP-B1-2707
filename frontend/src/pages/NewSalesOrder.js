@@ -1,2 +1,2 @@
-// Isolated development-only New Sales Order page.
-export { default } from '../modules/new-sales-order/NewSalesOrder';
+// Legacy import retained while callers move to the canonical configuration page.
+export { default } from './TransactionFieldConfiguration';

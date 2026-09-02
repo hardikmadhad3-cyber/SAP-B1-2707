@@ -3,6 +3,7 @@
 const readOnlyDbService = require('./newSalesOrderReadOnlyDbService');
 const metadataRepository = require('./newSalesOrderMetadataRepository');
 const schemaService = require('./newSalesOrderSchemaService');
+const customLookupRepository = require('../salesDocumentSchema/salesDocumentCustomLookupRepository');
 const {
   FORBIDDEN_LOOKUP_KEYS,
   LOOKUP_PAGING,
@@ -27,6 +28,7 @@ const {
 const text = (value) => String(value ?? '').trim();
 const upper = (value) => text(value).toUpperCase();
 const literalLike = (expression) => `${expression} LIKE @like ${LIKE_ESCAPE_SQL}`;
+const CUSTOM_LOOKUP_SOURCE = /^custom:(\d+)$/;
 
 const createHttpError = (statusCode, message, code, details) => {
   const error = new Error(message);
@@ -305,6 +307,7 @@ const createNewSalesOrderLookupService = ({
   readOnlyDb = readOnlyDbService,
   metadata = metadataRepository,
   schemas = schemaService,
+  customLookups = null,
 } = {}) => {
   const getDialect = async (context) => normalizeSqlDialect(
     typeof metadata.getDialect === 'function'
@@ -400,7 +403,8 @@ const createNewSalesOrderLookupService = ({
 
   const getLookup = async (context, rawSource, input = {}, options = {}) => {
     const source = text(rawSource).toLowerCase();
-    if (!LOOKUP_SOURCE_SET.has(source)) {
+    const customMatch = source.match(CUSTOM_LOOKUP_SOURCE);
+    if (!LOOKUP_SOURCE_SET.has(source) && !customMatch) {
       throw createHttpError(404, 'Lookup source is not allowed.', 'LOOKUP_SOURCE_NOT_ALLOWED');
     }
     const paging = normalizeLookupInput(input);
@@ -408,7 +412,26 @@ const createNewSalesOrderLookupService = ({
     let rows;
     let currentSchemaVersion = '';
 
-    if (['udf-valid-values', 'udf-linked-table', 'udo'].includes(source)) {
+    if (customMatch) {
+      if (!customLookups) {
+        throw createHttpError(404, 'Custom lookup source is not available.', 'CUSTOM_LOOKUP_NOT_AVAILABLE');
+      }
+      const definition = await customLookups.findById(context.companyId, Number(customMatch[1]));
+      if (!definition) {
+        throw createHttpError(404, 'Custom lookup was not found for this company.', 'CUSTOM_LOOKUP_NOT_FOUND');
+      }
+      const allRows = await readOnlyDb.select({
+        context,
+        queryId: `lookup.${source}`,
+        sql: definition.QueryText,
+        params: {},
+      });
+      const search = paging.search.toLowerCase();
+      const matchingRows = search
+        ? allRows.filter((row) => Object.values(row || {}).some((value) => String(value ?? '').toLowerCase().includes(search)))
+        : allRows;
+      rows = matchingRows.slice(paging.offset, paging.offset + paging.fetchLimit);
+    } else if (['udf-valid-values', 'udf-linked-table', 'udo'].includes(source)) {
       const dynamic = await getDynamicOptions(context, source, paging, options.schema, dialect);
       rows = dynamic.rows;
       currentSchemaVersion = dynamic.schema.schemaVersion;
@@ -446,7 +469,7 @@ const createNewSalesOrderLookupService = ({
       return { valid: inline.some((option) => String(option?.value ?? option) === normalizedValue) };
     }
     const source = text(field.lookup?.source || field.lookupSource);
-    if (!LOOKUP_SOURCE_SET.has(source)) return { valid: false };
+    if (!LOOKUP_SOURCE_SET.has(source) && !CUSTOM_LOOKUP_SOURCE.test(source)) return { valid: false };
     const itemCode = source === 'uom-codes' ? text(record?.values?.itemNo) : '';
     if (source === 'uom-codes' && Array.isArray(field.lookup?.dependsOn) && field.lookup.dependsOn.length && !itemCode) {
       return { valid: false };
@@ -466,7 +489,7 @@ const createNewSalesOrderLookupService = ({
   return { getLookup, validateLookupValue };
 };
 
-const defaultService = createNewSalesOrderLookupService();
+const defaultService = createNewSalesOrderLookupService({ customLookups: customLookupRepository });
 
 module.exports = defaultService;
 module.exports.ITEM_UOM_LOOKUP_SQL = ITEM_UOM_LOOKUP_SQL;

@@ -8,6 +8,13 @@ const { normalizeUdfValue, applyUdfsRobust } = require('./udfPayloadUtils');
 const { buildDocumentSeriesPayload } = require('./documentSeriesPayloadUtils');
 const hsnCodeDbService = require('./hsnCodeDbService');
 const {
+  applySapDocumentCurrency,
+  fromStoredDocumentRate,
+  loadCompanyCurrencyContext,
+  mergeCurrencyReferenceData,
+  normalizeCopyDocumentRateForCompany,
+} = require('./salesDocumentCurrencyService');
+const {
   assignMappedUdfValue,
   buildMetadataValidatedStandardLine,
   compactDocumentLinePayload,
@@ -18,11 +25,85 @@ const {
 } = require('./salesDocumentLinePayloadUtils');
 
 const normalizeBranchId = (branch) => {
-  const normalized = String(branch || '').trim();
-  return normalized === '' ? -1 : Number(normalized);
+  const normalized = String(branch ?? '').trim();
+  const branchId = Number(normalized);
+  return Number.isInteger(branchId) && branchId > 0 ? branchId : undefined;
+};
+
+const resolveSubmittedBranchId = (header = {}, lines = [], refData = {}) => {
+  const selectedBranchId = normalizeBranchId(header.branch);
+  if (selectedBranchId !== undefined) return selectedBranchId;
+
+  const firstLine = Array.isArray(lines) ? lines.find((line) => String(line?.itemNo || line?.ItemCode || '').trim()) || {} : {};
+  const warehouseCode = String(
+    header.warehouse || firstLine.whse || firstLine.warehouse || firstLine.WarehouseCode || firstLine.WhsCode || '',
+  ).trim();
+  if (!warehouseCode) return undefined;
+
+  const warehouseSources = [
+    ...(Array.isArray(refData.warehouses) ? refData.warehouses : []),
+    ...(Array.isArray(refData.warehouse_addresses) ? refData.warehouse_addresses : []),
+  ];
+  const warehouse = warehouseSources.find((entry) => (
+    String(entry?.WhsCode || entry?.WarehouseCode || '').trim().toUpperCase() === warehouseCode.toUpperCase()
+  ));
+
+  return normalizeBranchId(
+    warehouse?.BranchID ?? warehouse?.BPLId ?? warehouse?.BPLID ?? warehouse?.BPLid ?? warehouse?.branchId,
+  );
 };
 
 const hasValue = (value) => value !== '' && value !== null && value !== undefined;
+
+const normalizeTextValue = (value) => (value === undefined || value === null ? '' : String(value).trim());
+
+const normalizeAddressList = (addresses) => (Array.isArray(addresses) ? addresses : []);
+
+const findAddressByCode = (addresses, value) => {
+  const normalizedValue = normalizeTextValue(value).toUpperCase();
+  if (!normalizedValue) return undefined;
+  return normalizeAddressList(addresses).find((address) => (
+    normalizeTextValue(address?.Address || address?.AddressName).toUpperCase() === normalizedValue
+  ));
+};
+
+const firstAddressCode = (addresses) => {
+  const address = normalizeAddressList(addresses).find((entry) => normalizeTextValue(entry?.Address || entry?.AddressName));
+  return address ? normalizeTextValue(address.Address || address.AddressName) : undefined;
+};
+
+const normalizeSubmittedAddressHeader = (header = {}, customerDetails = {}) => {
+  const billToAddresses = normalizeAddressList(
+    customerDetails.bill_to_addresses || customerDetails.pay_to_addresses || customerDetails.billTo,
+  );
+  const shipToAddresses = normalizeAddressList(customerDetails.ship_to_addresses || customerDetails.shipTo);
+  const submittedShipToCode = normalizeTextValue(header.shipToCode);
+  const submittedPayToCode = normalizeTextValue(header.billToCode || header.payToCode);
+  const validShipTo = findAddressByCode(shipToAddresses, submittedShipToCode);
+  const validPayTo = findAddressByCode(billToAddresses, submittedPayToCode);
+  const shipToCode = validShipTo
+    ? normalizeTextValue(validShipTo.Address || validShipTo.AddressName)
+    : firstAddressCode(shipToAddresses);
+  const payToCode = validPayTo
+    ? normalizeTextValue(validPayTo.Address || validPayTo.AddressName)
+    : firstAddressCode(billToAddresses);
+
+  return {
+    ...header,
+    shipToCode,
+    billToCode: payToCode,
+    payToCode,
+  };
+};
+
+const getHeaderDiscountPercent = (header = {}) => {
+  const rawValue = header.discount ?? header.DiscountPercent ?? header.DiscPrcnt;
+  if (rawValue === undefined || rawValue === null) return undefined;
+  const textValue = String(rawValue).replace(/,/g, '').trim();
+  if (!textValue) return 0;
+  const parsed = Number(textValue);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
 
 const toSapYesNo = (value) => {
   const normalized = String(value ?? '').trim().toUpperCase();
@@ -292,7 +373,11 @@ const convertOwnerToCode = async (input, owners = []) => {
 
 const getReferenceData = async (companyId) => {
   try {
-    return await salesQuotationDb.getReferenceData();
+    const [data, currencyContext] = await Promise.all([
+      salesQuotationDb.getReferenceData(),
+      loadCompanyCurrencyContext(),
+    ]);
+    return mergeCurrencyReferenceData(data, currencyContext);
   } catch (error) {
     console.error('[Sales Quotation Service] Failed to load reference data:', error);
     return {
@@ -398,7 +483,17 @@ const getCustomerFilterOptions = async ({
 
 const getSalesQuotation = async (docEntry) => {
   try {
-    return await salesQuotationDb.getSalesQuotation(docEntry);
+    const [result, currencyContext] = await Promise.all([
+      salesQuotationDb.getSalesQuotation(docEntry),
+      loadCompanyCurrencyContext(),
+    ]);
+    const referenceData = mergeCurrencyReferenceData({}, currencyContext);
+    if (result?.sales_quotation?.header?.exchangeRate) {
+      result.sales_quotation.header.exchangeRate = String(
+        fromStoredDocumentRate(result.sales_quotation.header.exchangeRate, referenceData),
+      );
+    }
+    return result;
   } catch (error) {
     console.error('[Sales Quotation Service] Failed to load quotation:', error);
     throw error;
@@ -409,7 +504,15 @@ const getSalesQuotation = async (docEntry) => {
 
 const submitSalesQuotation = async (payload) => {
   try {
-    const refData = await salesQuotationDb.getReferenceData();
+    const refData = await getReferenceData();
+    const customerDetails = await getCustomerDetails(payload.header?.vendor).catch((error) => {
+      console.warn('[Sales Quotation Service] Continuing without BP address-code validation:', error.message);
+      return {};
+    });
+    payload = {
+      ...payload,
+      header: normalizeSubmittedAddressHeader(payload.header, customerDetails),
+    };
     const salesEmployees = refData.sales_employees || [];
     const owners = refData.owners || [];
 
@@ -422,8 +525,10 @@ const submitSalesQuotation = async (payload) => {
     const OwnerCode = await convertOwnerToCode(payload.header.owner, owners);
     const Remarks = payload.header.otherInstruction || payload.header.remarks || '';
     const Freight = payload.header.freight ? Number(payload.header.freight) : 0;
+    const DiscountPercent = getHeaderDiscountPercent(payload.header);
     const documentAdditionalExpenses = buildDocumentAdditionalExpenses(payload.freightCharges);
     const documentLines = await buildDocumentLines(payload.lines);
+    const branchId = resolveSubmittedBranchId(payload.header, payload.lines, refData);
 
     const sapPayload = {
       CardCode: payload.header.vendor.trim(),
@@ -432,10 +537,10 @@ const submitSalesQuotation = async (payload) => {
       DocDueDate: payload.header.deliveryDate,
       TaxDate: payload.header.documentDate,
       ContactPersonCode: payload.header.contactPerson ? Number(payload.header.contactPerson) : undefined,
-      DocCurrency: payload.header.currency || undefined,
-      BPLId: normalizeBranchId(payload.header.branch),
-      BPL_IDAssignedToInvoice: normalizeBranchId(payload.header.branch),
+      BPLId: branchId,
+      BPL_IDAssignedToInvoice: branchId,
       PaymentGroupCode: payload.header.paymentTerms ? Number(payload.header.paymentTerms) : undefined,
+      ...(DiscountPercent !== undefined ? { DiscountPercent } : {}),
       ...(SlpCode !== null && SlpCode !== undefined ? { SalesPersonCode: SlpCode } : {}),
       ...(OwnerCode !== null && OwnerCode !== undefined ? { DocumentsOwner: OwnerCode } : {}),
       ...(Remarks ? { Comments: Remarks } : {}),
@@ -446,6 +551,7 @@ const submitSalesQuotation = async (payload) => {
       NumAtCard: payload.header.customerRefNo || undefined,
       DocumentLines: documentLines,
     };
+    applySapDocumentCurrency(sapPayload, payload.header, refData);
 
     await applySalesQuotationHeaderUdfs(sapPayload, payload);
 
@@ -466,12 +572,12 @@ const submitSalesQuotation = async (payload) => {
     };
   } catch (error) {
     // Log comprehensive error information for debugging
-    console.error('❌ SAP Quotation Error:', {
+    console.error('SAP Quotation Error:', JSON.stringify({
       message: error.message,
       sapErrorData: error.response?.data,
       statusCode: error.response?.status,
       errorStack: error.stack,
-    });
+    }, null, 2));
 
     // Extract meaningful error message
     let errorMessage = 'Sales quotation submission failed.';
@@ -495,7 +601,15 @@ const submitSalesQuotation = async (payload) => {
 
 const updateSalesQuotation = async (docEntry, payload) => {
   try {
-    const refData = await salesQuotationDb.getReferenceData();
+    const refData = await getReferenceData();
+    const customerDetails = await getCustomerDetails(payload.header?.vendor).catch((error) => {
+      console.warn('[Sales Quotation Service] Continuing without BP address-code validation:', error.message);
+      return {};
+    });
+    payload = {
+      ...payload,
+      header: normalizeSubmittedAddressHeader(payload.header, customerDetails),
+    };
     const salesEmployees = refData.sales_employees || [];
     const owners = refData.owners || [];
 
@@ -508,8 +622,10 @@ const updateSalesQuotation = async (docEntry, payload) => {
     const OwnerCode = await convertOwnerToCode(payload.header.owner, owners);
     const Remarks = payload.header.otherInstruction || payload.header.remarks || '';
     const Freight = Number(payload.header.freight) || 0;
+    const DiscountPercent = getHeaderDiscountPercent(payload.header);
     const documentAdditionalExpenses = buildDocumentAdditionalExpenses(payload.freightCharges);
     const documentLines = await buildDocumentLines(payload.lines, true);
+    const branchId = resolveSubmittedBranchId(payload.header, payload.lines, refData);
 
     const sapPayload = {
       CardCode: payload.header.vendor?.trim(),
@@ -517,8 +633,9 @@ const updateSalesQuotation = async (docEntry, payload) => {
       DocDueDate: payload.header.deliveryDate,
       TaxDate: payload.header.documentDate,
       ContactPersonCode: payload.header.contactPerson ? Number(payload.header.contactPerson) : undefined,
-      BPL_IDAssignedToInvoice: payload.header.branch ? Number(payload.header.branch) : undefined,
+      BPL_IDAssignedToInvoice: branchId,
       PaymentGroupCode: payload.header.paymentTerms ? Number(payload.header.paymentTerms) : undefined,
+      ...(DiscountPercent !== undefined ? { DiscountPercent } : {}),
       ...(SlpCode !== null && SlpCode !== undefined && { SalesPersonCode: SlpCode }),
       ...(OwnerCode !== null && OwnerCode !== undefined && { DocumentsOwner: OwnerCode }),
       ...(Remarks && { Comments: Remarks }),
@@ -528,6 +645,7 @@ const updateSalesQuotation = async (docEntry, payload) => {
       ...buildMarketingDocumentAddressPayload(payload.header),
       DocumentLines: documentLines,
     };
+    applySapDocumentCurrency(sapPayload, payload.header, refData);
 
     await applySalesQuotationHeaderUdfs(sapPayload, payload);
 
@@ -539,12 +657,12 @@ const updateSalesQuotation = async (docEntry, payload) => {
 
     return { message: 'Sales quotation updated successfully', doc_entry: docEntry };
   } catch (error) {
-    console.error('❌ SAP Quotation Update Error:', {
+    console.error('SAP Quotation Update Error:', JSON.stringify({
       message: error.message,
       sapErrorData: error.response?.data,
       statusCode: error.response?.status,
       errorStack: error.stack,
-    });
+    }, null, 2));
 
     // Extract meaningful error message
     let errorMessage = 'Sales quotation update failed.';
@@ -650,7 +768,7 @@ const getOpenSalesQuotations = async (customerCode = '') => {
 const getSalesQuotationForCopy = async (docEntry) => {
   try {
     const quotation = await salesQuotationDb.getSalesQuotationForCopy(docEntry);
-    return quotation;
+    return normalizeCopyDocumentRateForCompany(quotation);
   } catch (error) {
     console.error('[Sales Quotation Service] Failed to get quotation for copy:', error);
     throw error;

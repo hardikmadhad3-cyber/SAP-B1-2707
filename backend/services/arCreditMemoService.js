@@ -7,6 +7,14 @@ const { getUdfDefinitions } = require('./udfMetadataService');
 const { applyUdfValues } = require('./udfPayloadUtils');
 const hsnCodeDbService = require('./hsnCodeDbService');
 const {
+  applySapDocumentCurrency,
+  fromStoredDocumentRate,
+  loadCompanyCurrencyContext,
+  loadDocumentCurrencyReferenceData,
+  mergeCurrencyReferenceData,
+  normalizeCopyDocumentRateForCompany,
+} = require('./salesDocumentCurrencyService');
+const {
   buildMetadataValidatedStandardLine,
   filterMetadataValidatedUdfDefinitions,
   filterMetadataValidatedUdfs,
@@ -117,6 +125,14 @@ const hasValue = (value) => (
 );
 
 const firstPresent = (...values) => values.find(hasValue);
+const getHeaderDiscountPercent = (header = {}) => {
+  const rawValue = header.discount ?? header.DiscountPercent ?? header.DiscPrcnt;
+  if (rawValue === undefined || rawValue === null) return undefined;
+  const textValue = String(rawValue).replace(/,/g, '').trim();
+  if (!textValue) return 0;
+  const parsed = Number(textValue);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
 const getLineDiscountPercent = (line = {}) => {
   const value = firstPresent(
     line.stdDiscount,
@@ -273,7 +289,11 @@ const buildARCreditMemoStandardLine = async ({
 const getReferenceData = async (companyId) => {
   try {
     // Use ODBC/Direct SQL for GET operations
-    const data = await arCreditMemoDb.getReferenceData();
+    const [rawData, currencyContext] = await Promise.all([
+      arCreditMemoDb.getReferenceData(),
+      loadCompanyCurrencyContext(),
+    ]);
+    const data = mergeCurrencyReferenceData(rawData, currencyContext);
     if (data.customers && !data.vendors) {
       data.vendors = data.customers;
       delete data.customers;
@@ -430,7 +450,16 @@ const getOpenARCreditMemoDocuments = async () => {
 const getARCreditMemo = async (docEntry) => {
   try {
     // Use ODBC for reading single credit memo
-    const result = await arCreditMemoDb.getARCreditMemo(docEntry);
+    const [result, currencyContext] = await Promise.all([
+      arCreditMemoDb.getARCreditMemo(docEntry),
+      loadCompanyCurrencyContext(),
+    ]);
+    const referenceData = mergeCurrencyReferenceData({}, currencyContext);
+    if (result?.ar_credit_memo?.header?.exchangeRate) {
+      result.ar_credit_memo.header.exchangeRate = String(
+        fromStoredDocumentRate(result.ar_credit_memo.header.exchangeRate, referenceData),
+      );
+    }
     return result;
   } catch (error) {
    throw error;
@@ -489,7 +518,7 @@ const submitARCreditMemo = async (payload) => {
       headerFieldMetadata,
     );
     const physicalHeaderUdfs = new Set(physicalHeaderUdfDefinitions.keys());
-
+    const DiscountPercent = getHeaderDiscountPercent(payload.header);
     // Transform payload to SAP format
     const sapPayload = {
       CardCode: String(customerCode).trim(),
@@ -516,6 +545,7 @@ const submitARCreditMemo = async (payload) => {
       } : {}),
 
       PaymentGroupCode: payload.header.paymentTerms ? Number(payload.header.paymentTerms) : undefined,
+      ...(DiscountPercent !== undefined ? { DiscountPercent } : {}),
 
       // Customer reference
       NumAtCard: payload.header.salesContractNo || payload.header.customerRefNo || undefined,
@@ -528,6 +558,7 @@ const submitARCreditMemo = async (payload) => {
 
       DocumentLines: documentLines,
     };
+    applySapDocumentCurrency(sapPayload, payload.header, currencyReferenceData);
     lastSapPayload = sapPayload;
 
     console.log("🔥 [ARCreditMemoService] SAP AR CREDIT MEMO PAYLOAD:", JSON.stringify(sapPayload, null, 2));
@@ -666,7 +697,7 @@ const updateARCreditMemo = async (docEntry, payload) => {
       headerFieldMetadata,
     );
     const physicalHeaderUdfs = new Set(physicalHeaderUdfDefinitions.keys());
-
+    const DiscountPercent = getHeaderDiscountPercent(payload.header);
     // Transform payload to SAP format (similar to submit)
     const sapPayload = {
       CardCode: String(customerCode).trim(),
@@ -681,6 +712,7 @@ const updateARCreditMemo = async (docEntry, payload) => {
           ? Number(payload.header.salesEmployee)
           : undefined,
       PaymentGroupCode: payload.header.paymentTerms ? Number(payload.header.paymentTerms) : undefined,
+      ...(DiscountPercent !== undefined ? { DiscountPercent } : {}),
       NumAtCard: payload.header.salesContractNo || payload.header.customerRefNo || undefined,
       Comments: payload.header.otherInstruction || payload.header.comments || undefined,
       DocumentAdditionalExpenses: documentAdditionalExpenses,
@@ -689,6 +721,7 @@ const updateARCreditMemo = async (docEntry, payload) => {
 
       DocumentLines: documentLines,
     };
+    applySapDocumentCurrency(sapPayload, payload.header, currencyReferenceData);
 
     const placeOfSupplyKey = resolveMetadataUdfKey(
       physicalHeaderUdfDefinitions,
@@ -832,8 +865,8 @@ module.exports = {
   // getOpenDeliveries:       async () => ({ documents: await arCreditMemoDb.getOpenDeliveries() }),
   // getDeliveryForCopy:      (d) => arCreditMemoDb.getDeliveryForCopy(d),
   getOpenARInvoices:       async (customerCode = null) => ({ documents: await arCreditMemoDb.getOpenARInvoices(customerCode) }),
-  getARInvoiceForCopy:     (d) => arCreditMemoDb.getARInvoiceForCopy(d),
-  getARCreditMemoForCopy:  (d) => arCreditMemoDb.getARCreditMemoForCopy(d),
+  getARInvoiceForCopy:     async (d) => normalizeCopyDocumentRateForCompany(await arCreditMemoDb.getARInvoiceForCopy(d)),
+  getARCreditMemoForCopy:  async (d) => normalizeCopyDocumentRateForCompany(await arCreditMemoDb.getARCreditMemoForCopy(d)),
   _buildLineUdfPayload: buildLineUdfPayload,
   _getLineDiscountPercent: getLineDiscountPercent,
   // getOpenSalesOrders:      async () => ({ documents: await arCreditMemoDb.getOpenSalesOrders() }),

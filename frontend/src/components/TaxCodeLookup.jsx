@@ -235,43 +235,46 @@ export default function TaxCodeLookup({
 
   const menu = shouldRenderMenu ? (
     <div ref={menuRef} style={menuStyle}>
-      {options.length ? options.map((tax, index) => (
-        <button
-          key={tax.Code}
-          ref={(node) => {
-            optionRefs.current[index] = node;
-          }}
-          type="button"
-          onMouseDown={(event) => {
-            event.preventDefault();
-            commit(tax.Code, { moveFocus: true });
-          }}
-          style={{
-            display: 'block',
-            width: '100%',
-            minHeight: 24,
-            padding: '4px 8px',
-            border: 0,
-            borderBottom: '1px solid #edf1f5',
-            background: options[activeIndex] === tax
-              ? 'var(--sap-row-hover)'
-              : String(tax.Code || '') === String(value || '')
-                ? '#dfeaf6'
-                : '#fff',
-            color: '#111',
-            textAlign: 'left',
-            fontSize: 11,
-            lineHeight: '16px',
-            cursor: 'pointer',
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-          }}
-          title={formatTaxCodeOption(tax)}
-        >
-          {formatTaxCodeOption(tax)}
-        </button>
-      )) : canShowEmptyMessage ? (
+      {options.length ? options.map((tax, index) => {
+        const isActive = activeIndex === index;
+        const isSelected = String(tax.Code || '') === String(value || '');
+        const isEmphasized = isActive || isSelected;
+        return (
+          <button
+            key={tax.Code}
+            ref={(node) => {
+              optionRefs.current[index] = node;
+            }}
+            type="button"
+            data-selected={isSelected ? 'true' : undefined}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              commit(tax.Code, { moveFocus: true });
+            }}
+            style={{
+              display: 'block',
+              width: '100%',
+              minHeight: 24,
+              padding: '4px 8px',
+              border: 0,
+              borderBottom: isEmphasized ? '1px solid #084b8f' : '1px solid #edf1f5',
+              background: isEmphasized ? '#0b5cab' : '#fff',
+              color: isEmphasized ? '#fff' : '#111827',
+              fontWeight: isEmphasized ? 700 : 400,
+              textAlign: 'left',
+              fontSize: 11,
+              lineHeight: '16px',
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+            title={formatTaxCodeOption(tax)}
+          >
+            {formatTaxCodeOption(tax)}
+          </button>
+        );
+      }) : canShowEmptyMessage ? (
         <div style={{ padding: '6px 8px', fontSize: 11, color: '#6b7280' }}>No tax codes found</div>
       ) : null}
     </div>

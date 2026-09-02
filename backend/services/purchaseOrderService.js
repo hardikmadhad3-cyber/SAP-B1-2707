@@ -1,12 +1,17 @@
 const sapService = require('./sapService');
 const purchaseOrderDb = require('./purchaseOrderDbService');
-const authDbService = require('./authDbService');
-const { getRequestContext } = require('./requestContextService');
 const { getDocumentFreightCharges } = require('./freightChargesDbService');
 const { buildDocumentAdditionalExpenses } = require('./freightPayloadUtils');
 const { buildDocumentSeriesPayload } = require('./documentSeriesPayloadUtils');
 const { getUdfDefinitions } = require('./udfMetadataService');
 const { isSapUdfKey, normalizeUdfValues } = require('./udfPayloadUtils');
+const {
+  applySapDocumentCurrency,
+  loadCompanyCurrencyContext,
+  loadDocumentCurrencyReferenceData,
+  mergeCurrencyReferenceData,
+  normalizeCopyDocumentRate,
+} = require('./salesDocumentCurrencyService');
 
 // ───────── HELPERS ─────────
 
@@ -32,25 +37,11 @@ const getUdfDefinitionsByKey = async (tableId) => {
 
 const getReferenceData = async (companyId, userId) => {
   try {
-    // If a companyId and userId are provided, try to resolve the assigned company
-    // and set the request context database so downstream db queries target
-    // the requested company's database.
-    if (companyId && userId) {
-      try {
-        const assignedCompany = await authDbService.getAssignedCompanyForUser(Number(userId), Number(companyId));
-        const ctx = getRequestContext();
-        if (ctx && assignedCompany && assignedCompany.DbName) {
-          ctx.databaseName = String(assignedCompany.DbName).trim();
-        }
-      } catch (innerErr) {
-        // ignore resolution errors and fall back to default connection
-        console.warn('[purchaseOrderService] could not resolve assigned company for user/company:', innerErr.message || innerErr);
-      }
-    }
-
-    // Use ODBC/Direct SQL for GET operations (dbService will resolve DB from request context)
-    const data = await purchaseOrderDb.getReferenceData();
-    return data;
+    const [data, currencyContext] = await Promise.all([
+      purchaseOrderDb.getReferenceData(),
+      loadCompanyCurrencyContext(),
+    ]);
+    return mergeCurrencyReferenceData(data, currencyContext);
   } catch (error) {
     // Return empty structure with warnings
     return {
@@ -174,7 +165,7 @@ const getPurchaseOrder = async (docEntry) => {
   try {
     // Use ODBC for reading single order
     const result = await purchaseOrderDb.getPurchaseOrder(docEntry);
-    return result;
+    return normalizeCopyDocumentRate(result, await loadDocumentCurrencyReferenceData());
   } catch (error) {
     throw error;
   }
@@ -229,6 +220,9 @@ const toNumberOrUndefined = (value) => {
   return Number.isFinite(parsed) ? parsed : undefined;
 };
 
+const isTruthyFlag = (value) => (
+  value === true || value === 1 || ['Y', 'YES', 'TRUE', '1'].includes(String(value ?? '').trim().toUpperCase())
+);
 const toSapYesNo = (value, defaultValue = false) => {
   if (value === '' || value === null || value === undefined) {
     return defaultValue ? 'tYES' : 'tNO';
@@ -279,7 +273,9 @@ const buildDocumentLines = async (lines = []) =>
   Promise.all(lines
     .filter((line) => String(line.itemNo || '').trim())
     .map(async (line, index) => {
-      const uomValue = line.uomEntry ?? line.UoMEntry ?? line.uomCode;
+      const uomValue = isTruthyFlag(line.uomNameEdited)
+        ? (line.uomName ?? line.UoMName ?? line.UomName ?? line.UnitMsr ?? line.unitMsr ?? line.uomCode)
+        : (line.uomEntry ?? line.UoMEntry ?? line.uomName ?? line.UoMName ?? line.UomName ?? line.UnitMsr ?? line.unitMsr ?? line.uomCode);
       const resolvedUomEntry = await purchaseOrderDb.resolvePurchaseOrderLineUomEntry(line.itemNo, uomValue);
 
       if (resolvedUomEntry === null || resolvedUomEntry === undefined) {
@@ -337,7 +333,6 @@ const buildPurchaseOrderPayload = async (
     TaxDate: header.documentDate || header.postingDate,
     ...buildDocumentSeriesPayload(header),
     BPL_IDAssignedToInvoice: header.branch ? Number(header.branch) : undefined,
-    DocCurrency: header.currency || 'INR',
     PaymentGroupCode: header.paymentTerms ? Number(header.paymentTerms) : undefined,
     SalesPersonCode: header.salesEmployee !== '' && header.salesEmployee != null ? toNumberOrUndefined(header.salesEmployee) : undefined,
     ShipToCode: header.shipToCode || undefined,
@@ -361,6 +356,11 @@ const buildPurchaseOrderPayload = async (
     ...(header.buyerLocation !== undefined ? { U_ShipLocation: header.buyerLocation } : {}),
   };
   Object.assign(sapPayload, normalizeUdfValues(headerUdfValues, null, headerUdfDefinitionsByKey));
+  applySapDocumentCurrency(
+    sapPayload,
+    header,
+    await loadDocumentCurrencyReferenceData(header),
+  );
   return sapPayload;
 };
 
@@ -453,7 +453,10 @@ const getOpenPurchaseQuotations = async (vendorCode = null) => {
 
 const getPurchaseQuotationForCopy = async (docEntry) => {
   const purchaseQuotationDb = require('./purchaseQuotationDbService');
-  return purchaseQuotationDb.getPurchaseQuotationForCopy(docEntry);
+  return normalizeCopyDocumentRate(
+    await purchaseQuotationDb.getPurchaseQuotationForCopy(docEntry),
+    await loadDocumentCurrencyReferenceData(),
+  );
 };
 
 const getOpenPurchaseRequests = async (vendorCode = null) => {

@@ -2,11 +2,14 @@
 
 const crypto = require('crypto');
 const metadataRepository = require('./newSalesOrderMetadataRepository');
+const fieldConfigRepository = require('../salesDocumentSchema/salesDocumentFieldConfigRepository');
 const {
   LOOKUP_SOURCES,
   SALES_ORDER_DOCUMENT,
   SALES_ORDER_HEADER_STANDARD_FIELDS,
   SALES_ORDER_LINE_STANDARD_FIELDS,
+  PURCHASE_DOCUMENT_HEADER_STANDARD_FIELDS,
+  SERVICE_DOCUMENT_LINE_STANDARD_FIELDS,
   SCHEMA_FORMAT_VERSION,
   resolveSalesDocument,
 } = require('./newSalesOrderConstants');
@@ -16,6 +19,17 @@ const { rowValue } = require('./newSalesOrderMetadataRepository');
 const text = (value) => String(value ?? '').trim();
 const upper = (value) => text(value).toUpperCase();
 const compactToken = (value) => upper(value).replace(/[^A-Z0-9]/g, '');
+const SERVICE_ITEM_ONLY_LAYOUT_TOKENS = new Set([
+  'ITEMCODE',
+  'WAREHOUSECODE',
+  'WHSCODE',
+  'UOMCODE',
+  'UOMENTRY',
+  'BARCODE',
+  'NUMPERMSR',
+  'INVENTORYQUANTITY',
+  'USEBASEUNITS',
+]);
 
 const numberOrNull = (value) => {
   if (value === null || value === undefined || value === '') return null;
@@ -168,6 +182,7 @@ const buildTableFields = ({
   udfDefinitions = [],
   layoutRows = [],
   standardRegistry = {},
+  excludedLayoutTokens = new Set(),
 }) => {
   const physicalIndex = createTokenIndex(physicalColumns, (column) => fieldTokens(column.columnName));
   const udfIndex = createTokenIndex(udfDefinitions, (field) => fieldTokens(field.sapField, field.aliasId));
@@ -224,6 +239,8 @@ const buildTableFields = ({
   // semantic registry. They are exposed read-only because their Service Layer
   // property cannot be inferred safely.
   for (const layout of normalizedLayout) {
+    if (fieldTokens(layout.fieldName, layout.columnUid, layout.label)
+      .some((layoutToken) => excludedLayoutTokens.has(compactToken(layoutToken)))) continue;
     const physical = findByTokens(physicalIndex, fieldTokens(layout.fieldName, layout.columnUid, layout.label));
     if (!physical) {
       const layoutField = text(layout.fieldName || layout.columnUid || layout.label);
@@ -310,6 +327,38 @@ const generateSchemaVersion = (schema) => {
   return `${SCHEMA_FORMAT_VERSION}-${hash}`;
 };
 
+const applyLookupConfigurations = (schema, configurations = []) => {
+  if (!Array.isArray(configurations) || !configurations.length) return schema;
+  const byFieldId = new Map(
+    configurations.map((configuration) => [
+      upper(configuration.FieldId ?? configuration.fieldId),
+      text(configuration.LookupSource ?? configuration.lookupSource).toLowerCase(),
+    ]),
+  );
+  const lineFields = (schema.lineFields || []).map((field) => {
+    const lookupSource = byFieldId.get(upper(field.id));
+    if (!lookupSource || field.readOnly || field.editable === false) return field;
+    return {
+      ...field,
+      defaultType: field.type,
+      defaultRenderer: field.renderer,
+      defaultLookupSource: field.lookup?.source || field.lookupSource || null,
+      type: 'lookup',
+      renderer: 'lookup',
+      lookupConfigured: true,
+      configuredLookupSource: lookupSource,
+      lookupSource,
+      lookup: {
+        ...(field.lookup || {}),
+        source: lookupSource,
+        fieldId: field.id,
+      },
+    };
+  });
+  const configuredSchema = { ...schema, lineFields };
+  return { ...configuredSchema, schemaVersion: generateSchemaVersion(configuredSchema) };
+};
+
 const buildDocumentSchema = ({ context, metadata, rawDocument = SALES_ORDER_DOCUMENT }) => {
   const document = typeof rawDocument === 'string' ? resolveSalesDocument(rawDocument) : rawDocument;
   const layoutRows = Array.isArray(metadata?.layout) ? metadata.layout : [];
@@ -330,14 +379,21 @@ const buildDocumentSchema = ({ context, metadata, rawDocument = SALES_ORDER_DOCU
       physicalColumns: metadata?.physical?.[document.headerTable] || [],
       udfDefinitions: metadata?.udfs?.[document.headerTable] || [],
       layoutRows,
-      standardRegistry: SALES_ORDER_HEADER_STANDARD_FIELDS,
+      standardRegistry: document.purchaseDocument
+        ? PURCHASE_DOCUMENT_HEADER_STANDARD_FIELDS
+        : SALES_ORDER_HEADER_STANDARD_FIELDS,
     }),
     lineFields: buildTableFields({
       tableName: document.lineTable,
       physicalColumns: metadata?.physical?.[document.lineTable] || [],
       udfDefinitions: metadata?.udfs?.[document.lineTable] || [],
       layoutRows,
-      standardRegistry: SALES_ORDER_LINE_STANDARD_FIELDS,
+      standardRegistry: document.serviceLineMode
+        ? SERVICE_DOCUMENT_LINE_STANDARD_FIELDS
+        : SALES_ORDER_LINE_STANDARD_FIELDS,
+      excludedLayoutTokens: document.serviceLineMode
+        ? SERVICE_ITEM_ONLY_LAYOUT_TOKENS
+        : new Set(),
     }),
     lookupSources: [...LOOKUP_SOURCES],
   };
@@ -347,13 +403,16 @@ const buildDocumentSchema = ({ context, metadata, rawDocument = SALES_ORDER_DOCU
 
 const buildSalesOrderSchema = (options) => buildDocumentSchema({ ...options, rawDocument: SALES_ORDER_DOCUMENT });
 
-const createNewSalesOrderSchemaService = ({ repository = metadataRepository } = {}) => {
+const createNewSalesOrderSchemaService = ({
+  repository = metadataRepository,
+  configurations = null,
+} = {}) => {
   if (!repository || (typeof repository.getDocumentMetadata !== 'function'
     && typeof repository.getSalesOrderMetadata !== 'function')) {
     throw new TypeError('A New Sales Order metadata repository is required.');
   }
 
-  const getSchema = async (context, documentType = SALES_ORDER_DOCUMENT.documentType) => {
+  const getBaseSchema = async (context, documentType = SALES_ORDER_DOCUMENT.documentType) => {
     const document = resolveSalesDocument(documentType);
     const metadata = typeof repository.getDocumentMetadata === 'function'
       ? await repository.getDocumentMetadata(context, document)
@@ -361,15 +420,23 @@ const createNewSalesOrderSchemaService = ({ repository = metadataRepository } = 
     return buildDocumentSchema({ context, metadata, rawDocument: document });
   };
 
-  return { getCurrentSchema: getSchema, getSchema };
+  const getSchema = async (context, documentType = SALES_ORDER_DOCUMENT.documentType) => {
+    const baseSchema = await getBaseSchema(context, documentType);
+    if (!configurations || typeof configurations.list !== 'function') return baseSchema;
+    const overrides = await configurations.list(context.companyId, baseSchema.documentType);
+    return applyLookupConfigurations(baseSchema, overrides);
+  };
+
+  return { getBaseSchema, getCurrentSchema: getSchema, getSchema };
 };
 
-const defaultService = createNewSalesOrderSchemaService();
+const defaultService = createNewSalesOrderSchemaService({ configurations: fieldConfigRepository });
 
 module.exports = defaultService;
 module.exports.buildDocumentSchema = buildDocumentSchema;
 module.exports.buildSalesOrderSchema = buildSalesOrderSchema;
 module.exports.buildTableFields = buildTableFields;
+module.exports.applyLookupConfigurations = applyLookupConfigurations;
 module.exports.createNewSalesOrderSchemaService = createNewSalesOrderSchemaService;
 module.exports.generateSchemaVersion = generateSchemaVersion;
 module.exports.normalizeLayoutRow = normalizeLayoutRow;

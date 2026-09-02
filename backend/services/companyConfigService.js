@@ -82,6 +82,7 @@ const splitSqlServerName = (serverName = '', explicitInstance = '') => {
 
 const getAssignedCompanyFromContext = async () => {
   const context = getRequestContext();
+  if (context?.companyOverride) return context.companyOverride;
   const userId = Number(context?.req?.auth?.userId);
   const companyId = Number(context?.req?.auth?.companyId);
 

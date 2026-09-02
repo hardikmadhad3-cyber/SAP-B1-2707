@@ -1,4 +1,5 @@
 import React, { useRef } from 'react';
+import { getOrderedVisibleMatrixColumns } from '../../../utils/formSettingsColumns';
 
 const COLUMNS = [
   { key: 'itemCode', label: 'Item No.', minWidth: 155 },
@@ -10,7 +11,7 @@ const COLUMNS = [
   { key: 'accountCode', label: 'Account Code', minWidth: 135, lookup: 'account' },
   { key: 'itemCost', label: 'Item Cost', minWidth: 110, numeric: true, readOnly: true },
   { key: 'uomCode', label: 'UoM Code', minWidth: 105, readOnly: true },
-  { key: 'uomName', label: 'UoM Name', minWidth: 120, readOnly: true },
+  { key: 'uomName', label: 'UoM Name', minWidth: 120 },
   { key: 'distributionRule', label: 'Distr. Rule', minWidth: 115, lookup: 'distRule' },
   { key: 'rg23aPartINo', label: 'RG23A Part I No.', minWidth: 145, udfLabels: ['RG23A Part I No.', 'RG23A Part I No', 'U_RG23APartI'] },
   { key: 'rg23cPartINo', label: 'RG23C Part I No.', minWidth: 145, udfLabels: ['RG23C Part I No.', 'RG23C Part I No', 'U_RG23CPartI'] },
@@ -88,17 +89,7 @@ function ContentsTab({
   errors,
 }) {
   const inputRefs = useRef({});
-  const baseVisibleColumns = COLUMNS.filter((column) => {
-    const udfField = getBoundUdf(column, rowUdfFields);
-    if (STANDARD_KEYS.has(column.key)) {
-      return formSettings.matrixColumns?.[column.key]?.visible !== false;
-    }
-    if (udfField) {
-      return formSettings.matrixColumns?.[column.key]?.visible !== false;
-    }
-    return formSettings.matrixColumns?.[column.key]?.visible !== false;
-  });
-  const visibleColumns = [...baseVisibleColumns];
+  const visibleColumns = getOrderedVisibleMatrixColumns(COLUMNS, formSettings);
 
   const focusCell = (rowIndex, columnKey) => {
     const target = inputRefs.current[`${rowIndex}:${columnKey}`];

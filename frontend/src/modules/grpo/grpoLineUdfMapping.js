@@ -97,14 +97,13 @@ export const buildGRPOLineUdfPayload = (line = {}, rowUdfDefinitions = [], formS
   const udf = buildVisibleEnteredRowUdfPayload(rowUdfDefinitions, line.udf || {}, formSettings);
 
   Object.entries(GRPO_LINE_UDF_FIELD_MAP).forEach(([lineKey, configuredUdfKey]) => {
-    const configuredUdfKeys = Array.isArray(configuredUdfKey) ? configuredUdfKey : [configuredUdfKey];
-    const actualUdfKey = resolveUdfDefinitionKey(configuredUdfKey, rowUdfDefinitions) || configuredUdfKeys[0];
+    const actualUdfKey = resolveUdfDefinitionKey(configuredUdfKey, rowUdfDefinitions);
 
     const value = lineKey === 'sellerPaymentTermsDuplicate'
       ? getFirstLineValue(line.sellerPaymentTermsDuplicate, line.sellerPaymentTerms)
       : line[lineKey];
 
-    if (value !== undefined && value !== null && String(value).trim() !== '') {
+    if (actualUdfKey && value !== undefined && value !== null && String(value).trim() !== '') {
       udf[actualUdfKey] = value;
     }
   });

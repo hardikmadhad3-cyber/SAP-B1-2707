@@ -9,7 +9,6 @@ import {
   supportsMultipleMenuWindows,
 } from '../utils/menuWindowNavigation';
 import { matchesSapSearchText } from '../utils/sapSearch';
-import { NEW_SALES_ORDER_ENABLED } from '../modules/new-sales-order/newSalesOrderConstants';
 import '../styles/sidebar.css';
 
 const DASHBOARD_PATH = '/dashboard';
@@ -58,7 +57,7 @@ const SALES_MENU_NAMES = new Set(['sales', 'sales a r']);
 const SALES_CHILD_PRIORITY = new Map([
   ['sales quotation', 1],
   ['sales order', 2],
-  ['new sales order', 2.5],
+  ['transaction field configuration', 2.5],
   ['dc sales order', 3],
   ['nc sales order', 4],
   ['soda sales order', 5],
@@ -72,7 +71,6 @@ const SALES_CHILD_PRIORITY = new Map([
 const SALES_CHILD_PATH_PRIORITY = new Map([
   ['/sales-quotation', 1],
   ['/sales-order', 2],
-  ['/new-sales-order', 2.5],
   ['/dc-sales-order', 3],
   ['/nc-sales-order', 4],
   ['/soda-sales-order', 5],
@@ -360,10 +358,6 @@ const buildSidebarMenus = (menus = []) => {
       const filteredChildren = removeHiddenSidebarItems(item.children || [], isInsideMaster);
 
       if (menuPath === '/general-settings') {
-        return nextItems;
-      }
-
-      if (menuPath === '/new-sales-order' && !NEW_SALES_ORDER_ENABLED) {
         return nextItems;
       }
 

@@ -3,6 +3,7 @@ import TaxCodeLookup from '../../../components/TaxCodeLookup';
 import { useSapItemCodeTab } from '../../../utils/sapTabNavigation';
 import { BASE_MATRIX_COLUMNS } from '../../../config/purchaseQuotationForm';
 import { getLineTotalsForDisplay } from '../../../utils/lineTotals';
+import { getOrderedVisibleMatrixColumns } from '../../../utils/formSettingsColumns';
 
 const COLUMN_WIDTHS = {
   itemNo: 160,
@@ -120,44 +121,12 @@ export default function ContentsTab({
 }) {
   const sapItemTab = useSapItemCodeTab({ lineItemOptions, onLineChange, onOpenItemModal });
   const baseMatrixFields = Array.isArray(matrixFields) && matrixFields.length ? matrixFields : BASE_MATRIX_COLUMNS;
-  const representedUdfTokens = new Set(
-    baseMatrixFields.flatMap((column) => [
-      column.key,
-      column.sapField,
-      column.fieldName,
-      column.label,
-    ].map(normalizeLookupToken).filter(Boolean))
-  );
-  const extraRowUdfFields = rowUdfFields.filter((field) => {
-    const tokens = [
-      field.key,
-      field.sapField,
-      field.aliasId,
-      field.label,
-      field.description,
-      field.Descr,
-    ].map(normalizeLookupToken).filter(Boolean);
-
-    return !tokens.some((token) => representedUdfTokens.has(token));
-  });
-  const matrixColumns = [
-    ...baseMatrixFields.map((column) => ({
+  const matrixColumns = baseMatrixFields.map((column) => ({
       ...column,
       minWidth: COLUMN_WIDTHS[column.key] || 125,
-    })),
-    ...extraRowUdfFields.map((field) => ({
-      key: field.key,
-      label: field.label || field.key,
-      minWidth: field.type === 'textarea' ? 180 : 125,
-      isUdf: true,
-      field,
-    })),
-  ];
+    }));
 
-  const visibleColumns = matrixColumns.filter((column) => {
-    if (column.isUdf) return formSettings.rowUdfs?.[column.key]?.visible !== false;
-    return formSettings.matrixColumns?.[column.key]?.visible !== false;
-  });
+  const visibleColumns = getOrderedVisibleMatrixColumns(matrixColumns, formSettings);
 
   const tableMinWidth =
     INDEX_COL_WIDTH +
@@ -165,7 +134,8 @@ export default function ContentsTab({
     visibleColumns.reduce((total, col) => total + col.minWidth, 0);
 
   const renderUdfCell = (field, line, i) => {
-    const disabled = field.readOnly || formSettings.rowUdfs?.[field.key]?.active === false;
+    const setting = formSettings.matrixColumns?.[field.key] || formSettings.rowUdfs?.[field.key] || {};
+    const disabled = field.readOnly || setting.active === false;
     const value = line.udf?.[field.key] || '';
 
     if (field.type === 'select') {

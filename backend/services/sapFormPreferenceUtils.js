@@ -139,6 +139,33 @@ const createSalesDocumentCprfDefinitions = ({
   { title: 'Delivery Date', fieldName: 'ShipDate', aliases: ['Delivery Date', 'Del. Date'], sapColumnIds: ['25', 'ShipDate', 'Delivery Date', 'Del. Date'], width: 125, dataType: 'date' },
 ];
 
+// SAP reuses marketing-document matrix column IDs when the document switches
+// from Item to Service mode. In particular, ColID 1 represents the G/L
+// Account, not ItemCode, and ColID 3 is the service Description. Keep these
+// definitions ahead of the generic item-document definitions.
+const createServiceDocumentCprfDefinitions = () => [
+  { title: '#', fieldName: 'LineNum', aliases: ['#', 'LineNum'], sapColumnIds: ['0', '#', 'LineNum'], width: 42, dataType: 'number' },
+  { title: 'G/L Account', fieldName: 'AcctCode', aliases: ['G/L Account', 'GL Account', 'Account Code'], sapColumnIds: ['1', 'AcctCode', 'AccountCode', 'G/L Account', 'GL Account'], width: 145, dataType: 'string' },
+  { title: 'Description', fieldName: 'Dscription', aliases: ['Description', 'Item Description'], sapColumnIds: ['3', 'Dscription', 'ItemDescription', 'Description', 'Item Description'], width: 240, dataType: 'string' },
+  { title: 'Quantity', fieldName: 'Quantity', aliases: ['Quantity', 'Qty'], sapColumnIds: ['11', 'Quantity', 'Qty'], width: 90, dataType: 'number' },
+  { title: 'Unit Price', fieldName: 'Price', aliases: ['Unit Price'], sapColumnIds: ['14', 'Price', 'PriceBefDi', 'UnitPrice', 'Unit Price'], width: 110, dataType: 'number' },
+  { title: 'Discount %', fieldName: 'DiscPrcnt', aliases: ['Discount %', 'Disc%'], sapColumnIds: ['15', 'DiscPrcnt', 'Discount %', 'Disc%'], width: 95, dataType: 'number' },
+  { title: 'Tax Code', fieldName: 'VatGroup', aliases: ['Tax Code'], sapColumnIds: ['160', '234000377', 'VatGroup', 'TaxCode', 'Tax Code'], width: 115, dataType: 'string' },
+  { title: 'Total (LC)', fieldName: 'LineTotal', aliases: ['Total (LC)', 'Total LC', 'Total'], sapColumnIds: ['17', 'LineTotal', 'Total (LC)', 'Total LC', 'Total'], width: 115, dataType: 'number' },
+  { title: 'Total (Doc)', fieldName: 'TotalFrgn', aliases: ['Total (Doc)', 'Total Doc', 'Total (FC)', 'Total FC'], sapColumnIds: ['23', 'TotalFrgn', 'RowTotalFC', 'Total (Doc)', 'Total Doc'], width: 115, dataType: 'number' },
+  { title: 'Distr. Rule', fieldName: 'OcrCode', aliases: ['Distr. Rule', 'Distribution Rule'], sapColumnIds: ['21', 'OcrCode', 'CostingCode', 'Distr. Rule', 'Distribution Rule'], width: 120, dataType: 'string' },
+  { title: 'Distr. Rule 2', fieldName: 'OcrCode2', aliases: ['Distr. Rule 2', 'Distribution Rule 2'], sapColumnIds: ['OcrCode2', 'CostingCode2'], width: 130, dataType: 'string' },
+  { title: 'Distr. Rule 3', fieldName: 'OcrCode3', aliases: ['Distr. Rule 3', 'Distribution Rule 3'], sapColumnIds: ['OcrCode3', 'CostingCode3'], width: 130, dataType: 'string' },
+  { title: 'Distr. Rule 4', fieldName: 'OcrCode4', aliases: ['Distr. Rule 4', 'Distribution Rule 4'], sapColumnIds: ['OcrCode4', 'CostingCode4'], width: 130, dataType: 'string' },
+  { title: 'Distr. Rule 5', fieldName: 'OcrCode5', aliases: ['Distr. Rule 5', 'Distribution Rule 5'], sapColumnIds: ['OcrCode5', 'CostingCode5'], width: 130, dataType: 'string' },
+  { title: 'Project', fieldName: 'Project', aliases: ['Project', 'Project Code'], sapColumnIds: ['Project', 'ProjectCode'], width: 125, dataType: 'string' },
+  { title: 'WTax Liable', fieldName: 'WTLiable', aliases: ['WTax Liable', 'WT Liable'], sapColumnIds: ['WTLiable', 'WTaxLiable'], width: 105, dataType: 'yesNo' },
+  { title: 'SAC', fieldName: 'SacEntry', aliases: ['SAC'], sapColumnIds: ['254000393', 'SacEntry', 'SACEntry', 'SacCode', 'SAC'], width: 95, dataType: 'string' },
+  { title: 'Loc.', fieldName: 'LocCode', aliases: ['Loc.', 'Location'], sapColumnIds: ['10002047', '2000002049', 'LocCode', 'Location', 'Loc.'], width: 115, dataType: 'string' },
+  { title: 'Blanket Agreement No.', fieldName: 'AgrNo', aliases: ['Blanket Agreement No.'], sapColumnIds: ['1000', 'AgrNo', 'AgreementNo', 'Blanket Agreement No.'], width: 170, dataType: 'string' },
+  { title: 'Tax Amount (LC)', fieldName: 'VatSum', aliases: ['Tax Amount (LC)', 'Tax Amount'], sapColumnIds: ['VatSum', 'TaxAmount', 'Tax Amount (LC)'], width: 125, dataType: 'number' },
+];
+
 const DOCUMENT_CPRF_COLUMN_DEFS = {
   SALES_QUOTATION: createSalesDocumentCprfDefinitions({
     totalLcColumnIds: ['17'],
@@ -177,6 +204,52 @@ const DOCUMENT_CPRF_COLUMN_DEFS = {
     uomCodeColumnIds: ['1470002149'],
     uomNameColumnIds: ['1470002145'],
   }),
+  PURCHASE_REQUEST: createSalesDocumentCprfDefinitions({
+    totalLcColumnIds: ['17'],
+    totalDocColumnIds: ['23'],
+    warehouseColumnIds: ['24'],
+    uomCodeColumnIds: ['1470002149'],
+    uomNameColumnIds: ['1470002145'],
+  }),
+  PURCHASE_QUOTATION: createSalesDocumentCprfDefinitions({
+    totalLcColumnIds: ['17'],
+    totalDocColumnIds: ['23'],
+    warehouseColumnIds: ['24'],
+    uomCodeColumnIds: ['1470002149'],
+    uomNameColumnIds: ['1470002145'],
+  }),
+  PURCHASE_ORDER: createSalesDocumentCprfDefinitions({
+    totalLcColumnIds: ['17'],
+    totalDocColumnIds: ['23'],
+    warehouseColumnIds: ['24'],
+    uomCodeColumnIds: ['1470002149'],
+    uomNameColumnIds: ['1470002145'],
+  }),
+  GRPO: createSalesDocumentCprfDefinitions({
+    totalLcColumnIds: ['17'],
+    totalDocColumnIds: ['23'],
+    warehouseColumnIds: ['24'],
+    uomCodeColumnIds: ['1470002149'],
+    uomNameColumnIds: ['1470002145'],
+  }),
+  AP_INVOICE: createSalesDocumentCprfDefinitions({
+    totalLcColumnIds: ['17'],
+    totalDocColumnIds: ['23'],
+    warehouseColumnIds: ['24'],
+    uomCodeColumnIds: ['1470002149'],
+    uomNameColumnIds: ['1470002145'],
+  }),
+  AP_CREDIT_MEMO: createSalesDocumentCprfDefinitions({
+    totalLcColumnIds: ['17'],
+    totalDocColumnIds: ['23'],
+    warehouseColumnIds: ['24'],
+    uomCodeColumnIds: ['1470002149'],
+    uomNameColumnIds: ['1470002145'],
+  }),
+  SERVICE_AR_INVOICE: createServiceDocumentCprfDefinitions(),
+  SERVICE_AR_CREDIT_MEMO: createServiceDocumentCprfDefinitions(),
+  SERVICE_AP_INVOICE: createServiceDocumentCprfDefinitions(),
+  SERVICE_AP_CREDIT_MEMO: createServiceDocumentCprfDefinitions(),
 };
 
 const getSalesDocumentCprfDefinitions = (documentType) => (

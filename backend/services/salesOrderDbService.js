@@ -835,7 +835,7 @@ const SALES_ORDER_MATRIX_COLUMN_DEFS = [
   { key: 'taxLiable', label: 'Tax Liable', minWidth: 95, sapField: 'TaxOnly', sapColumnIds: ['22', 'TaxOnly', 'Tax Liable'] },
   { key: 'countryOfOrigin', label: 'Country/Region of Origin', minWidth: 175, sapField: 'CountryOrg', sapColumnIds: ['10002037', 'CountryOrg', 'Country/Region of Origin'] },
   { key: 'freeText', label: 'Free Text', minWidth: 150, sapField: 'FreeTxt', sapColumnIds: ['FreeTxt', 'Free Text'] },
-  { key: 'uomName', label: 'UoM Name', minWidth: 120, readOnly: true, sapField: 'unitMsr', alternativeFields: ['UomCode'], sapColumnIds: ['1470002145', 'unitMsr', 'UomName', 'UoM Name'] },
+  { key: 'uomName', label: 'UoM Name', minWidth: 120, sapField: 'unitMsr', alternativeFields: ['UomCode'], sapColumnIds: ['1470002145', 'unitMsr', 'UomName', 'UoM Name'] },
   { key: 'uomCode', label: 'UoM Code', minWidth: 105, sapField: 'UomCode', alternativeFields: ['UomEntry'], sapColumnIds: ['1470002149', 'UomCode', 'UoMCode', 'UoM Code'] },
   { key: 'loc', label: 'Loc.', minWidth: 120, readOnly: true, sapField: 'LocCode', alternativeFields: ['WhsCode', 'BPLId'], sapColumnIds: ['10002047', 'LocCode', 'Loc.'] },
   { key: 'specialRebate', label: 'Special Rebate', minWidth: 110, sapField: 'U_SPLRBT', sapColumnIds: ['U_SPLRBT', 'Special Rebate'] },
@@ -1734,8 +1734,9 @@ const getItemUomContext = async (itemCode) => {
   return itemUomContextCache.get(cacheKey);
 };
 
-const resolveSalesOrderLineUomEntry = async (itemCode, uomValue) => {
+const resolveSalesOrderLineUomEntry = async (itemCode, uomValue, options = {}) => {
   const item = await getItemUomContext(itemCode);
+  const allowDefaultFallback = options.allowDefaultFallback !== false;
   if (!item) return null;
 
   const rawValue = uomValue == null ? '' : String(uomValue).trim();
@@ -1774,7 +1775,10 @@ const resolveSalesOrderLineUomEntry = async (itemCode, uomValue) => {
         FROM UGP1 G
         INNER JOIN OUOM U ON U.UomEntry = G.UomEntry
         WHERE G.UgpEntry = @ugpEntry
-          AND UPPER(LTRIM(RTRIM(U.UomCode))) = @uomCode
+          AND (
+            UPPER(LTRIM(RTRIM(U.UomCode))) = @uomCode
+            OR UPPER(LTRIM(RTRIM(U.UomName))) = @uomCode
+          )
       `, { ugpEntry, uomCode: requestedUomCode }));
 
       if (rows[0]?.UomEntry != null) {
@@ -1788,6 +1792,7 @@ const resolveSalesOrderLineUomEntry = async (itemCode, uomValue) => {
       SELECT TOP 1 UomEntry
       FROM OUOM
       WHERE UPPER(LTRIM(RTRIM(UomCode))) = @uomCode
+         OR UPPER(LTRIM(RTRIM(UomName))) = @uomCode
       ORDER BY UomEntry
     `, { uomCode: requestedUomCode }));
 
@@ -1795,6 +1800,8 @@ const resolveSalesOrderLineUomEntry = async (itemCode, uomValue) => {
       return Number(rows[0].UomEntry);
     }
   }
+
+  if (!allowDefaultFallback) return null;
 
   if (isPositiveInteger(salesUomEntry)) {
     return salesUomEntry;

@@ -1,3 +1,5 @@
+import { filterSafePurchaseMatrixColumns } from '../utils/purchaseDocumentFormSettings';
+
 const FORM_SETTINGS_STORAGE_KEY = 'sapb1.grpo.formSettings.v1';
 
 const HEADER_UDF_DEFINITIONS = [];
@@ -35,7 +37,7 @@ const GRPO_LINE_UDF_FIELD_MAP = {
   sellerPaymentTermsDuplicate: 'U_Seller_Payment_Term',
 };
 
-const BASE_MATRIX_COLUMNS = [
+const CONFIGURED_MATRIX_COLUMNS = [
   { key: 'itemNo', label: 'Item No.', minWidth: 160 },
   { key: 'itemDescription', label: 'Item Description', minWidth: 240 },
   { key: 'quantity', label: 'Quantity', minWidth: 95 },
@@ -75,6 +77,7 @@ const BASE_MATRIX_COLUMNS = [
   { key: 'sellerPaymentTermsDuplicate', label: 'Seller - Terms of Payment', minWidth: 180, udfKey: GRPO_LINE_UDF_FIELD_MAP.sellerPaymentTermsDuplicate },
 ];
 
+const BASE_MATRIX_COLUMNS = filterSafePurchaseMatrixColumns(CONFIGURED_MATRIX_COLUMNS);
 const BASE_MATRIX_COLUMN_KEYS = new Set(BASE_MATRIX_COLUMNS.map((column) => column.key));
 
 const normalizeGRPOMatrixColumns = (columns = BASE_MATRIX_COLUMNS) => {

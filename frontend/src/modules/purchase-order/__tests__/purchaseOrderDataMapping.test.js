@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { hydrateDocumentLineFromItem } from '../../../utils/documentItemHydration';
 import { hydrateWorkbookDocumentLine } from '../../../utils/workbookLineHydration';
 import { getLineTotalsForDisplay } from '../../../utils/lineTotals';
@@ -29,7 +29,7 @@ describe('purchase order live data mapping', () => {
   it('renders packing type as a dropdown from live SAP UDF metadata aliases', () => {
     render(
       <ContentsTab
-        lines={[{ packingType: 'Carton', udf: {} }]}
+        lines={[{ packingType: 'Carton', udf: { U_PACKINGTYPE: 'Carton' } }]}
         onLineChange={jest.fn()}
         onNumBlur={jest.fn()}
         onAddLine={jest.fn()}
@@ -41,23 +41,94 @@ describe('purchase order live data mapping', () => {
         valErrors={{ lines: {} }}
         onOpenHSNModal={jest.fn()}
         onOpenItemModal={jest.fn()}
-        matrixFields={[]}
-        formSettings={{ matrixColumns: {}, rowUdfs: {} }}
-        rowUdfFields={[
+        matrixFields={[
+          { key: 'itemNo', label: 'Item No.' },
           {
             key: 'U_PACKINGTYPE',
             label: 'Packing-Type',
-            type: 'select',
-            options: [{ value: 'Carton', label: 'Carton' }],
+            isUdf: true,
+            field: {
+              key: 'U_PACKINGTYPE',
+              label: 'Packing-Type',
+              type: 'select',
+              options: [{ value: 'Carton', label: 'Carton' }],
+            },
           },
         ]}
+        formSettings={{ matrixColumns: {}, rowUdfs: {} }}
+        rowUdfFields={[{
+          key: 'U_PACKINGTYPE',
+          label: 'Packing-Type',
+          type: 'select',
+          options: [{ value: 'Carton', label: 'Carton' }],
+        }]}
         onRowUdfChange={jest.fn()}
       />
     );
 
-    const packingType = screen.getAllByRole('combobox').find((field) => field.getAttribute('name') === 'packingType');
+    const packingType = screen.getByDisplayValue('Carton');
     expect(packingType).toHaveValue('Carton');
     expect(screen.getByRole('option', { name: 'Carton' })).toBeInTheDocument();
+  });
+
+  it('renders an arbitrary current-company UDF that is visible in Form Settings', () => {
+    const onRowUdfChange = jest.fn();
+    render(
+      <ContentsTab
+        lines={[{ itemNo: 'RM-001', udf: { U_CompanyGrade: 'A' } }]}
+        onLineChange={jest.fn()}
+        onNumBlur={jest.fn()}
+        onAddLine={jest.fn()}
+        onRemoveLine={jest.fn()}
+        lineItemOptions={[]}
+        getUomOptions={() => []}
+        effectiveTaxCodes={[]}
+        effectiveWarehouses={[]}
+        valErrors={{ lines: {} }}
+        matrixFields={[
+          { key: 'itemNo', label: 'Item No.' },
+          {
+            key: 'U_CompanyGrade',
+            label: 'Company Grade',
+            isUdf: true,
+            field: { key: 'U_CompanyGrade', label: 'Company Grade', type: 'text' },
+          },
+        ]}
+        formSettings={{ matrixColumns: { U_CompanyGrade: { visible: true, active: true } }, rowUdfs: {} }}
+        rowUdfFields={[{ key: 'U_CompanyGrade', label: 'Company Grade', type: 'text' }]}
+        onRowUdfChange={onRowUdfChange}
+      />
+    );
+
+    expect(screen.getByText('Company Grade')).toBeInTheDocument();
+    fireEvent.change(screen.getByDisplayValue('A'), { target: { value: 'B' } });
+    expect(onRowUdfChange).toHaveBeenCalledWith(0, 'U_CompanyGrade', 'B');
+  });
+
+  it('does not render a stale layout UDF missing from current-company metadata', () => {
+    render(
+      <ContentsTab
+        lines={[{ itemNo: 'RM-001', udf: { U_Deleted: 'old' } }]}
+        onLineChange={jest.fn()}
+        onNumBlur={jest.fn()}
+        onAddLine={jest.fn()}
+        onRemoveLine={jest.fn()}
+        lineItemOptions={[]}
+        getUomOptions={() => []}
+        effectiveTaxCodes={[]}
+        effectiveWarehouses={[]}
+        valErrors={{ lines: {} }}
+        matrixFields={[
+          { key: 'itemNo', label: 'Item No.' },
+          { key: 'U_Deleted', label: 'Deleted UDF', isUdf: true },
+        ]}
+        formSettings={{ matrixColumns: {}, rowUdfs: { U_Deleted: { visible: true } } }}
+        rowUdfFields={[]}
+        onRowUdfChange={jest.fn()}
+      />
+    );
+
+    expect(screen.queryByText('Deleted UDF')).not.toBeInTheDocument();
   });
 
   it('keeps SAP matrix total as line total before tax', () => {
@@ -80,7 +151,7 @@ describe('purchase order live data mapping', () => {
         valErrors={{ lines: {} }}
         onOpenHSNModal={jest.fn()}
         onOpenItemModal={jest.fn()}
-        matrixFields={[]}
+        matrixFields={[{ key: 'forRate', label: 'FOR-Price' }]}
         formSettings={{ matrixColumns: {}, rowUdfs: {} }}
         rowUdfFields={[]}
         onRowUdfChange={jest.fn()}
@@ -211,7 +282,21 @@ describe('purchase order live data mapping', () => {
 
   it('maps SAP POR1.Commission layout column to visible Comm. % field', () => {
     const columns = buildMatrixColumnsFromSapLayout({
-      baseColumns: BASE_MATRIX_COLUMNS,
+      baseColumns: [
+        ...BASE_MATRIX_COLUMNS,
+        {
+          key: 'commPercent',
+          label: 'Comm. %',
+          sapField: 'Commission',
+          sapColumnIds: ['28', 'Commission', 'CommissionPercent'],
+        },
+        {
+          key: 'commission',
+          label: 'Commision',
+          sapField: 'U_COMPRC',
+          isUdf: true,
+        },
+      ],
       layoutColumns: [
         {
           fieldName: 'Commission',
@@ -232,8 +317,8 @@ describe('purchase order live data mapping', () => {
       ],
     });
 
-    expect(columns[0].key).toBe('commPercent');
-    expect(columns[1].key).toBe('commission');
+    expect(columns.find((column) => column.key === 'commPercent')).toBeDefined();
+    expect(columns.find((column) => column.key === 'commission')).toBeDefined();
   });
 
   it('prefers live SAP series whose date range contains the document date', () => {

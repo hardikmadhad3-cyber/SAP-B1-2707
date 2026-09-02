@@ -11,7 +11,6 @@ const APP_MENU_DEFINITIONS = [
   { key: 'sales', menuName: 'Sales', aliases: ['Sales - A/R', 'Sales A/R'], icon: 'sales', sortOrder: 1 },
   { key: 'sales-quotation', parentKey: 'sales', menuName: 'Sales Quotation', menuPath: '/sales-quotation', icon: 'document', sortOrder: 1, enforceSortOrder: true },
   { key: 'sales-order', parentKey: 'sales', menuName: 'Sales Order', menuPath: '/sales-order', icon: 'document', sortOrder: 2, enforceSortOrder: true },
-  { key: 'new-sales-order', parentKey: 'sales', menuName: 'New Sales Order', menuPath: '/new-sales-order', icon: 'document', sortOrder: 2.5, enforceSortOrder: true },
   { key: 'dc-sales-order', parentKey: 'sales', menuName: 'DC Sales Order', menuPath: '/dc-sales-order', icon: 'document', sortOrder: 3, enforceSortOrder: true },
   { key: 'nc-sales-order', parentKey: 'sales', menuName: 'NC Sales Order', menuPath: '/nc-sales-order', icon: 'document', sortOrder: 4, enforceSortOrder: true },
   { key: 'soda-sales-order', parentKey: 'sales', menuName: 'SODA Sales Order', menuPath: '/soda-sales-order', icon: 'document', sortOrder: 5, enforceSortOrder: true },
@@ -308,6 +307,36 @@ const cloneRoleRightsForDuplicateMenu = async (db, sourceMenuId, targetMenuId) =
   return result.rowsAffected?.[0] || 0;
 };
 
+const restrictMenuToAdminRoles = async (db, menuId) => {
+  const normalizedMenuId = Number(menuId);
+  if (!Number.isInteger(normalizedMenuId) || !(await hasRoleRightsTable(db))) return 0;
+
+  const removed = await db.query(`
+    DELETE FROM dbo.RoleRights
+    WHERE MenuId = @menuId
+      AND RoleId IN (
+        SELECT RoleId
+        FROM dbo.Roles
+        WHERE LOWER(LTRIM(RTRIM(RoleName))) NOT IN ('admin', 'superadmin')
+      )
+  `, { menuId: normalizedMenuId });
+
+  const added = await db.query(`
+    INSERT INTO dbo.RoleRights (RoleId, MenuId, CanView, CanAdd, CanEdit, CanDelete)
+    SELECT R.RoleId, @menuId, 1, 1, 1, 0
+    FROM dbo.Roles R
+    WHERE LOWER(LTRIM(RTRIM(R.RoleName))) IN ('admin', 'superadmin')
+      AND NOT EXISTS (
+        SELECT 1
+        FROM dbo.RoleRights RR
+        WHERE RR.RoleId = R.RoleId
+          AND RR.MenuId = @menuId
+      )
+  `, { menuId: normalizedMenuId });
+
+  return (removed.rowsAffected?.[0] || 0) + (added.rowsAffected?.[0] || 0);
+};
+
 const deleteDeprecatedReportLayoutManagerMenu = async (db, canonicalMenuId = null) => {
   const reportsRoot = await db.queryOne(`
     SELECT TOP (1) MenuId
@@ -366,6 +395,23 @@ const deleteDeprecatedReportLayoutManagerMenu = async (db, canonicalMenuId = nul
   return deleteCount;
 };
 
+const deleteDeprecatedTransactionFieldMenu = async (db) => {
+  const rows = await db.queryRows(`
+    SELECT MenuId FROM dbo.Menus
+    WHERE LOWER(LTRIM(RTRIM(COALESCE(MenuPath, '')))) IN ('/transaction-field-configuration', '/new-sales-order')
+       OR LOWER(LTRIM(RTRIM(COALESCE(MenuName, '')))) IN ('transaction field configuration', 'new sales order')
+  `);
+  let count = 0;
+  for (const row of rows) {
+    if (await hasRoleRightsTable(db)) {
+      await db.query('DELETE FROM dbo.RoleRights WHERE MenuId = @menuId', { menuId: row.MenuId });
+    }
+    const result = await db.query('DELETE FROM dbo.Menus WHERE MenuId = @menuId', { menuId: row.MenuId });
+    count += result.rowsAffected?.[0] || 0;
+  }
+  return count;
+};
+
 const syncApplicationSidebarMenus = async (db) => {
   if (!(await hasMenusTable(db))) {
     return 0;
@@ -404,11 +450,7 @@ const syncApplicationSidebarMenus = async (db) => {
     syncCount += 1;
   }
 
-  syncCount += await cloneRoleRightsForDuplicateMenu(
-    db,
-    menuByKey.get('sales-order')?.MenuId,
-    menuByKey.get('new-sales-order')?.MenuId,
-  );
+  syncCount += await deleteDeprecatedTransactionFieldMenu(db);
   syncCount += await cloneRoleRightsForDuplicateMenu(
     db,
     menuByKey.get('sales-order')?.MenuId,

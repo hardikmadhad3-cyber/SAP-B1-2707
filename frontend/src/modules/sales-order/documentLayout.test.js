@@ -83,7 +83,7 @@ describe('buildSalesOrderMatrixColumnsFromLayout', () => {
     expect(columns.slice(1)).toEqual(expect.arrayContaining([
       expect.objectContaining({ key: 'grossTotal', readOnly: true }),
       expect.objectContaining({ key: 'inStock', readOnly: true }),
-      expect.objectContaining({ key: 'uomName', readOnly: true }),
+      expect.objectContaining({ key: 'uomName', readOnly: false, active: true }),
       expect.objectContaining({ key: 'qtyInWhse', readOnly: true }),
     ]));
   });

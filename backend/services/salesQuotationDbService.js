@@ -43,14 +43,25 @@ const getTableColumnDetails = createTableColumnDetailsReader({ database: db });
 const getSalesQuotationHeaderFieldMetadata = () => getTableFieldMetadata('OQUT');
 const getSalesQuotationLineFieldMetadata = () => getTableFieldMetadata('QUT1');
 
-const hasTableField = (metadata, columnName) => {
+const resolveTableColumnName = (metadata, columnName) => {
   const normalizedColumnName = String(columnName || '').trim().toLowerCase();
-  if (!metadata || !normalizedColumnName) return false;
-  return Object.keys(metadata).some((fieldName) => fieldName.toLowerCase() === normalizedColumnName);
+  if (!metadata || !normalizedColumnName) return null;
+  return Object.keys(metadata).find((fieldName) => fieldName.toLowerCase() === normalizedColumnName) || null;
 };
+
+const hasTableField = (metadata, columnName) => Boolean(resolveTableColumnName(metadata, columnName));
 
 const sqlAlias = (alias) => `[${String(alias || '').replace(/]/g, ']]')}]`;
 const toSqlIdentifier = (identifier) => `[${String(identifier || '').replace(/]/g, ']]')}]`;
+
+const buildOptionalHeaderTextExpression = (fieldMetadata = {}, candidates = [], fallback = "''") => {
+  const resolvedColumn = candidates
+    .map((candidate) => resolveTableColumnName(fieldMetadata, candidate))
+    .find(Boolean);
+  return resolvedColumn
+    ? `NULLIF(LTRIM(RTRIM(CAST(T0.${toSqlIdentifier(resolvedColumn)} AS NVARCHAR(254)))), '')`
+    : fallback;
+};
 
 const normalizeDbScalar = (value) => {
   if (value instanceof Date) return value.toISOString().split('T')[0];
@@ -327,7 +338,7 @@ const SALES_QUOTATION_MATRIX_COLUMN_DEFS = [
   { key: 'itemNo', label: 'Item No.', minWidth: 160, sapField: 'ItemCode', sapColumnIds: ['1', 'ItemCode', 'Item No.', 'ItemNo'] },
   { key: 'itemDescription', label: 'Item Description', minWidth: 240, sapField: 'Dscription', sapColumnIds: ['3', 'Dscription', 'ItemDescription', 'Description', 'Item Description'] },
   { key: 'quantity', label: 'Quantity', minWidth: 95, numeric: true, sapField: 'Quantity', sapColumnIds: ['11', 'Quantity', 'Qty'] },
-  { key: 'uomName', label: 'UoM Name', minWidth: 120, readOnly: true, sapField: 'unitMsr', alternativeFields: ['UomCode'], sapColumnIds: ['1470002145', 'unitMsr', 'UomName', 'UoM Name'] },
+  { key: 'uomName', label: 'UoM Name', minWidth: 120, sapField: 'unitMsr', alternativeFields: ['UomCode'], sapColumnIds: ['1470002145', 'unitMsr', 'UomName', 'UoM Name'] },
   { key: 'uomCode', label: 'UoM Code', minWidth: 105, sapField: 'UomCode', alternativeFields: ['unitMsr', 'UomEntry'], sapColumnIds: ['1470002149', '1470002145', 'UomCode', 'unitMsr', 'UoM Code', 'UoM'] },
   { key: 'hsnCode', label: 'HSN', minWidth: 105, source: 'OITM', sapColumnIds: ['254000391', 'HsnEntry', 'HSN', 'HSN/SAC'] },
   { key: 'unitPrice', label: 'Unit Price', minWidth: 110, numeric: true, sapField: 'Price', alternativeFields: ['PriceBefDi'], sapColumnIds: ['14', 'Price', 'PriceBefDi', 'UnitPrice', 'Unit Price'] },
@@ -833,6 +844,24 @@ const getSalesQuotationList = async ({
   const normalizedPage = Math.max(1, Number(page) || 1);
   const normalizedPageSize = Math.min(200, Math.max(1, Number(pageSize) || 25));
   const skip = (normalizedPage - 1) * normalizedPageSize;
+  const headerFieldMetadata = await getSalesQuotationHeaderFieldMetadata();
+  const sellerCodeExpression = buildOptionalHeaderTextExpression(headerFieldMetadata, [
+    'U_Seller_Code',
+    'U_To_Code_Vendor',
+    'U_ToCodeVendor',
+    'U_To_Code',
+    'U_ToCode',
+    'U_To_Vendor_Code',
+    'U_Vendor_Code',
+    'U_Party_Code',
+  ]);
+  const sellerNameExpression = buildOptionalHeaderTextExpression(headerFieldMetadata, [
+    'U_Seller_Name',
+    'U_To_Name',
+    'U_ToName',
+    'U_Vendor_Name',
+    'U_Party_Name',
+  ]);
   const { whereClauses, params } = buildMarketingDocumentListFilterQuery({
     query,
     openOnly,
@@ -844,7 +873,11 @@ const getSalesQuotationList = async ({
     status,
     postingDateFrom,
     postingDateTo,
-  }, { includeSellerFields: true });
+  }, {
+    includeSellerFields: true,
+    sellerCodeField: sellerCodeExpression,
+    sellerNameField: sellerNameExpression,
+  });
 
   const countRows = await safe(db.query(`
     SELECT COUNT(*) AS total_count
@@ -860,8 +893,8 @@ const getSalesQuotationList = async ({
       T0.DocNum,
       T0.CardCode,
       T0.CardName,
-      T0.U_Seller_Code,
-      T0.U_Seller_Name,
+      COALESCE(${sellerCodeExpression}, '') AS seller_code,
+      COALESCE(${sellerNameExpression}, '') AS seller_name,
       T0.DocDate,
       T0.DocDueDate,
       T0.DocStatus,
@@ -884,8 +917,8 @@ const getSalesQuotationList = async ({
       doc_num: o.DocNum,
       customer_code: o.CardCode,
       customer_name: o.CardName,
-      seller_code: o.U_Seller_Code || '',
-      seller_name: o.U_Seller_Name || '',
+      seller_code: o.seller_code || '',
+      seller_name: o.seller_name || '',
       posting_date: o.DocDate ? o.DocDate.toISOString().split('T')[0] : '',
       delivery_date: o.DocDueDate ? o.DocDueDate.toISOString().split('T')[0] : '',
       status: o.DocStatus === 'O' ? 'Open' : o.DocStatus === 'C' ? 'Closed' : 'Unknown',
@@ -933,7 +966,7 @@ const getSalesQuotation = async (docEntry) => {
     SELECT
       T0.DocEntry, T0.DocNum, T0.CardCode, T0.CardName,
       T0.DocDate, T0.CreateDate AS DocumentCreated, T0.DocDueDate, T0.TaxDate, T0.DocStatus,
-      T0.NumAtCard, T0.Comments AS Remarks, T0.DocTotal, T0.DocCur,
+      T0.NumAtCard, T0.Comments AS Remarks, T0.DocTotal, T0.DocCur, T0.DocRate,
       T0.CntctCode, T0.BPLId, T0.GroupNum,
       T0.ShipToCode, T0.PayToCode, T0.Address, T0.Address2,
       ${addressExtensionSelectFields.join(',\n      ')},
@@ -1089,7 +1122,8 @@ const getSalesQuotation = async (docEntry) => {
         confirmed: header.Confirmed === 'Y',
         journalRemark: header.JrnlMemo || '',
         discount: String(header.DiscPrcnt || ''),
-        currency: header.DocCur || 'INR',
+        currency: header.DocCur || '',
+        exchangeRate: header.DocRate != null ? String(header.DocRate) : '',
       },
       header_udfs: headerUdfs,
       lines: rows.map(line => {
@@ -1263,6 +1297,7 @@ const getSalesQuotationForCopy = async (docEntry) => {
       END AS OwnerName,
       ${placeOfSupplyExpression} AS PlaceOfSupply,
       T0.DocCur,
+      T0.DocRate,
       T0.DocTotal,
       T0.TotalExpns AS Freight,
       T0.VatSum AS TaxAmount
@@ -1442,7 +1477,8 @@ const getSalesQuotationForCopy = async (docEntry) => {
         confirmed: header.Confirmed === 'Y',
         journalRemark: header.JrnlMemo || '',
         discount: header.DiscPrcnt != null ? String(header.DiscPrcnt) : '',
-        currency: header.DocCur || 'INR',
+        currency: header.DocCur || '',
+        exchangeRate: header.DocRate != null ? String(header.DocRate) : '',
       },
       header_udfs: headerUdfs,
       freightCharges,

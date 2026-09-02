@@ -187,6 +187,20 @@ CREATE TABLE IF NOT EXISTS new_sales_order_dummy_drafts (
   FOREIGN KEY (companyId) REFERENCES Companies(CompanyId)
 );
 
+CREATE TABLE IF NOT EXISTS SalesDocumentFieldLookupConfigurations (
+  LookupConfigurationId INTEGER PRIMARY KEY AUTOINCREMENT,
+  CompanyId INTEGER NOT NULL,
+  DocumentType TEXT NOT NULL,
+  FieldId TEXT NOT NULL,
+  LookupSource TEXT NOT NULL,
+  CreatedByUserId INTEGER NOT NULL,
+  UpdatedByUserId INTEGER NOT NULL,
+  CreatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UpdatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (CompanyId) REFERENCES Companies(CompanyId),
+  UNIQUE (CompanyId, DocumentType, FieldId)
+);
+
 CREATE TABLE IF NOT EXISTS sap_form_layout_columns (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   companyDb TEXT NOT NULL,
@@ -285,3 +299,22 @@ CREATE INDEX IF NOT EXISTS IX_new_sales_order_dummy_drafts_scope
   ON new_sales_order_dummy_drafts (companyId, userCode, createdAt, id);
 CREATE UNIQUE INDEX IF NOT EXISTS UX_new_sales_order_dummy_drafts_number
   ON new_sales_order_dummy_drafts (dummyDocumentNumber);
+CREATE INDEX IF NOT EXISTS IX_SalesDocumentFieldLookupConfigurations_Scope
+  ON SalesDocumentFieldLookupConfigurations (CompanyId, DocumentType, FieldId);
+
+CREATE TABLE IF NOT EXISTS SalesDocumentCustomLookups (
+  CustomLookupId INTEGER PRIMARY KEY AUTOINCREMENT,
+  CompanyId INTEGER NOT NULL,
+  LookupName TEXT NOT NULL,
+  QueryText TEXT NOT NULL,
+  CreatedByUserId INTEGER NOT NULL,
+  UpdatedByUserId INTEGER NOT NULL,
+  CreatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UpdatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (CompanyId) REFERENCES Companies(CompanyId),
+  FOREIGN KEY (CreatedByUserId) REFERENCES Users(UserId),
+  FOREIGN KEY (UpdatedByUserId) REFERENCES Users(UserId),
+  UNIQUE (CompanyId, LookupName)
+);
+CREATE INDEX IF NOT EXISTS IX_SalesDocumentCustomLookups_Company
+  ON SalesDocumentCustomLookups (CompanyId, LookupName);

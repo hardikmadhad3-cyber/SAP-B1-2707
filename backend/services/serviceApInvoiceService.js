@@ -4,7 +4,12 @@ const apInvoiceService = require('./apInvoiceService');
 const hsnCodeDbService = require('./hsnCodeDbService');
 const { getUdfDefinitions } = require('./udfMetadataService');
 const { isBlankUdfValue, normalizeUdfValue } = require('./udfPayloadUtils');
-const { applyDocumentCurrency } = require('./documentCurrencyUtils');
+const { buildStandardServiceLinePayload } = require('./serviceDocumentLinePayloadService');
+const {
+  applySapDocumentCurrency,
+  loadDocumentCurrencyReferenceData,
+  normalizeCopyDocumentRate,
+} = require('./salesDocumentCurrencyService');
 
 const parseNum = (value, fallback = 0) => {
   const parsed = Number(String(value ?? '').replace(/,/g, ''));
@@ -298,7 +303,7 @@ const buildSapPayload = async (payload, includeSeries = true, docEntry = null) =
   const sapPayload = {
     DocType: 'dDocument_Service',
     CardCode: vendorCode,
-    ...(includeSeries && isManualSeries ? { Series: -1, DocNum: manualDocNum } : {}),
+    ...(includeSeries && isManualSeries ? { Series: -1, HandWritten: 'tYES', DocNum: manualDocNum } : {}),
     ...(includeSeries && !isManualSeries ? { Series: resolvedSeries.series } : {}),
     DocDate: header.postingDate || header.documentDate,
     DocDueDate: header.deliveryDate || header.postingDate || header.documentDate,
@@ -315,7 +320,8 @@ const buildSapPayload = async (payload, includeSeries = true, docEntry = null) =
     Rounding: yesNo(header.rounding),
     DocumentLines: [],
   };
-  applyDocumentCurrency(sapPayload, header);
+  const currencyReferenceData = await loadDocumentCurrencyReferenceData(header);
+  applySapDocumentCurrency(sapPayload, header, currencyReferenceData);
 
   const withholdingTaxData = buildWithholdingTaxData(payload.withholdingTaxRows);
   if (withholdingTaxData.length) {
@@ -326,37 +332,13 @@ const buildSapPayload = async (payload, includeSeries = true, docEntry = null) =
   applyKnownHeaderUdfs(sapPayload, header, headerUdfDefinitionsByKey);
 
   for (const line of lines) {
-    const quantity = parseNum(line.sQty, 0) > 0 ? parseNum(line.sQty) : 1;
-    const unitPrice = parseNum(line.unitPrice, 0) > 0
-      ? parseNum(line.unitPrice)
-      : parseNum(line.totalLC, 0) / quantity;
-    const sapLine = {
-      AccountCode: String(line.glAccount || '').trim(),
-      ItemDescription: String(line.description || '').trim(),
-      Quantity: quantity,
-      UnitPrice: unitPrice,
-      TaxCode: optString(line.taxCode),
-      CostingCode: optString(line.distRule),
-      WTLiable: yesNo(line.wtaxLiable),
-    };
+    const sapLine = buildStandardServiceLinePayload(line);
 
     const sacEntry = await resolveSacEntry(line.sac);
     if (sacEntry !== undefined) sapLine.SACEntry = sacEntry;
 
     const locationCode = resolveLocationCode(line);
     if (locationCode !== undefined) sapLine.LocationCode = locationCode;
-
-    const agreementNo = optNumber(line.blanketAgreementNo);
-    if (agreementNo !== undefined) sapLine.AgreementNo = agreementNo;
-
-    const baseType = optNumber(line.baseType);
-    const baseEntry = optNumber(line.baseEntry);
-    const baseLine = optNumber(line.baseLine);
-    if (baseType !== undefined && baseEntry !== undefined && baseLine !== undefined) {
-      sapLine.BaseType = baseType;
-      sapLine.BaseEntry = baseEntry;
-      sapLine.BaseLine = baseLine;
-    }
 
     applyExplicitUdfs(sapLine, line.udf, lineUdfDefinitionsByKey);
     applyKnownLineUdfs(sapLine, line, lineUdfDefinitionsByKey);
@@ -397,20 +379,37 @@ const updateServiceAPInvoice = async (docEntry, payload) => {
   };
 };
 
+const getReferenceData = async () => loadDocumentCurrencyReferenceData(
+  {},
+  await serviceApInvoiceDb.getReferenceData(),
+);
+
 module.exports = {
-  getReferenceData: serviceApInvoiceDb.getReferenceData,
+  getReferenceData,
   getVendorDetails: serviceApInvoiceDb.getVendorDetails,
   getVendorFilterOptions: apInvoiceService.getVendorFilterOptions,
   getDocumentSeries: serviceApInvoiceDb.getDocumentSeries,
   getNextNumber: serviceApInvoiceDb.getNextNumber,
   getServiceAPInvoiceList: serviceApInvoiceDb.getServiceAPInvoiceList,
-  getServiceAPInvoice: serviceApInvoiceDb.getServiceAPInvoice,
+  getServiceAPInvoice: async (...args) => normalizeCopyDocumentRate(
+    await serviceApInvoiceDb.getServiceAPInvoice(...args),
+    await loadDocumentCurrencyReferenceData(),
+  ),
   submitServiceAPInvoice,
   updateServiceAPInvoice,
   getOpenServicePurchaseQuotations: async (vendorCode) => ({ documents: await serviceApInvoiceDb.getOpenServicePurchaseQuotations(vendorCode) }),
   getOpenServicePurchaseOrders: async (vendorCode) => ({ documents: await serviceApInvoiceDb.getOpenServicePurchaseOrders(vendorCode) }),
   getOpenServiceGRPO: async (vendorCode) => ({ documents: await serviceApInvoiceDb.getOpenServiceGRPO(vendorCode) }),
-  getServicePurchaseQuotationForCopy: serviceApInvoiceDb.getServicePurchaseQuotationForCopy,
-  getServicePurchaseOrderForCopy: serviceApInvoiceDb.getServicePurchaseOrderForCopy,
-  getServiceGRPOForCopy: serviceApInvoiceDb.getServiceGRPOForCopy,
+  getServicePurchaseQuotationForCopy: async (...args) => normalizeCopyDocumentRate(
+    await serviceApInvoiceDb.getServicePurchaseQuotationForCopy(...args),
+    await loadDocumentCurrencyReferenceData(),
+  ),
+  getServicePurchaseOrderForCopy: async (...args) => normalizeCopyDocumentRate(
+    await serviceApInvoiceDb.getServicePurchaseOrderForCopy(...args),
+    await loadDocumentCurrencyReferenceData(),
+  ),
+  getServiceGRPOForCopy: async (...args) => normalizeCopyDocumentRate(
+    await serviceApInvoiceDb.getServiceGRPOForCopy(...args),
+    await loadDocumentCurrencyReferenceData(),
+  ),
 };

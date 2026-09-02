@@ -4,7 +4,14 @@ const salesOrderDb = require('./salesOrderDbService');
 const hsnCodeDbService = require('./hsnCodeDbService');
 const { buildDocumentAdditionalExpenses } = require('./freightPayloadUtils');
 const { buildMarketingDocumentAddressPayload } = require('./documentAddressPayloadUtils');
-const { applyDocumentCurrency } = require('./documentCurrencyUtils');
+const {
+  applySapDocumentCurrency,
+  fromStoredDocumentRate,
+  loadCompanyCurrencyContext,
+  loadDocumentCurrencyReferenceData,
+  mergeCurrencyReferenceData,
+  normalizeCopyDocumentRateForCompany,
+} = require('./salesDocumentCurrencyService');
 const { buildDocumentReferencesPayload, normalizeReferenceDocType } = require('./documentReferencesPayloadUtils');
 const { getUdfDefinitionsOrEmpty } = require('./udfMetadataService');
 const { getActiveCompanyConfig } = require('./companyConfigService');
@@ -27,11 +34,20 @@ const firstPresent = (...values) => values.find(hasValue);
 const isManualUomPlaceholder = (value) =>
   String(value || '').trim().toUpperCase() === 'MANUAL';
 
-const getDeliveryLineRawUomValue = (line = {}) => (hasValue(line.uomEntry)
-  ? line.uomEntry
-  : hasValue(line.UoMEntry)
-    ? line.UoMEntry
-    : line.uomCode);
+const isTruthyFlag = (value) => (
+  value === true || value === 1 || ['Y', 'YES', 'TRUE', '1'].includes(String(value ?? '').trim().toUpperCase())
+);
+
+const getDeliveryLineRawUomValue = (line = {}) => {
+  if (isTruthyFlag(line.uomNameEdited)) {
+    return line.uomName ?? line.UoMName ?? line.UomName ?? line.UnitMsr ?? line.unitMsr ?? line.uomCode;
+  }
+  return hasValue(line.uomEntry)
+    ? line.uomEntry
+    : hasValue(line.UoMEntry)
+      ? line.UoMEntry
+      : line.uomName || line.UoMName || line.UomName || line.UnitMsr || line.unitMsr || line.uomCode;
+};
 
 const getDeliveryLineUomValue = (line = {}) => {
   const rawValue = getDeliveryLineRawUomValue(line);
@@ -648,16 +664,22 @@ const buildDocumentLinePayload = async (line = {}, fieldMetadata = {}, includeLi
   }
 
   if (!isBaseDocumentLine) {
+    const uomNameEdited = isTruthyFlag(line.uomNameEdited);
     const rawUomValue = getDeliveryLineRawUomValue(line);
     const uomValue = getDeliveryLineUomValue(line);
     const resolvedUomEntry = await deliveryDb.resolveDeliveryLineUomEntry(
       line.itemNo,
       rawUomValue,
+      { allowDefaultFallback: !uomNameEdited },
     );
     if (resolvedUomEntry !== null && resolvedUomEntry !== undefined) {
       documentLine.UoMEntry = resolvedUomEntry;
     } else if (hasValue(uomValue)) {
-      documentLine.UoMCode = String(uomValue).trim();
+      if (uomNameEdited) {
+        documentLine.MeasureUnit = String(uomValue).trim();
+      } else {
+        documentLine.UoMCode = String(uomValue).trim();
+      }
     }
   }
 
@@ -725,7 +747,7 @@ const buildDocumentLinePayload = async (line = {}, fieldMetadata = {}, includeLi
     line.LocationCode,
     line.LocCode,
   ));
-  if (locationCode !== undefined && hasDeliveryLineColumn(fieldMetadata, 'LocCode')) {
+  if (locationCode !== undefined && locationCode >= 0 && hasDeliveryLineColumn(fieldMetadata, 'LocCode')) {
     documentLine.LocationCode = locationCode;
   }
 
@@ -913,26 +935,22 @@ const resolveReferenceDocumentsForSubmit = async (references = [], lines = []) =
 
 const getReferenceData = async (companyId) => {
   try {
-    const [data, companyConfig, companyCurrencyRows, currencies] = await Promise.all([
+    const [data, companyConfig, currencyContext] = await Promise.all([
       deliveryDb.getReferenceData(),
       getActiveCompanyConfig(),
-      salesOrderDb.getCompanyCurrencyInfo ? salesOrderDb.getCompanyCurrencyInfo() : Promise.resolve([]),
-      salesOrderDb.getCurrencies ? salesOrderDb.getCurrencies() : Promise.resolve([]),
+      loadCompanyCurrencyContext(),
     ]);
     const toVendorCode = String(
       companyConfig?.documentDefaults?.salesOrderToVendorCode || '',
     ).trim();
 
-    return {
+    return mergeCurrencyReferenceData({
       ...data,
-      local_currency: companyCurrencyRows?.[0]?.MainCurncy || '',
-      system_currency: companyCurrencyRows?.[0]?.SysCurrncy || companyCurrencyRows?.[0]?.MainCurncy || '',
-      currencies: Array.isArray(currencies) ? currencies : [],
       defaults: {
         ...(data.defaults || {}),
         toVendorCode,
       },
-    };
+    }, currencyContext);
   } catch (error) {
     return {
       company: '',
@@ -1146,6 +1164,15 @@ const getDeliveryList = async ({
 const getDelivery = async (docEntry) => {
   try {
     const result = await deliveryDb.getDelivery(docEntry);
+    const currencyReferenceData = mergeCurrencyReferenceData(
+      {},
+      await loadCompanyCurrencyContext(),
+    );
+    if (result?.delivery?.header?.exchangeRate) {
+      result.delivery.header.exchangeRate = String(
+        fromStoredDocumentRate(result.delivery.header.exchangeRate, currencyReferenceData),
+      );
+    }
     try {
       const response = await sapService.request({
         method: 'GET',
@@ -1219,7 +1246,7 @@ const getOpenSalesOrders = async (customerCode = null) => {
 const getSalesOrderForCopy = async (docEntry) => {
   try {
     const result = await deliveryDb.getSalesOrderForCopy(docEntry);
-    return result;
+    return normalizeCopyDocumentRateForCompany(result);
   } catch (error) {
     throw new Error(`Failed to load Sales Order: ${error.message}`);
   }
@@ -1229,8 +1256,8 @@ const getOpenArReserveInvoices = async (customerCode = null) => (
   deliveryDb.getOpenArReserveInvoices(customerCode)
 );
 
-const getArReserveInvoiceForCopy = async (docEntry) => (
-  deliveryDb.getArReserveInvoiceForCopy(docEntry)
+const getArReserveInvoiceForCopy = async (docEntry) => normalizeCopyDocumentRateForCompany(
+  await deliveryDb.getArReserveInvoiceForCopy(docEntry),
 );
 
 // ───────── GET DELIVERY FOR COPY TO CREDIT MEMO ─────────
@@ -1238,7 +1265,7 @@ const getArReserveInvoiceForCopy = async (docEntry) => (
 const getDeliveryForCopyToCreditMemo = async (docEntry) => {
   try {
     const result = await deliveryDb.getDeliveryForCopyToCreditMemo(docEntry);
-    return result;
+    return normalizeCopyDocumentRateForCompany(result);
   } catch (error) {
     throw new Error(`Failed to load Delivery for copy: ${error.message}`);
   }
@@ -1311,7 +1338,8 @@ console.log("Payload:", payload );
     };
 console.log("SAP Payload:", sapPayload);
     Object.assign(sapPayload, buildDocumentSeriesPayload(header));
-    applyDocumentCurrency(sapPayload, header);
+    const currencyReferenceData = await loadDocumentCurrencyReferenceData(header);
+    applySapDocumentCurrency(sapPayload, header, currencyReferenceData);
     if (headerFieldMetadata.BPLId && hasValue(header.branch)) sapPayload.BPLId = normalizeBranchId(header.branch);
     if (headerFieldMetadata.BPL_IDAssignedToInvoice && hasValue(header.branch)) {
       sapPayload.BPL_IDAssignedToInvoice = normalizeBranchId(header.branch);
@@ -1452,6 +1480,8 @@ const updateDelivery = async (docEntry, payload) => {
       ...(hasDocumentReferences ? { DocumentReferences: documentReferences } : {}),
     };
     if (includeDocumentLines) sapPayload.DocumentLines = documentLines;
+    const currencyReferenceData = await loadDocumentCurrencyReferenceData(header);
+    applySapDocumentCurrency(sapPayload, header, currencyReferenceData);
 
     if (header.paymentMethod) sapPayload.PaymentMethod = header.paymentMethod;
     if (header.freight) sapPayload.TotalExpenses = parseFloat(header.freight);

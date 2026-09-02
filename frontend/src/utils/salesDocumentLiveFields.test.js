@@ -3,6 +3,7 @@ import {
   buildSalesDocumentLiveFields,
   filterLayoutToCurrentSchema,
   getSalesDocumentCompanyScopeKey,
+  isSalesDocumentFieldMetadataReady,
   isSalesDocumentSchemaForCompany,
   loadSalesDocumentFieldLookupOptions,
   stripSalesDocumentTopLevelUdfs,
@@ -63,6 +64,28 @@ test('uses a stable company scope key to gate document hydration until metadata 
   expect(getSalesDocumentCompanyScopeKey({ companyId: 8, companyDb: 'SBODEMO' })).not.toBe(currentScope);
 });
 
+test('keeps line-field rendering blocked until the active company metadata has hydrated', () => {
+  const companyAScope = getSalesDocumentCompanyScopeKey({ companyId: 7, companyDb: 'COMPANY_A' });
+  const companyBScope = getSalesDocumentCompanyScopeKey({ companyId: 8, companyDb: 'COMPANY_B' });
+
+  expect(isSalesDocumentFieldMetadataReady({
+    companyId: 8,
+    companyDb: 'COMPANY_B',
+    hydratedScope: companyAScope,
+  })).toBe(false);
+  expect(isSalesDocumentFieldMetadataReady({
+    companyId: 8,
+    companyDb: 'COMPANY_B',
+    hydratedScope: '',
+  })).toBe(false);
+  expect(isSalesDocumentFieldMetadataReady({
+    companyId: 8,
+    companyDb: 'COMPANY_B',
+    hydratedScope: companyBScope,
+  })).toBe(true);
+  expect(isSalesDocumentFieldMetadataReady({ hydratedScope: '::' })).toBe(false);
+});
+
 test('removes layout UDFs that are not confirmed by the current physical schema', () => {
   const filtered = filterLayoutToCurrentSchema([
     { fieldName: 'ItemCode', columnTitle: 'Item No.' },
@@ -112,6 +135,82 @@ test('builds schema-only UDFs and reconciles them with the current SAP layout', 
   expect(result.rowUdfFields[0].lookupSource).toBe('udf:QUT1:U_Agent');
   expect(result.matrixColumns.map((column) => column.valueKey || column.key)).toContain('U_Agent');
   expect(result.matrixColumns.map((column) => column.valueKey || column.key)).not.toContain('U_OtherCompany');
+});
+
+test('uses the structured purchase fallback instead of physical schema order when SAP layout is unavailable', () => {
+  const safePurchaseColumns = [
+    { key: 'itemNo', sapField: 'ItemCode', label: 'Item No.', order: 1 },
+    { key: 'itemDescription', sapField: 'ItemDescription', label: 'Description', order: 2 },
+    { key: 'quantity', sapField: 'Quantity', label: 'Quantity', order: 3 },
+  ];
+  const result = buildSalesDocumentLiveFields({
+    schema: quotationSchema,
+    documentType: 'PURCHASE_QUOTATION',
+    objectType: '540000006',
+    headerTable: 'OPQT',
+    lineTable: 'PQT1',
+    companyId: 7,
+    companyDb: 'SBODEMO',
+    layoutResponse: { data: { source: 'fallback', columns: [] } },
+    referenceMatrixColumns: safePurchaseColumns,
+    safeFallbackMatrixColumns: safePurchaseColumns,
+    useSafeFallbackWithoutLayout: true,
+    includeLineNumber: false,
+  });
+
+  expect(result.usedSapLayout).toBe(false);
+  expect(result.usedSafeFallback).toBe(true);
+  expect(result.rowUdfFields.map((field) => field.key)).toEqual(['U_Agent']);
+  expect(result.matrixColumns.map((column) => column.key)).toEqual([
+    'itemNo',
+    'itemDescription',
+    'quantity',
+  ]);
+});
+
+test('a company switch drops the previous company UDF before building the new matrix', () => {
+  const companyBSchema = {
+    ...quotationSchema,
+    companyId: 8,
+    companyDb: 'COMPANY_B',
+    schemaVersion: 'company-b-v1',
+    headerFields: [],
+    lineFields: [
+      quotationSchema.lineFields[0],
+      {
+        id: 'QUT1.U_CompanyB',
+        stateKey: 'U_CompanyB',
+        sapField: 'U_CompanyB',
+        databaseField: 'U_CompanyB',
+        storage: 'udf',
+        label: 'Company B Field',
+        order: 2,
+      },
+    ],
+  };
+  const result = buildSalesDocumentLiveFields({
+    schema: companyBSchema,
+    documentType: 'SALES_QUOTATION',
+    objectType: '23',
+    headerTable: 'OQUT',
+    lineTable: 'QUT1',
+    companyId: 8,
+    companyDb: 'COMPANY_B',
+    layoutResponse: {
+      data: {
+        source: 'sap-form-settings',
+        columns: [
+          { fieldName: 'ItemCode', columnTitle: 'Item No.', visible: true, columnOrder: 1 },
+          { fieldName: 'U_Agent', columnTitle: 'Company A Agent', visible: true, columnOrder: 2, isUdf: true },
+          { fieldName: 'U_CompanyB', columnTitle: 'Company B Field', visible: true, columnOrder: 3, isUdf: true },
+        ],
+      },
+    },
+  });
+
+  expect(result.rowUdfFields.map((field) => field.key)).toEqual(['U_CompanyB']);
+  expect(result.matrixColumns.map((column) => column.valueKey || column.key)).toContain('U_CompanyB');
+  expect(result.matrixColumns.map((column) => column.valueKey || column.key)).not.toContain('U_Agent');
 });
 
 test('uses only SAP standard fields when schema is unavailable or belongs to another company', () => {
@@ -175,4 +274,16 @@ test('loads linked UDF values with the document type, schema version, and line i
     schemaVersion: 'rin1-v2',
   }));
   expect(options).toEqual([{ value: 'A01', label: 'Agent 01', description: 'Primary' }]);
+});
+
+test('loads every lookup page instead of stopping at the first page', async () => {
+  const fetchLookup = jest.fn()
+    .mockResolvedValueOnce({ items: [{ value: 'A', label: 'Alpha' }], hasMore: true })
+    .mockResolvedValueOnce({ items: [{ value: 'B', label: 'Beta' }], hasMore: false });
+
+  const options = await loadSalesDocumentFieldLookupOptions({ fetchLookup, source: 'custom:7' });
+
+  expect(fetchLookup).toHaveBeenNthCalledWith(1, 'custom:7', expect.objectContaining({ page: 1, limit: 100 }));
+  expect(fetchLookup).toHaveBeenNthCalledWith(2, 'custom:7', expect.objectContaining({ page: 2, limit: 100 }));
+  expect(options.map((option) => option.value)).toEqual(['A', 'B']);
 });

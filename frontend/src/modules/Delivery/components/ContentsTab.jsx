@@ -7,6 +7,7 @@ import { getLineTotalsForDisplay } from '../../../utils/lineTotals';
 import { getSapStandardSalesMatrixColumns } from '../../sales-order/documentLayout';
 import { normalizeDeliveryMatrixColumn } from '../deliveryLiveMatrix';
 import { getReadableDocumentLineColumnWidth } from '../../../utils/documentLineColumnWidth';
+import { getOrderedVisibleMatrixColumns } from '../../../utils/formSettingsColumns';
 
 const LINE_NUMBER_COLUMN_KEY = '__lineNumber';
 const INDEX_COLUMN_WIDTH = 42;
@@ -227,9 +228,11 @@ function ReadyContentsTab({
     }))),
   ];
 
-  const visibleColumns = dedupeColumns(matrixColumns)
-    .filter((column) => getMatrixColumnSetting(column).visible !== false)
-    .sort((left, right) => Number(left.order || 0) - Number(right.order || 0));
+  const visibleColumns = getOrderedVisibleMatrixColumns(
+    dedupeColumns(matrixColumns),
+    formSettings,
+    { includeStructural: true },
+  );
   // Ensure actions column is always present as the trailing column
   const visibleColumnsWithActions = [
     ...visibleColumns,
@@ -528,6 +531,9 @@ function ReadyContentsTab({
     };
 
     if (udfColumn) return renderGenericCell();
+    if (columnObject.lookupConfigured && (columnObject.lookupSource || columnObject.lookup?.source)) {
+      return renderGenericCell();
+    }
     if (
       columnObject.schemaDriven
       && (columnObject.lookupSource || columnObject.lookup?.source)
@@ -676,9 +682,9 @@ function ReadyContentsTab({
         <td key="uomName">
           <input
             className="del-grid__input"
-            value={line.uomName || line.uomCode || ''}
-            readOnly
-            style={{ background: '#f5f8fc' }}
+            name="uomName"
+            value={line.uomNameEdited ? (line.uomName ?? '') : (line.uomName || line.uomCode || '')}
+            onChange={(e) => onLineChange(i, e)}
           />
         </td>
       ),

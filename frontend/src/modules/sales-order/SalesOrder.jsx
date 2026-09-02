@@ -47,7 +47,12 @@ import { hydrateWorkbookDocumentLine, normalizeLineUdfAliases } from '../../util
 import { getStateCodeValue, getStateDisplayName } from '../../utils/stateDisplay';
 import { findTaxCode, getTaxComponentCodes, taxCodeHasComponent } from '../../utils/taxCodeComponents';
 import { getCalculatedForRate } from '../../utils/lineTotals';
-import { inferDocumentCurrencyMode, resolveDocumentCurrency } from '../../utils/documentCurrency';
+import {
+    convertDocumentAmountForDisplay,
+    inferDocumentCurrencyMode,
+    resolveDocumentCurrency,
+    resolveDisplayCurrency,
+} from '../../utils/documentCurrency';
 import { consumeCopyToState, replaceRouteStatePreservingWindow } from '../../utils/copyToState';
 import { openLinkedBusinessPartner, openLinkedReferenceDocument } from '../../utils/sapLinkedNavigation';
 import { isRouteStateForActiveCompany } from '../../utils/companyStorageScope';
@@ -93,10 +98,11 @@ import {
     buildSalesDocumentLiveFields,
     filterLayoutToCurrentSchema,
     getSalesDocumentCompanyScopeKey,
+    isSalesDocumentFieldMetadataReady,
     loadSalesDocumentFieldLookupOptions,
 } from '../../utils/salesDocumentLiveFields';
 
-// ─── helpers ─────────────────────────────────────────────────────────────────
+// â”€â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const getErrMsg = (e, fb) => {
     const body = e?.response?.data || {};
     const d = body.detail || body.details;
@@ -211,7 +217,7 @@ const normalizeSalesOrderReferenceDocuments = (rows = []) => (
         : []
 );
 
-// ─── static fallbacks ────────────────────────────────────────────────────────
+// â”€â”€â”€ static fallbacks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const normalizeTaxInfoAlias = (value) => String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
 const TAX_INFO_UDF_ALIASES = {
@@ -253,7 +259,7 @@ const buildTaxInfoFormFromUdfs = (values = {}, fallback = {}) => (
     }, { ...fallback })
 );
 
-// ─── constants ────────────────────────────────────────────────────────────────
+// â”€â”€â”€ constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const DEC = { QtyDec: 2, PriceDec: 2, SumDec: 2, RateDec: 2, PercentDec: 2 };
 const TAB_NAMES = ['Contents', 'Logistics', 'Accounting', 'Tax', 'Electronic Documents', 'Attachments'];
 const buildExchangeRatesFallbackData = ({ year, month, currencies = [], localCurrency = '' }) => {
@@ -410,7 +416,7 @@ const buildVisibleHeaderUdfPayload = (definitions = [], values = {}, settings = 
     }, {});
 };
 
-// ─── Main Component ───────────────────────────────────────────────────────────
+// â”€â”€â”€ Main Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function SalesOrder() {
     const location = useLocation();
     const navigate = useNavigate();
@@ -445,9 +451,11 @@ function SalesOrder() {
         [headerUdfDefinitions, rowUdfDefinitions, matrixColumnDefinitions],
         { saveMode: 'explicit' },
     );
-    const companyFormSettingsReady = Boolean(activeCompanyId || activeCompanyDb) && (
-        formSettingsStatus.loaded && hydratedFieldMetadataScope === activeFieldMetadataScope
-    );
+    const companyFormSettingsReady = formSettingsStatus.loaded && isSalesDocumentFieldMetadataReady({
+        companyId: activeCompanyId,
+        companyDb: activeCompanyDb,
+        hydratedScope: hydratedFieldMetadataScope,
+    });
     const [sidebarOpen, setSidebarOpen] = useState(true);
     const [formSettingsOpen, setFormSettingsOpen] = useState(false);
     const [refData, setRefData] = useState({
@@ -621,7 +629,7 @@ function SalesOrder() {
             ? updateActionLabel
             : 'Add';
     const secondaryActionLabel = pageState.posting
-        ? 'Saving…'
+        ? 'Saving...'
         : currentDocEntry
             ? updateActionLabel
             : 'Add & New';
@@ -777,7 +785,7 @@ function SalesOrder() {
 
     // Continue in next part...
 
-    // ── load reference data ───────────────────────────────────────────────────
+    // â”€â”€ load reference data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     useEffect(() => {
         let ignore = false;
         setHydratedFieldMetadataScope('');
@@ -819,7 +827,10 @@ function SalesOrder() {
                     return;
                 }
 
+                setHeaderUdfDefinitions([]);
+                setRowUdfDefinitions([]);
                 setMatrixColumnDefinitions([]);
+                setHeaderFieldDefinitions([]);
                 setRefData((previous) => ({
                     ...previous,
                     company: '',
@@ -988,7 +999,7 @@ function SalesOrder() {
                     setHydratedFieldMetadataScope(activeFieldMetadataScope);
                 }
             } catch (e) {
-                console.error('❌ Error loading reference data:', e);
+                console.error('âŒ Error loading reference data:', e);
                 if (!ignore) {
                     const fallbackColumns = getSapStandardSalesMatrixColumns();
                     setHeaderUdfDefinitions([]);
@@ -1027,7 +1038,7 @@ function SalesOrder() {
         ));
     }, [companyFormSettingsReady, formSettingsStatus.hasUnsavedChanges, formSettingsStorageKey, headerUdfDefinitions, matrixColumnDefinitions, replaceFormSettings, rowUdfDefinitions]);
 
-    // ── load existing order ───────────────────────────────────────────────────
+    // â”€â”€ load existing order â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     useEffect(() => {
         if (currentDocEntry) return;
 
@@ -1104,9 +1115,9 @@ function SalesOrder() {
                     editSeries = [];
                 }
 
-                console.log('📥 Loaded Sales Order:', so);
-                console.log('📥 Header data:', so.header);
-                console.log('📥 Series:', so.header?.series);
+                console.log('ðŸ“¥ Loaded Sales Order:', so);
+                console.log('ðŸ“¥ Header data:', so.header);
+                console.log('ðŸ“¥ Series:', so.header?.series);
 
                 if (ignore || !so) return;
                 setCurrentDocEntry(so.doc_entry || Number(docEntry));
@@ -1117,14 +1128,14 @@ function SalesOrder() {
                     so.reference_documents || so.referenceDocuments || []
                 );
 
-                console.log('📥 EDIT DATA - Sales Employee:', so.header?.salesEmployee, 'Code:', so.header?.salesEmployee);
-                console.log('📥 EDIT DATA - Purchaser:', so.header?.purchaser);
-                console.log('📥 EDIT DATA - Owner:', so.header?.owner);
-                console.log('📥 EDIT DATA - Remarks:', so.header?.remarks);
-                console.log('📥 EDIT DATA - Other Instruction:', so.header?.otherInstruction);
-                console.log('📥 EDIT DATA - Freight:', so.header?.freight);
-                console.log('📥 EDIT DATA - refData.sales_employees:', refData.sales_employees?.length || 0);
-                console.log('📥 EDIT DATA - refData.owners:', refData.owners?.length || 0);
+                console.log('ðŸ“¥ EDIT DATA - Sales Employee:', so.header?.salesEmployee, 'Code:', so.header?.salesEmployee);
+                console.log('ðŸ“¥ EDIT DATA - Purchaser:', so.header?.purchaser);
+                console.log('ðŸ“¥ EDIT DATA - Owner:', so.header?.owner);
+                console.log('ðŸ“¥ EDIT DATA - Remarks:', so.header?.remarks);
+                console.log('ðŸ“¥ EDIT DATA - Other Instruction:', so.header?.otherInstruction);
+                console.log('ðŸ“¥ EDIT DATA - Freight:', so.header?.freight);
+                console.log('ðŸ“¥ EDIT DATA - refData.sales_employees:', refData.sales_employees?.length || 0);
+                console.log('ðŸ“¥ EDIT DATA - refData.owners:', refData.owners?.length || 0);
 
                 if (editSeries.length) {
                     setRefData(prev => ({
@@ -1199,7 +1210,7 @@ function SalesOrder() {
                     }),
                 };
 
-                console.log('📥 Final header state:', newHeader);
+                console.log('ðŸ“¥ Final header state:', newHeader);
                 setHeader(newHeader);
                 setReferenceDocuments(loadedReferenceDocuments);
                 setReferenceDocumentsChanged(false);
@@ -1310,7 +1321,7 @@ function SalesOrder() {
         return () => { ignore = true; };
     }, [currentDocEntry]);
 
-    // ── derived / computed ────────────────────────────────────────────────────
+    // â”€â”€ derived / computed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const vendorContacts = refData.contacts.filter(c => String(c.CardCode || '') === String(header.vendor || ''));
     const contactOptions = header.contactPerson && !vendorContacts.some(c => String(c.CntctCode || '') === String(header.contactPerson || ''))
         ? [{ CardCode: header.vendor, CntctCode: header.contactPerson, Name: header.contactPerson }, ...vendorContacts]
@@ -1453,7 +1464,7 @@ function SalesOrder() {
 
     const resolveLineLocation = (warehouseCode) => getWarehouseLocation(warehouseCode);
 
-    // ── calculations ──────────────────────────────────────────────────────────
+    // â”€â”€ calculations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const calcLineTotal = (line) => {
         const qty = parseNum(line.quantity), price = parseNum(line.unitPrice), disc = parseNum(line.stdDiscount);
         return roundTo(qty * price * (1 - disc / 100), numDec.total);
@@ -1511,7 +1522,7 @@ function SalesOrder() {
         }
         : totals;
 
-    // ── GST determination logic ───────────────────────────────────────────────
+    // â”€â”€ GST determination logic â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const determineGSTType = (gstState) => {
         if (!gstState) return 'IGST';
 
@@ -1555,19 +1566,19 @@ function SalesOrder() {
         return taxCodes.length > 0 ? taxCodes[0].Code : '';
     };
 
-    // ── address sync ──────────────────────────────────────────────────────────
+    // â”€â”€ address sync â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Sync branch to all lines when header branch changes
     useEffect(() => {
        if (copyFromMode || isCopyFromClick) return;
         if (header.branch) {
-            console.log('🔄 Syncing branch to all lines:', header.branch);
+            console.log('ðŸ”„ Syncing branch to all lines:', header.branch);
             setLines(prev => {
                 const updated = prev.map(l => ({
                     ...l,
                     branch: String(header.branch),
                     loc: resolveLineLocation(l.whse || header.warehouse, header.branch)
                 }));
-                console.log('✅ Lines updated with branch:', updated.map(l => ({ branch: l.branch, loc: l.loc })));
+                console.log('âœ… Lines updated with branch:', updated.map(l => ({ branch: l.branch, loc: l.loc })));
                 return updated;
             });
         }
@@ -1608,7 +1619,7 @@ function SalesOrder() {
                 const selectedWarehouse = refData.warehouses.find(w => w.WhsCode === header.warehouse);
                 if (selectedWarehouse && selectedWarehouse.BranchID &&
                     String(selectedWarehouse.BranchID) !== String(header.branch)) {
-                    console.warn(`⚠️ Warehouse "${header.warehouse}" is assigned to Branch ${selectedWarehouse.BranchID}, but document is for Branch ${header.branch}`);
+                    console.warn(`âš ï¸ Warehouse "${header.warehouse}" is assigned to Branch ${selectedWarehouse.BranchID}, but document is for Branch ${header.branch}`);
                     setPageState(p => ({
                         ...p,
                         error: `Warning: Warehouse "${header.warehouse}" is assigned to a different branch. This may cause submission errors.`
@@ -1618,7 +1629,7 @@ function SalesOrder() {
         }
     }, [header.warehouse, header.branch, refData.warehouses]);
 
-    // ── Recalculate Tax Codes on State/Address Changes ────────────────────────
+    // â”€â”€ Recalculate Tax Codes on State/Address Changes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     useEffect(() => {
         if (currentDocEntry) return;
         if (!header.vendor || !header.placeOfSupply) return;
@@ -1626,11 +1637,11 @@ function SalesOrder() {
         const companyState = refData.company_address?.State || selectedBranch?.State || '';
 
         if (!companyState) {
-            console.warn('⚠️ Company state not available for tax recalculation');
+            console.warn('âš ï¸ Company state not available for tax recalculation');
             return;
         }
 
-        console.log('🔄 Recalculating Tax Codes for All Lines:', {
+        console.log('ðŸ”„ Recalculating Tax Codes for All Lines:', {
             placeOfSupply: header.placeOfSupply,
             companyState,
             gstType: getGSTTypeLabel(companyState, header.placeOfSupply),
@@ -1725,7 +1736,7 @@ function SalesOrder() {
         );
     }, [currentDocEntry, header.placeOfSupply, header.vendor]);
 
-    // ── vendor details ────────────────────────────────────────────────────────
+    // â”€â”€ vendor details â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const updateTaxInfoFromAddress = useCallback((address = null) => {
         if (!address) {
             setTaxInfoForm((current) => ({
@@ -1791,7 +1802,7 @@ function SalesOrder() {
             }
 
         } catch (err) {
-            console.error('❌ Error loading vendor details:', err);
+            console.error('âŒ Error loading vendor details:', err);
             console.error('Error response:', err.response?.data);
             setRefData(p => ({ ...p, contacts: [], pay_to_addresses: [], ship_to_addresses: [], bill_to_addresses: [] }));
         } finally {
@@ -1822,16 +1833,36 @@ function SalesOrder() {
 
     const documentCurrency = String(header.currency || refData.local_currency || '').trim();
     const normalizedDisplayMode = String(header.currencyMode || 'BP').trim().toUpperCase();
-    const displayCurrency = normalizedDisplayMode === 'LOCAL'
-        ? String(refData.local_currency || '').trim()
-        : normalizedDisplayMode === 'SYSTEM'
-            ? (String(refData.system_currency || refData.local_currency || documentCurrency).trim() || documentCurrency)
-            : documentCurrency;
+    const displayCurrency = resolveDisplayCurrency({
+        mode: normalizedDisplayMode,
+        documentCurrency,
+        localCurrency: refData.local_currency,
+        systemCurrency: refData.system_currency,
+    });
     const formatMoneyWithCurrency = useCallback((value, decimals = numDec.total, currency = displayCurrency) => {
-        const amount = fmtDec(value, decimals);
+        const convertedValue = convertDocumentAmountForDisplay(value, {
+            mode: normalizedDisplayMode,
+            documentCurrency,
+            localCurrency: refData.local_currency,
+            systemCurrency: refData.system_currency,
+            documentRate: header.exchangeRate,
+            systemRate: header.systemExchangeRate,
+            postingMethod: refData.exchange_rate_settings?.postingMethod,
+        });
+        const amount = fmtDec(convertedValue, decimals);
         const code = String(currency || '').trim();
         return code && amount !== '' ? `${amount} ${code}` : amount;
-    }, [displayCurrency, numDec.total]);
+    }, [
+        displayCurrency,
+        documentCurrency,
+        header.exchangeRate,
+        header.systemExchangeRate,
+        normalizedDisplayMode,
+        numDec.total,
+        refData.exchange_rate_settings,
+        refData.local_currency,
+        refData.system_currency,
+    ]);
 
     const openExchangeRatesModal = useCallback(({ currency, postingDate, initialRate = '' }) => {
         setExchangeRatesModal({
@@ -1959,7 +1990,7 @@ function SalesOrder() {
         };
     };
 
-    // ── handlers ──────────────────────────────────────────────────────────────
+    // â”€â”€ handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     useEffect(() => {
         if (currentDocEntry) return;
         if (!header.vendor || !header.currency || !header.postingDate) return;
@@ -2023,7 +2054,7 @@ function SalesOrder() {
             return;
         }
 
-        // ✅ FIX: When purchaser (Sales Employee name) changes, update salesEmployee (code) too
+        // âœ… FIX: When purchaser (Sales Employee name) changes, update salesEmployee (code) too
         if (name === 'purchaser') {
             if (value === '__DEFINE_NEW__') {
                 openSalesEmployeeSetup();
@@ -2038,7 +2069,7 @@ function SalesOrder() {
                 salesEmployee: selectedEmployee ? String(selectedEmployee.SlpCode) : '-1'
             }));
 
-            console.log('🔄 Sales Employee changed:', {
+            console.log('ðŸ”„ Sales Employee changed:', {
                 name: value,
                 code: selectedEmployee ? selectedEmployee.SlpCode : '-1'
             });
@@ -2133,7 +2164,7 @@ function SalesOrder() {
                     const hsnResponse = await fetchHSNCodeFromItem(value);
                     const hsnData = hsnResponse.data;
 
-                    console.log('🔍 Item Selected - HSN Data:', {
+                    console.log('ðŸ” Item Selected - HSN Data:', {
                         itemCode: value,
                         hsnCode: hsnData.hsnCode,
                         hsnDescription: hsnData.hsnDescription,
@@ -2161,7 +2192,7 @@ function SalesOrder() {
                         // Step 3: Get Base Tax Code from Item Master
                         const baseTaxCode = item.TaxCodeAR || item.SalTaxCode || '';
 
-                        console.log('🔍 Item Selected:', {
+                        console.log('ðŸ” Item Selected:', {
                             itemCode: item.ItemCode,
                             itemName: item.ItemName,
                             hsnCode: next.hsnCode,
@@ -2175,7 +2206,7 @@ function SalesOrder() {
 
                         // Step 5: Validate States
                         if (!gstState || !companyState) {
-                            console.warn('⚠️ Missing state information for tax determination');
+                            console.warn('âš ï¸ Missing state information for tax determination');
                             next.taxCode = '';
                             next.stcode = next.stcode || '';
                         } else {
@@ -2192,12 +2223,12 @@ function SalesOrder() {
                             if (determinedTaxCode) {
                                 next.taxCode = determinedTaxCode;
                                 next.stcode = next.stcode || '';
-                                console.log('✅ Tax Code Auto-Selected:', {
+                                console.log('âœ… Tax Code Auto-Selected:', {
                                     gstType: getGSTTypeLabel(companyState, gstState),
                                     taxCode: determinedTaxCode
                                 });
                             } else {
-                                console.warn('⚠️ Could not determine tax code');
+                                console.warn('âš ï¸ Could not determine tax code');
                                 next.taxCode = '';
                                 next.stcode = next.stcode || '';
                             }
@@ -2208,7 +2239,7 @@ function SalesOrder() {
                     }));
                 }
             } catch (error) {
-                console.error('❌ Error fetching HSN code:', error);
+                console.error('âŒ Error fetching HSN code:', error);
                 // Fallback to reference data if API fails
                 setLines(prev => prev.map((line, idx) => {
                     if (idx !== i) return line;
@@ -2235,8 +2266,9 @@ function SalesOrder() {
             setLines(prev => prev.map((line, idx) => {
                 if (idx !== i) return line;
                 const next = { ...line, [name]: numDec[name] !== undefined ? sanitize(value, numDec[name]) : value };
+                if (name === 'uomName') next.uomNameEdited = true;
                 if (['unitPrice', 'stdDiscount', 'taxCode'].includes(name)) next.forRate = '';
-                if (name === 'uomCode') next.uomName = value;
+                if (name === 'uomCode') { next.uomName = value; next.uomNameEdited = false; }
                 if (name === 'taxCode') {
                     next.stcode = next.stcode || '';
                     next.taxCodeManuallyOverridden = Boolean(String(next.taxCode || '').trim());
@@ -2280,7 +2312,7 @@ function SalesOrder() {
 
     const addLine = () => {
         markDirty();
-        // 🚨 SKIP ALL VALIDATION DURING COPY MODE
+        // ðŸš¨ SKIP ALL VALIDATION DURING COPY MODE
         if (copyFromMode) {
             setLines(p => [...p, {
                 ...createLine(rowUdfDefinitions),
@@ -2386,7 +2418,7 @@ function SalesOrder() {
         setFormSettingsOpen(true);
     };
 
-    // ── Address Modal handlers ────────────────────────────────────────────────
+    // â”€â”€ Address Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const openAddressModal = (type) => {
         const shipAddress = resolveSalesOrderAddress(
             header.shipToCode,
@@ -2492,8 +2524,8 @@ function SalesOrder() {
         setAddressForm(p => ({ ...p, [name]: value }));
     };
 
-    // ── E-Way Bill Modal handlers ──────────────────────────────────────────────
-    // ── Tax Info Modal handlers ───────────────────────────────────────────────
+    // â”€â”€ E-Way Bill Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â”€â”€ Tax Info Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const openReferenceDocumentsModal = () => {
         setReferenceDocumentsModal(true);
     };
@@ -2527,7 +2559,7 @@ function SalesOrder() {
         setTaxInfoForm(p => ({ ...p, [name]: value }));
     };
 
-    // ── State Selection Modal handlers ────────────────────────────────────────
+    // â”€â”€ State Selection Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const openStateModal = () => {
         setStateModal(true);
     };
@@ -2540,7 +2572,7 @@ function SalesOrder() {
         setHeader(p => ({ ...p, placeOfSupply: getStateCodeValue(state, refData.states) }));
     };
 
-    // ── Business Partner Modal handlers ───────────────────────────────────────
+    // â”€â”€ Business Partner Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const openBpModal = () => {
         setBpModal(true);
     };
@@ -2566,7 +2598,7 @@ function SalesOrder() {
         loadVendorDetails(code);
     };
 
-    // ── HSN Code Modal handlers ───────────────────────────────────────────────
+    // â”€â”€ HSN Code Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const openHSNModal = (lineIndex) => {
         setHsnModal({ open: true, lineIndex });
     };
@@ -2587,7 +2619,7 @@ function SalesOrder() {
         }
     };
 
-    // ── Item Selection Modal handlers ─────────────────────────────────────────
+    // â”€â”€ Item Selection Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const closeItemModal = () => {
         setItemModal({ open: false, lineIndex: -1, items: [], loading: false });
     };
@@ -2701,9 +2733,9 @@ function SalesOrder() {
         }
     };
 
-    // ── Freight Selection Modal handlers ──────────────────────────────────────
+    // â”€â”€ Freight Selection Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const openFreightModal = async () => {
-        console.log('🚚 Opening freight modal, docEntry:', currentDocEntry);
+        console.log('ðŸšš Opening freight modal, docEntry:', currentDocEntry);
         if (freightModal.freightCharges.length > 0) {
             setFreightModal(prev => ({ ...prev, open: true, loading: false }));
             return;
@@ -2712,10 +2744,10 @@ function SalesOrder() {
         setFreightModal(prev => ({ ...prev, open: true, loading: true }));
 
         try {
-            console.log('📡 Fetching freight charges from API...');
+            console.log('ðŸ“¡ Fetching freight charges from API...');
             const response = await fetchFreightCharges(currentDocEntry);
-            console.log('✅ Freight charges received:', response.data);
-            console.log('📊 Freight charges count:', response.data.freightCharges?.length || 0);
+            console.log('âœ… Freight charges received:', response.data);
+            console.log('ðŸ“Š Freight charges count:', response.data.freightCharges?.length || 0);
 
             setFreightModal({
                 open: true,
@@ -2723,7 +2755,7 @@ function SalesOrder() {
                 loading: false
             });
         } catch (error) {
-            console.error('❌ Failed to load freight charges:', error);
+            console.error('âŒ Failed to load freight charges:', error);
             console.error('Error details:', error.response?.data || error.message);
             setFreightModal({
                 open: true,
@@ -2738,7 +2770,7 @@ function SalesOrder() {
     };
 
     const handleFreightApply = (summary) => {
-        console.log('🚚 Applied freight charges:', summary);
+        console.log('ðŸšš Applied freight charges:', summary);
         setFreightModal(prev => ({
             ...prev,
             open: false,
@@ -2751,7 +2783,7 @@ function SalesOrder() {
         }));
     };
 
-    // ── Copy From Handler ──────────────────────────────────────────────────────
+    // â”€â”€ Copy From Handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const handleCopyFrom = (data, docType) => {
         const copySource = unwrapCopyFromDocument(data);
         const baseType = BASE_TYPE[docType] || 23;
@@ -2770,11 +2802,39 @@ function SalesOrder() {
         }));
         const firstLineWarehouse = copiedLines.find(line => String(line.whse || '').trim())?.whse || '';
 
+        const targetDate = today();
+        const copiedBranch = String(normHeader.branch || '').trim();
+        const targetBranch = /^\\d+$/.test(copiedBranch) && Number(copiedBranch) > 0 ? copiedBranch : '';
+        const targetWarehouse = normHeader.warehouse || firstLineWarehouse || '';
+
         setHeader(prev => ({
             ...prev,
             ...normHeader,
-            warehouse: normHeader.warehouse || firstLineWarehouse || prev.warehouse || '',
+            postingDate: targetDate,
+            documentDate: targetDate,
+            deliveryDate: targetDate,
+            series: '',
+            nextNumber: '',
+            docNo: '',
+            warehouse: targetWarehouse || prev.warehouse || '',
         }));
+        setPageState(p => ({ ...p, seriesLoading: true }));
+        fetchDocumentSeries(targetDate, { branch: targetBranch })
+            .then((seriesResponse) => {
+                const availableSeries = seriesResponse.data?.series || [];
+                setRefData(prev => ({ ...prev, series: availableSeries }));
+                const defaultSeries = resolvePreferredSeries(availableSeries, targetDate, '');
+                if (defaultSeries?.Series != null) {
+                    handleSeriesChange(defaultSeries.Series);
+                } else {
+                    setHeader(prev => ({ ...prev, series: '', nextNumber: '' }));
+                    setPageState(p => ({ ...p, seriesLoading: false }));
+                }
+            })
+            .catch((error) => {
+                setHeader(prev => ({ ...prev, series: '', nextNumber: '' }));
+                setPageState(p => ({ ...p, seriesLoading: false, error: getErrMsg(error, 'Failed to load Sales Order series for copied document.') }));
+            });
         setLines(copiedLines.length > 0 ? copiedLines : [createLine(rowUdfDefinitions)]);
         setHeaderUdfs(normalizeUdfState(headerUdfDefinitions, sourceHeaderUdfs, { preserveExtra: false }));
         setFreightModal({ open: false, freightCharges: Array.isArray(sourceFreightCharges) ? sourceFreightCharges : [], loading: false });
@@ -2785,7 +2845,7 @@ function SalesOrder() {
         setCopyFromMode(false);
     };
 
-    // ── Copy From Modal Handlers ───────────────────────────────────────────────
+    // â”€â”€ Copy From Modal Handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     useEffect(() => {
         const routedCopyFrom = location.state?.copyFrom;
         if (routedCopyFrom && !isRouteStateForActiveCompany(location.state)) {
@@ -2830,9 +2890,9 @@ function SalesOrder() {
     const openCopyFromModal = (docType) => {
         if (currentDocEntry) return;
 
-        console.log('🟢 Copy From Clicked');
+        console.log('ðŸŸ¢ Copy From Clicked');
 
-        // ✅ ONLY BUYER VALIDATION
+        // âœ… ONLY BUYER VALIDATION
         const buyerCode = String(header.vendor || '').trim();
 
         if (!buyerCode) {
@@ -2844,10 +2904,10 @@ function SalesOrder() {
             return;
         }
 
-        // ✅ ENABLE COPY MODE
+        // âœ… ENABLE COPY MODE
         setCopyFromMode(true);
 
-        // ✅ CLEAR ALL ERRORS
+        // âœ… CLEAR ALL ERRORS
         setValErrors({ header: {}, lines: {}, form: '' });
         setPageState(p => ({ ...p, error: '', success: '' }));
 
@@ -2874,7 +2934,7 @@ function SalesOrder() {
         }
     };
 
-    // ── Copy To Handler ────────────────────────────────────────────────────────
+    // â”€â”€ Copy To Handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const handleCopyTo = async (targetType) => {
         if (currentDocEntry && hasKnownCopyQuantityState && !hasOpenCopyQuantity) {
             setPageState(p => ({
@@ -2974,7 +3034,7 @@ function SalesOrder() {
         }
     };
 
-    // ── Browse Attachment handler ─────────────────────────────────────────────
+    // â”€â”€ Browse Attachment handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const handleBrowseAttachment = () => {
         const input = document.createElement('input');
         input.type = 'file';
@@ -2988,11 +3048,11 @@ function SalesOrder() {
 
     // Continue in next part...
 
-    // ── validation ────────────────────────────────────────────────────────────
+    // â”€â”€ validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const validate = () => {
-        // 🚨 GLOBAL BYPASS FOR COPY MODE
+        // ðŸš¨ GLOBAL BYPASS FOR COPY MODE
         if (copyFromMode) {
-            console.log('🚫 Validation skipped (Copy Mode)');
+            console.log('ðŸš« Validation skipped (Copy Mode)');
             return { header: {}, lines: {}, form: '' };
         }
 
@@ -3141,7 +3201,7 @@ function SalesOrder() {
         return e;
     };
 
-    // ── submit ────────────────────────────────────────────────────────────────
+    // â”€â”€ submit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const handleSubmit = async (ev) => {
         ev.preventDefault();
         if (!companyFormSettingsReady) {
@@ -3154,14 +3214,14 @@ function SalesOrder() {
         }
         if (currentDocEntry && !hasUnsavedChanges) return;
         if (copyFromMode) {
-            console.log('⚠️ Submit blocked in Copy Mode');
+            console.log('âš ï¸ Submit blocked in Copy Mode');
             return;
         }
         ev.preventDefault();
 
-        // 🚨 Don't submit if in copy mode
+        // ðŸš¨ Don't submit if in copy mode
         if (copyFromMode) {
-            console.log('⚠️ Form submission blocked - Copy From mode is active');
+            console.log('âš ï¸ Form submission blocked - Copy From mode is active');
             return;
         }
 
@@ -3225,6 +3285,7 @@ function SalesOrder() {
                 brokerageNumber: line.brokerageNumber,
                 uomCode: line.uomCode,
                 uomName: line.uomName,
+        uomNameEdited: line.uomNameEdited,
                 uomEntry: line.uomEntry,
                 stdDiscount: line.stdDiscount,
                 stcode: line.stcode,
@@ -3277,13 +3338,13 @@ function SalesOrder() {
                 reference_documents_changed: referenceDocumentsChanged || (!currentDocEntry && referenceDocuments.length > 0),
             };
 
-            // ═══ LOGGING: Payload Before Submit ═══
-            console.log('═══════════════════════════════════════════════════');
-            console.log('📤 SUBMITTING SALES ORDER:');
+            // â•â•â• LOGGING: Payload Before Submit â•â•â•
+            console.log('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
+            console.log('ðŸ“¤ SUBMITTING SALES ORDER:');
             console.log('Header:', prep);
             console.log('Lines:', cleanedLines);
             console.log('Header UDFs:', headerUdfs);
-            console.log('═══════════════════════════════════════════════════');
+            console.log('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
 
             const r = currentDocEntry ? await updateSalesOrder(currentDocEntry, payload) : await submitSalesOrder(payload);
             const dn = r.data.doc_num ? ` Doc No: ${r.data.doc_num}.` : '';
@@ -3307,7 +3368,7 @@ function SalesOrder() {
 
             setPageState(p => ({ ...p, success: `${r.data.message || 'Sales order saved.'}${dn}` }));
         } catch (e) {
-            console.error('❌ Sales Order Submission Error:', e);
+            console.error('âŒ Sales Order Submission Error:', e);
             console.error('Error Response:', e.response?.data);
             setPageState(p => ({ ...p, error: getErrMsg(e, 'Sales order submission failed.') }));
         } finally {
@@ -3362,13 +3423,13 @@ function SalesOrder() {
 
     // Continue in next part with render...
 
-    // ── render ────────────────────────────────────────────────────────────────
+    // â”€â”€ render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     return (
         <form ref={formRef} className={`so-page sap-document-page so-sales-order-page${isRightSidebarOpen ? ' so-page--sidebar-open' : ''}`} onSubmit={handleSubmit} onChangeCapture={markDirty}>
 
             {/* toolbar */}
             <div className="so-toolbar sap-document-toolbar">
-                <span className="so-toolbar__title">Sales Order{currentDocEntry ? ` — #${header.docNo || currentDocEntry}` : ''}</span>
+                <span className="so-toolbar__title">Sales Order{currentDocEntry ? ` â€” #${header.docNo || currentDocEntry}` : ''}</span>
                 <button type="submit" className="so-btn so-btn--primary sap-document-toolbar__primary" disabled={pageState.posting || !isDocumentEditable} title={primaryActionLabel}>
                     {primaryActionLabel}
                 </button>
@@ -3402,17 +3463,17 @@ function SalesOrder() {
                             e.stopPropagation();
                             if (currentDocEntry || !hasBuyerCode) return;
 
-                            console.log('🔵 Copy From dropdown clicked');
+                            console.log('ðŸ”µ Copy From dropdown clicked');
 
-                            setIsCopyFromClick(true);   // 🚀 ADD THIS
-                            // // ✅ FIRST: Activate copy mode to disable all validation
+                            setIsCopyFromClick(true);   // ðŸš€ ADD THIS
+                            // // âœ… FIRST: Activate copy mode to disable all validation
                             // setCopyFromMode(true);
 
-                            // ✅ SECOND: Clear all validation errors immediately
+                            // âœ… SECOND: Clear all validation errors immediately
                             setValErrors({ header: {}, lines: {}, form: '' });
                             setPageState({ error: '', success: '', loading: false, posting: false, vendorLoading: false, seriesLoading: false });
 
-                            // ✅ THIRD: Force re-render by toggling dropdown
+                            // âœ… THIRD: Force re-render by toggling dropdown
                             const dropdown = e.currentTarget.parentElement;
                             const isActive = dropdown.classList.contains('active');
                             // Close all other dropdowns
@@ -3423,7 +3484,7 @@ function SalesOrder() {
                         }}
                         style={{ opacity: (!isDocumentEditable || !!currentDocEntry || !hasBuyerCode) ? 0.5 : 1 }}
                     >
-                        Copy From ▼
+                        Copy From
                     </button>
                     <div className="so-dropdown-menu">
                         <button
@@ -3432,7 +3493,7 @@ function SalesOrder() {
                                 e.preventDefault();
                                 e.stopPropagation();
 
-                                console.log('📋 Sales Quotations clicked');
+                                console.log('ðŸ“‹ Sales Quotations clicked');
 
                                 // Clear everything before opening modal
                                 // setCopyFromMode(true);
@@ -3454,7 +3515,7 @@ function SalesOrder() {
                                 e.preventDefault();
                                 e.stopPropagation();
 
-                                console.log('📋 Blanket Agreements clicked');
+                                console.log('ðŸ“‹ Blanket Agreements clicked');
 
                                 // Clear everything before opening modal
                                 // setCopyFromMode(true);
@@ -3493,7 +3554,7 @@ function SalesOrder() {
                         }}
                         style={{ opacity: !canAttemptCopyTo ? 0.5 : 1 }}
                     >
-                        Copy To ▼
+                        Copy To
                     </button>
                     <div className="so-dropdown-menu">
                         <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleCopyTo('delivery'); document.querySelectorAll('.so-dropdown').forEach(d => d.classList.remove('active')); }}>
@@ -3515,7 +3576,7 @@ function SalesOrder() {
             </div>
 
             {/* alerts */}
-            {pageState.loading && <div className="so-alert so-alert--success" style={{ marginTop: 0 }}>Loading…</div>}
+            {pageState.loading && <div className="so-alert so-alert--success" style={{ marginTop: 0 }}>Loading...</div>}
             {!copyFromMode && pageState.error && <div className="so-alert so-alert--error">{pageState.error}</div>}
             {pageState.success && <div className="so-alert so-alert--success">{pageState.success}</div>}
             {refData.warnings?.length > 0 && (
@@ -3523,7 +3584,7 @@ function SalesOrder() {
                     <strong>SAP warnings:</strong>
                     {refData.warnings.map((w, i) => <div key={i}>{w}</div>)}
                     <div style={{ marginTop: 4, color: '#555' }}>Dropdowns are showing fallback values. Connect to SAP to load live data.</div>
-                    <div style={{ marginTop: 4, color: '#d00', fontWeight: 600 }}>⚠️ Tax codes shown are examples only. Use actual SAP tax codes to avoid submission errors.</div>
+                    <div style={{ marginTop: 4, color: '#d00', fontWeight: 600 }}>âš ï¸ Tax codes shown are examples only. Use actual SAP tax codes to avoid submission errors.</div>
                 </div>
             )}
 
@@ -3531,7 +3592,7 @@ function SalesOrder() {
             <div className={`sap-document-layout so-layout${isRightSidebarOpen ? ' is-sidebar-open' : ' sap-document-layout--no-udf'}`}>
                 <div className="sap-document-main so-layout__main">
 
-                        {/* ══ HEADER CARD ══════════════════════════════════════════════ */}
+                        {/* â•â• HEADER CARD â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
                         <div className="so-header-card">
                             <div className="so-header-columns">
                                 {/* LEFT COLUMN */}
@@ -3789,7 +3850,7 @@ function SalesOrder() {
                             </div>
                         </div>
 
-                        {/* ══ TABS ══════════════════════════════════════════════════════ */}
+                        {/* â•â• TABS â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
                         <div className="so-tabs">
                             {TAB_NAMES.map(t => (
                                 <button
@@ -3809,7 +3870,7 @@ function SalesOrder() {
                             style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}
                         >
 
-                        {/* ══ TAB CONTENT ═══════════════════════════════════════════════ */}
+                        {/* â•â• TAB CONTENT â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
                         {activeTab === 'Contents' && (
                             <ContentsTab
                                 lines={lines}
@@ -3845,6 +3906,8 @@ function SalesOrder() {
                                 onRowUdfChange={handleRowUdfChange}
                                 onLoadLookupOptions={loadDynamicUdfLookupOptions}
                                 displayCurrency={displayCurrency}
+                                documentCurrency={documentCurrency}
+                                formatDisplayMoney={formatMoneyWithCurrency}
                             />
                         )}
 
@@ -3892,7 +3955,7 @@ function SalesOrder() {
                             />
                         )}
 
-                        {/* ══ TOTALS FOOTER ═════════════════════════════════════════════ */}
+                        {/* â•â• TOTALS FOOTER â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
                         <div className="so-header-card so-document-summary">
                             <div className="so-header-columns">
                                 <div className="so-header-column">
@@ -4013,7 +4076,7 @@ function SalesOrder() {
                             </div>
                         </div>
 
-                        {/* ══ ACTION BUTTONS ════════════════════════════════════════════ */}
+                        {/* â•â• ACTION BUTTONS â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
                         {false && (
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '12px', marginBottom: '12px', gap: '8px' }}>
                             <div style={{ display: 'flex', gap: '8px' }}>
@@ -4044,7 +4107,7 @@ function SalesOrder() {
                                       }}
                                       style={{ opacity: (!isDocumentEditable || !!currentDocEntry || !hasBuyerCode) ? 0.5 : 1 }}
                                     >
-                                      Copy From ▼
+                                      Copy From
                                     </button>
                                     <div className="so-dropdown-menu">
                                         <button
@@ -4103,7 +4166,7 @@ function SalesOrder() {
                                         }}
                                         style={{ opacity: !canAttemptCopyTo ? 0.5 : 1 }}
                                     >
-                                        Copy To ▼
+                                        Copy To
                                     </button>
                                     <div className="so-dropdown-menu">
                                         <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleCopyTo('delivery'); document.querySelectorAll('.so-dropdown').forEach(d => d.classList.remove('active')); }}>
@@ -4141,14 +4204,16 @@ function SalesOrder() {
                         headerUdfFields={headerUdfDefinitions}
                         rowUdfFields={rowUdfDefinitions}
                         formSettings={formSettings}
-                        onSettingChange={updateFormSetting}
+          onSettingChange={updateFormSetting}
+          onColumnOrderChange={formSettingsStatus.reorder}
                         settingsLoaded={companyFormSettingsReady}
                         editablePropertiesByGroup={{ matrixColumns: ['visible'], rowUdfs: ['visible'] }}
                         editableSapControlledProperties={{ matrixColumns: ['visible'], headerUdfs: [], rowUdfs: ['visible'] }}
                         isSaving={formSettingsStatus.saving}
                         hasUnsavedChanges={formSettingsStatus.hasUnsavedChanges}
                         saveError={formSettingsStatus.error}
-                        onSave={formSettingsStatus.save}
+            onSave={formSettingsStatus.save}
+            onCancel={formSettingsStatus.discard}
                         settingsScopeLabel={formSettingsStatus.scopeLabel}
                     />
                 </div>

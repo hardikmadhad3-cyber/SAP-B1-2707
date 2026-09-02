@@ -128,7 +128,7 @@ const AR_INVOICE_MATRIX_COLUMN_DEFS = [
   { key: 'weight', label: 'Weight', minWidth: 95, numeric: true, sapField: 'Weight1', alternativeFields: ['Weight'], sapColumnIds: ['23', 'Weight1', 'Weight'] },
   { key: 'taxAmount', label: 'Tax Amount (LC)', minWidth: 125, readOnly: true, sapField: 'VatSum', sapColumnIds: ['24', 'VatSum', 'Tax Amount (LC)'] },
   { key: 'uomCode', label: 'UoM Code', minWidth: 105, sapField: 'UomCode', alternativeFields: ['unitMsr', 'UomEntry'], sapColumnIds: ['1470002149', '1470002145', 'UomCode', 'unitMsr', 'UoM Code', 'UoM'] },
-  { key: 'uomName', label: 'UoM Name', minWidth: 120, readOnly: true, sapField: 'unitMsr', alternativeFields: ['UomCode'], sapColumnIds: ['1470002145', 'unitMsr', 'UoM Name'] },
+  { key: 'uomName', label: 'UoM Name', minWidth: 120, sapField: 'unitMsr', alternativeFields: ['UomCode'], sapColumnIds: ['1470002145', 'unitMsr', 'UoM Name'] },
   { key: 'cogsDistRule', label: 'COGS Distr. Rule', minWidth: 135, sapField: 'CogsOcrCod', sapColumnIds: ['29', 'CogsOcrCod', 'COGS Distr. Rule'] },
   { key: 'countryOfOrigin', label: 'Country/Region of Origin', minWidth: 185, sapField: 'CountryOrg', sapColumnIds: ['10002037', 'CountryOrg', 'Country/Region of Origin'] },
   { key: 'loc', label: 'Loc.', minWidth: 115, readOnly: true, sapField: 'LocCode', alternativeFields: ['WhsCode', 'BPLId'], sapColumnIds: ['10002047', 'LocCode', 'Location', 'Loc.'] },
@@ -507,6 +507,15 @@ const optionalTrimmedText = (metadata, tableAlias, columnName) => (
 );
 
 const coalesceText = (...expressions) => `COALESCE(${expressions.join(', ')}, '')`;
+
+const buildOptionalHeaderTextExpression = (metadata = {}, candidates = [], fallback = "''") => {
+  const resolvedColumn = candidates
+    .map((candidate) => sqlColumnRef(metadata, 'T0', candidate))
+    .find(Boolean);
+  return resolvedColumn
+    ? `NULLIF(LTRIM(RTRIM(CAST(${resolvedColumn} AS NVARCHAR(254)))), '')`
+    : fallback;
+};
 
 // ── queries ───────────────────────────────────────────────────────────────────
 
@@ -1189,6 +1198,24 @@ const getARInvoiceList = async ({
   const normalizedPage = Math.max(1, Number(page) || 1);
   const normalizedPageSize = Math.min(200, Math.max(1, Number(pageSize) || 25));
   const skip = (normalizedPage - 1) * normalizedPageSize;
+  const headerFieldMetadata = await getARInvoiceHeaderTableFieldMetadata();
+  const sellerCodeExpression = buildOptionalHeaderTextExpression(headerFieldMetadata, [
+    'U_Seller_Code',
+    'U_To_Code_Vendor',
+    'U_ToCodeVendor',
+    'U_To_Code',
+    'U_ToCode',
+    'U_To_Vendor_Code',
+    'U_Vendor_Code',
+    'U_Party_Code',
+  ]);
+  const sellerNameExpression = buildOptionalHeaderTextExpression(headerFieldMetadata, [
+    'U_Seller_Name',
+    'U_To_Name',
+    'U_ToName',
+    'U_Vendor_Name',
+    'U_Party_Name',
+  ]);
   const { whereClauses, params } = buildMarketingDocumentListFilterQuery({
     query,
     openOnly,
@@ -1200,7 +1227,11 @@ const getARInvoiceList = async ({
     status,
     postingDateFrom,
     postingDateTo,
-  }, { includeSellerFields: true });
+  }, {
+    includeSellerFields: true,
+    sellerCodeField: sellerCodeExpression,
+    sellerNameField: sellerNameExpression,
+  });
   whereClauses.push("T0.DocType = 'I'");
 
   const countRows = await safe(db.query(`
@@ -1217,8 +1248,8 @@ const getARInvoiceList = async ({
       T0.DocNum AS doc_num,
       T0.CardCode AS customer_code,
       T0.CardName AS customer_name,
-      T0.U_Seller_Code AS seller_code,
-      T0.U_Seller_Name AS seller_name,
+      COALESCE(${sellerCodeExpression}, '') AS seller_code,
+      COALESCE(${sellerNameExpression}, '') AS seller_name,
       T0.DocDate AS posting_date,
       T0.DocDueDate AS delivery_date,
       T0.DocTotal AS total_amount,
@@ -1326,6 +1357,7 @@ const getARInvoice = async (docEntry) => {
       T0.TaxDate AS DocumentDate,
       ${headerBranchExpression} AS Branch,
       T0.DocCur AS Currency,
+      T0.DocRate AS ExchangeRate,
       T0.GroupNum AS PaymentTerms,
       T0.Comments AS Remarks,
       T0.JrnlMemo AS JournalRemark,
@@ -1611,7 +1643,8 @@ const getARInvoice = async (docEntry) => {
         purchaser: header.SalesEmployeeName || '',
         ownerCode: header.OwnerCode != null ? String(header.OwnerCode) : '',
         owner: header.OwnerName || '',
-        currency: header.Currency || 'INR',
+        currency: header.Currency || '',
+        exchangeRate: header.ExchangeRate != null ? String(header.ExchangeRate) : '',
       },
       lines: lineRows.map((line) => {
         const lineUdfs = lineUdfsByLineNum[line.LineNum] || {};

@@ -13,6 +13,16 @@ export const getSalesDocumentCompanyScopeKey = ({ companyId = '', companyDb = ''
   `${String(companyId ?? '').trim()}::${normalizeCompanyValue(companyDb)}`
 );
 
+export const isSalesDocumentFieldMetadataReady = ({
+  companyId = '',
+  companyDb = '',
+  hydratedScope = '',
+} = {}) => {
+  if (!String(companyId ?? '').trim() && !String(companyDb ?? '').trim()) return false;
+  if (!String(hydratedScope || '').trim()) return false;
+  return hydratedScope === getSalesDocumentCompanyScopeKey({ companyId, companyDb });
+};
+
 const normalizeFieldName = (value) => (
   String(value || '').trim().toUpperCase().replace(/[^A-Z0-9_]+/g, '')
 );
@@ -88,6 +98,8 @@ export const buildSalesDocumentLiveFields = ({
   referenceMatrixColumns = [],
   referenceSapForm = {},
   includeLineNumber = true,
+  safeFallbackMatrixColumns = [],
+  useSafeFallbackWithoutLayout = false,
 } = {}) => {
   const schemaMatchesCompany = isSalesDocumentSchemaForCompany(schema, { companyId, companyDb });
   const normalizedSchema = schemaMatchesCompany
@@ -123,6 +135,9 @@ export const buildSalesDocumentLiveFields = ({
     ? importedLayoutColumns
     : liveReferenceLayout;
   const verifiedColumns = schemaMatrixColumns.length ? schemaMatrixColumns : sapStandardColumns;
+  const safeFallbackColumns = Array.isArray(safeFallbackMatrixColumns) && safeFallbackMatrixColumns.length
+    ? safeFallbackMatrixColumns
+    : sapStandardColumns;
   const matrixColumns = effectiveLayoutColumns.length
     ? buildSalesOrderMatrixColumnsFromLayout({
         layoutColumns: effectiveLayoutColumns,
@@ -130,6 +145,13 @@ export const buildSalesDocumentLiveFields = ({
         rowUdfFields,
         includeLineNumber,
       })
+    : useSafeFallbackWithoutLayout
+      ? buildSalesOrderMatrixColumnsFromLayout({
+          layoutColumns: [],
+          liveMatrixColumns: safeFallbackColumns,
+          rowUdfFields: [],
+          includeLineNumber,
+        })
     : schemaMatrixColumns.length
       ? buildSalesOrderMatrixColumnsFromLayout({
           layoutColumns: [],
@@ -156,6 +178,7 @@ export const buildSalesDocumentLiveFields = ({
     importedLayout: layout,
     liveAvailable: Boolean(normalizedSchema && schemaLineFields.length),
     usedSapLayout: Boolean(effectiveLayoutColumns.length),
+    usedSafeFallback: Boolean(useSafeFallbackWithoutLayout && !effectiveLayoutColumns.length),
   };
 };
 
@@ -194,13 +217,22 @@ export const loadSalesDocumentFieldLookupOptions = async ({
     || field.schemaFieldId
     || field.id
     || (field.tableId && field.key ? `${field.tableId}.${field.key}` : '');
-  const response = await fetchLookup(lookupSource, {
-    limit,
-    fieldId,
-    schemaVersion,
-    itemCode: line.itemNo || line.ItemCode || '',
-    documentType,
-  });
-
-  return normalizeLookupOptions(response);
+  const options = [];
+  let page = 1;
+  let hasMore = true;
+  while (hasMore) {
+    const response = await fetchLookup(lookupSource, {
+      limit,
+      page,
+      fieldId,
+      schemaVersion,
+      itemCode: line.itemNo || line.ItemCode || '',
+      documentType,
+    });
+    const nextOptions = normalizeLookupOptions(response);
+    options.push(...nextOptions);
+    hasMore = Boolean(response?.hasMore) && nextOptions.length > 0;
+    page += 1;
+  }
+  return options;
 };

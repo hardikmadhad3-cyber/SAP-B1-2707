@@ -1,4 +1,5 @@
 import React, { useRef } from 'react';
+import { getOrderedVisibleMatrixColumns } from '../../../utils/formSettingsColumns';
 
 const COLUMN_ORDER = [
   'itemCode',
@@ -188,26 +189,19 @@ function ContentsTab({
   const boundUdfKeys = new Set(
     COLUMN_ORDER.map((columnKey) => getBoundUdf(columnKey, rowUdfFields)?.key).filter(Boolean)
   );
-  const baseVisibleColumnOrder = COLUMN_ORDER.filter((columnKey) => {
-    const udfField = getBoundUdf(columnKey, rowUdfFields);
-    if (STANDARD_KEYS.has(columnKey)) {
-      return formSettings.matrixColumns?.[columnKey]?.visible !== false;
-    }
-    if (udfField) {
-      return formSettings.rowUdfs?.[udfField.key]?.visible !== false;
-    }
-    return formSettings.matrixColumns?.[columnKey]?.visible !== false;
-  });
   const dynamicUdfColumns = rowUdfFields
     .filter((field) => !boundUdfKeys.has(field.key))
-    .filter((field) => formSettings.rowUdfs?.[field.key]?.visible !== false)
     .map((field) => ({
       key: `udf:${field.key}`,
+      udfKey: field.key,
       label: field.label || field.key,
       udfField: field,
     }));
-  const visibleColumnOrder = [...baseVisibleColumnOrder, ...dynamicUdfColumns];
-  const showItemCodeColumn = visibleColumnOrder.includes('itemCode');
+  const visibleColumnOrder = getOrderedVisibleMatrixColumns([
+    ...COLUMN_ORDER.map((key) => ({ key })),
+    ...dynamicUdfColumns,
+  ], formSettings);
+  const showItemCodeColumn = visibleColumnOrder.some((column) => column.key === 'itemCode');
 
   const focusCell = (rowIndex, columnKey) => {
     const target = inputRefs.current[`${rowIndex}:${columnKey}`];

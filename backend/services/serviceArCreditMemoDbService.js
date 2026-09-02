@@ -351,6 +351,7 @@ const getServiceARCreditMemo = async (docEntry) => {
       T0.TaxDate,
       T0.BPLId,
       T0.DocCur,
+      T0.DocRate,
       T0.GroupNum,
       T0.Comments,
       T0.JrnlMemo,
@@ -492,7 +493,8 @@ const getServiceARCreditMemo = async (docEntry) => {
         taxInvoiceNo: header.TaxInvoiceNo || '',
         taxInvoiceDate: formatDate(header.TaxInvoiceDate),
         GSTTransactionType: header.GSTTransactionType || '',
-        currency: header.DocCur || 'INR',
+        currency: header.DocCur || '',
+        exchangeRate: header.DocRate == null ? '' : String(header.DocRate),
         transactionType: getKnownHeaderUdfValue(
           headerUdfs,
           ['TransactionType', 'TransType', 'DocumentType', 'DocType']

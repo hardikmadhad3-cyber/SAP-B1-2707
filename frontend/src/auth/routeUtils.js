@@ -42,16 +42,17 @@ export const getDefaultRoute = () => {
 export const isPathAllowed = (menuPaths = [], pathname = '/') => {
   const normalizedPath = normalizePath(pathname);
   const normalizedMenuPaths = menuPaths.map(normalizePath);
+  const permissionPath = normalizedPath;
 
-  if (ALWAYS_ALLOWED_PATHS.includes(normalizedPath)) {
+  if (ALWAYS_ALLOWED_PATHS.includes(permissionPath)) {
     return true;
   }
 
   if (!normalizedMenuPaths.length) {
-    return normalizedPath === '/dashboard';
+    return permissionPath === '/dashboard';
   }
 
   return normalizedMenuPaths.some((menuPath) =>
-    normalizedPath === menuPath || normalizedPath.startsWith(`${menuPath}/`),
+    permissionPath === menuPath || permissionPath.startsWith(`${menuPath}/`),
   );
 };

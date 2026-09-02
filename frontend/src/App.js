@@ -18,7 +18,6 @@ import AdminLoginPage from "./pages/AdminLoginPage";
 import LoginPage from "./pages/LoginPage";
 import lazyWithRetry from "./utils/lazyWithRetry";
 import { focusFirstSapField, installSapTabNavigation } from "./utils/sapTabNavigation";
-import { NEW_SALES_ORDER_ENABLED } from "./modules/new-sales-order/newSalesOrderConstants";
 import "./styles/auth.css";
 import "./styles/admin-panel.css";
 import "./styles/sap-ui.css";
@@ -62,7 +61,7 @@ const PurchaseRequestList = lazyWithRetry(() => import("./pages/PurchaseRequestL
 const GoodsReceiptPO = lazyWithRetry(() => import("./pages/GRPO"));
 const GRPOList = lazyWithRetry(() => import("./pages/GRPOList"));
 const SalesOrder = lazyWithRetry(() => import("./pages/SalesOrder"));
-const NewSalesOrder = lazyWithRetry(() => import("./pages/NewSalesOrder"));
+const TransactionFieldConfiguration = lazyWithRetry(() => import("./pages/TransactionFieldConfiguration"));
 const SalesOrderList = lazyWithRetry(() => import("./pages/SalesOrderList"));
 const DCSalesOrder = lazyWithRetry(() => import("./pages/DCSalesOrder"));
 const DCSalesOrderList = lazyWithRetry(() => import("./pages/DCSalesOrderList"));
@@ -192,6 +191,8 @@ function App() {
                 path="/admin-login"
                 element={<AdminLoginPage />}
               />
+              <Route path="/transaction-field-configuration" element={<Navigate to="/admin/transaction-field-configuration" replace />} />
+              <Route path="/new-sales-order" element={<Navigate to="/admin/transaction-field-configuration" replace />} />
 
               <Route
                 path="/company-select"
@@ -248,9 +249,6 @@ function App() {
                   <Route path="/grpo" element={<GoodsReceiptPO />} />
                   <Route path="/grpo/find" element={<GRPOList />} />
                   <Route path="/sales-order" element={<SalesOrder />} />
-                  {NEW_SALES_ORDER_ENABLED ? (
-                    <Route path="/new-sales-order" element={<NewSalesOrder />} />
-                  ) : null}
                   <Route path="/sales-order/old" element={<SalesOrder />} />
                   <Route path="/sales-order/find" element={<SalesOrderList />} />
                   <Route path="/dc-sales-order" element={<DCSalesOrder />} />
@@ -337,6 +335,7 @@ function App() {
                   <Route path="/adminpanel" element={<Navigate to="/admin" replace />} />
                   <Route path="/admin" element={<AdminPanelHome />} />
                   <Route path="/admin/general-settings" element={<GeneralSettings />} />
+                  <Route path="/admin/transaction-field-configuration" element={<TransactionFieldConfiguration />} />
                   <Route path="/admin/:entityKey" element={<AdminPanelEntity />} />
                   <Route path="/admin/:entityKey/new" element={<AdminPanelEntity />} />
                   <Route path="/admin/:entityKey/:recordId" element={<AdminPanelEntity />} />

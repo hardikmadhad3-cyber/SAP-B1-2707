@@ -2339,6 +2339,16 @@ body > .so-exchange-rates-modal__overlay,
 
 /* Sales Order production layout cleanup
    Scoped because this stylesheet is shared by multiple SAP document pages. */
+.page-window-frame:not(.is-maximized) > .page-window-frame__body:has(> .so-sales-order-page) {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+.page-window-frame:not(.is-maximized) > .page-window-frame__body > .so-sales-order-page {
+  overflow-y: visible !important;
+  padding-bottom: 24px;
+}
+
 .so-sales-order-page .so-layout {
   align-items: stretch;
 }
@@ -2561,6 +2571,7 @@ body > .so-exchange-rates-modal__overlay,
 .so-sales-order-page .so-document-summary {
   overflow: visible;
   container-type: inline-size;
+  margin-bottom: 12px;
 }
 
 .so-sales-order-page .so-document-summary .so-header-columns {

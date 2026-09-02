@@ -27,6 +27,7 @@ import {
 import { consumePendingLookupQuery } from "../../utils/sapTabNavigation";
 import { matchesSapSearchText } from "../../utils/sapSearch";
 import { useCompanyScopedFormSettings } from "../../utils/formSettingsStorage";
+import { getOrderedVisibleMatrixColumns } from "../../utils/formSettingsColumns";
 import { getSapVisibleDocumentSeries } from "../../utils/seriesDefaults";
 import "./incomingPayments.css";
 
@@ -358,10 +359,11 @@ export default function IncomingPaymentsPage() {
   const [bpLookupTrigger, setBpLookupTrigger] = useState(0);
   const [paymentMeansOpen, setPaymentMeansOpen] = useState(false);
   const [paymentMeans, setPaymentMeans] = useState(() => createDefaultPaymentMeans());
-  const [formSettings, setFormSettings] = useCompanyScopedFormSettings(
+  const [formSettings, setFormSettings, , , formSettingsStatus] = useCompanyScopedFormSettings(
     INCOMING_PAYMENTS_FORM_SETTINGS_STORAGE_KEY,
     readSavedBankingFormSettings,
     [PAYMENT_FORM_SETTINGS_COLUMNS],
+    { saveMode: 'explicit' },
   );
   const [formSettingsOpen, setFormSettingsOpen] = useState(false);
   const routedDocumentRef = useRef(0);
@@ -1118,10 +1120,9 @@ export default function IncomingPaymentsPage() {
     },
   }));
   const toggleFormSettings = () => setFormSettingsOpen((open) => !open);
-  const isColumnVisible = (column) => formSettings.matrixColumns?.[column.key]?.visible !== false;
   const isColumnActive = (columnKey) => formSettings.matrixColumns?.[columnKey]?.active !== false;
   const getVisibleColumns = (columns) => {
-    const visibleColumns = columns.filter(isColumnVisible);
+    const visibleColumns = getOrderedVisibleMatrixColumns(columns, formSettings);
     return visibleColumns.length ? visibleColumns : columns.slice(0, 1);
   };
   const visibleInvoiceColumns = getVisibleColumns(PAYMENT_INVOICE_COLUMNS);
@@ -1698,7 +1699,15 @@ export default function IncomingPaymentsPage() {
         headerUdfFields={[]}
         rowUdfFields={[]}
         formSettings={formSettings}
-        onSettingChange={updateFormSetting}
+          onSettingChange={updateFormSetting}
+          onColumnOrderChange={formSettingsStatus.reorder}
+          settingsLoaded={formSettingsStatus.loaded}
+          isSaving={formSettingsStatus.saving}
+          hasUnsavedChanges={formSettingsStatus.hasUnsavedChanges}
+          saveError={formSettingsStatus.error}
+          onSave={formSettingsStatus.save}
+          onCancel={formSettingsStatus.discard}
+          settingsScopeLabel={formSettingsStatus.scopeLabel}
       />
       </div>
       <PaymentMeansModal

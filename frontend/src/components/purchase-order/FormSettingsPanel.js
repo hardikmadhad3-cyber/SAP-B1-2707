@@ -1,279 +1,144 @@
 import React from 'react';
+import {
+  getMatrixColumnSetting,
+  getOrderedVisibleMatrixColumns,
+  isMatrixColumnVisible,
+  isRequiredVisibleMatrixField,
+  mergeContentSettingsFields,
+} from '../../utils/formSettingsColumns';
 
-const getFieldIdentityTokens = (field = {}) => [
-  field.key,
-  field.valueKey,
-  field.rendererKey,
-  field.fieldName,
-  field.sapField,
-  field.aliasId,
-]
-  .map((value) => String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, ''))
-  .filter(Boolean);
+const tokens = (field = {}) => [
+  field.key, field.valueKey, field.rendererKey, field.fieldName, field.sapField, field.aliasId,
+].map((value) => String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '')).filter(Boolean);
 
 export const filterDuplicateRowUdfFields = (matrixFields = [], rowUdfFields = []) => {
-  const matrixTokens = new Set((matrixFields || []).flatMap(getFieldIdentityTokens));
-  return (rowUdfFields || []).filter((field) => (
-    !getFieldIdentityTokens(field).some((token) => matrixTokens.has(token))
-  ));
+  const known = new Set((matrixFields || []).flatMap(tokens));
+  return (rowUdfFields || []).filter((field) => !tokens(field).some((token) => known.has(token)));
 };
 
-function SettingsSection({
-  title,
-  fields,
-  groupKey,
-  formSettings,
-  onSettingChange,
-  readOnly = false,
-  editableProperties = ['visible', 'active'],
-  editableSapControlledProperties = ['visible', 'active'],
-}) {
-  if (!fields.length) {
-    return null;
-  }
-
-  return (
-    <div className="mb-4">
-      <h6 className="border-bottom pb-1 mb-2">{title}</h6>
-
-      {[...fields].sort((left, right) => {
-        const leftOrder = Number(formSettings[groupKey]?.[left.key]?.order ?? left.order ?? Number.MAX_SAFE_INTEGER);
-        const rightOrder = Number(formSettings[groupKey]?.[right.key]?.order ?? right.order ?? Number.MAX_SAFE_INTEGER);
-        return leftOrder - rightOrder;
-      }).map((field) => {
-        const setting = formSettings[groupKey]?.[field.key] || {};
-        const isSapControlled = Boolean(field.sapControlled || setting.sapControlled);
-        const isPropertyLocked = (property) => (
-          readOnly
-          || !editableProperties.includes(property)
-          || (isSapControlled && !editableSapControlledProperties.includes(property))
-        );
-        const visibleLocked = isPropertyLocked('visible');
-        const activeLocked = isPropertyLocked('active');
-        const isVisible = setting.visible !== undefined ? setting.visible !== false : field.visible !== false;
-        const isActive = setting.active !== undefined ? setting.active !== false : field.active !== false;
-        return (
-        <div
-          key={field.key}
-          className="d-flex justify-content-between align-items-center mb-2"
-          title={visibleLocked && activeLocked ? 'Controlled by SAP Form Settings' : undefined}
-        >
-          <span className="small">{field.label}</span>
-
-          <div className="d-flex gap-2">
-            <div className="form-check">
-              <input
-                type="checkbox"
-                className="form-check-input"
-                checked={isVisible}
-                disabled={visibleLocked}
-                onChange={(event) =>
-                  onSettingChange(groupKey, field.key, 'visible', event.target.checked)
-                }
-              />
-              <label className="form-check-label small">V</label>
-            </div>
-
-            <div className="form-check">
-              <input
-                type="checkbox"
-                className="form-check-input"
-                checked={isActive}
-                disabled={activeLocked}
-                onChange={(event) =>
-                  onSettingChange(groupKey, field.key, 'active', event.target.checked)
-                }
-              />
-              <label className="form-check-label small">A</label>
-            </div>
-          </div>
-        </div>
-      );})}
-    </div>
+export default function FormSettingsPanel(props) {
+  const {
+    isOpen, onClose, matrixFields = [], rowUdfFields = [], formSettings = {},
+    onSettingChange, onColumnOrderChange, isRefreshing = false, settingsLoaded = true,
+    isSaving = false, hasUnsavedChanges = false, saveError = '', onSave, onCancel,
+    settingsScopeLabel = '', variant = 'floating', className = '', style,
+  } = props;
+  const [draggedKey, setDraggedKey] = React.useState('');
+  const fields = React.useMemo(
+    () => mergeContentSettingsFields(matrixFields, rowUdfFields),
+    [matrixFields, rowUdfFields],
   );
-}
-
-function FormSettingsPanel({
-  isOpen,
-  onClose,
-  matrixFields,
-  headerUdfFields,
-  rowUdfFields,
-  formSettings,
-  onSettingChange,
-  readOnlyGroups = [],
-  editablePropertiesByGroup,
-  editableSapControlledGroups = ['matrixColumns', 'headerUdfs', 'rowUdfs'],
-  editableSapControlledProperties,
-  isRefreshing = false,
-  settingsLoaded = true,
-  isSaving = false,
-  hasUnsavedChanges = false,
-  saveError = '',
-  onSave,
-  settingsScopeLabel = '',
-  variant = 'floating',
-  className = '',
-  style,
-}) {
-  if (!isOpen) {
-    return null;
-  }
-
-  const isSidebar = variant === 'sidebar';
-  const getEditableSapProperties = (groupKey) => {
-    const configuredProperties = editableSapControlledProperties?.[groupKey];
-    if (Array.isArray(configuredProperties)) return configuredProperties;
-    return editableSapControlledGroups.includes(groupKey) ? ['visible', 'active'] : [];
+  const ordered = React.useMemo(
+    () => getOrderedVisibleMatrixColumns(fields, formSettings, { includeHidden: true }),
+    [fields, formSettings],
+  );
+  if (!isOpen) return null;
+  const loading = isRefreshing || !settingsLoaded;
+  const close = () => { onCancel?.(); onClose?.(); };
+  const publish = (next) => {
+    if (onColumnOrderChange) return onColumnOrderChange(next);
+    next.forEach((field, index) => onSettingChange?.(
+      field.settingsGroup || 'matrixColumns', field.key, 'order', index + 1,
+    ));
+    return undefined;
   };
-  const getEditableProperties = (groupKey) => {
-    const configuredProperties = editablePropertiesByGroup?.[groupKey];
-    return Array.isArray(configuredProperties) ? configuredProperties : ['visible', 'active'];
+  const move = (key, target) => {
+    const source = ordered.findIndex((field) => field.key === key);
+    const destination = Math.max(0, Math.min(target, ordered.length - 1));
+    if (source < 0 || source === destination) return;
+    const next = [...ordered];
+    const [field] = next.splice(source, 1);
+    next.splice(destination, 0, field);
+    publish(next);
   };
-  const loadingSettings = isRefreshing || !settingsLoaded;
-  const uniqueRowUdfFields = filterDuplicateRowUdfFields(matrixFields, rowUdfFields);
-  const wrapperClassName = [isSidebar ? 'sap-header-udf-panel' : 'po-form-settings-floating', className]
-    .filter(Boolean)
-    .join(' ');
-  const wrapperStyle = isSidebar
-    ? {
-        alignSelf: 'stretch',
-        display: 'flex',
-        width: '100%',
-        maxWidth: '100%',
-        minWidth: 0,
-        height: 'auto',
-        minHeight: 0,
-        maxHeight: 'none',
-        overflow: 'hidden',
-        boxSizing: 'border-box',
-        ...(style || {}),
-      }
-    : {
-        position: 'fixed',
-        top: '172px',
-        right: '12px',
-        width: '380px',
-        maxWidth: 'calc(100vw - 24px)',
-        height: 'calc(100vh - 184px)',
-        zIndex: 1050,
-        overflowY: 'auto',
-        paddingBottom: '12px',
-        ...style,
-      };
-  const cardStyle = isSidebar
-    ? {
-        position: 'static',
-        top: 'auto',
-      display: 'flex',
-      flexDirection: 'column',
-      width: '100%',
-      height: '100%',
-      minHeight: 0,
-        maxHeight: '100%',
-        overflow: 'hidden',
-        background: '#fff',
-      }
-    : {
-        minHeight: '100%',
-        borderRadius: '14px',
-        border: '1px solid #d7e1ec',
-        boxShadow: '0 16px 36px rgba(15, 23, 42, 0.12)',
-        background: '#fff',
-      };
-
+  const sidebar = variant === 'sidebar';
+  const wrapperStyle = sidebar
+    ? { width: '100%', height: '100%', minWidth: 0, overflow: 'hidden', ...style }
+    : { position: 'fixed', top: 172, right: 12, width: 400,
+        height: 'calc(100vh - 184px)', zIndex: 1050, overflowY: 'auto', ...style };
   return (
-    <div className={wrapperClassName} style={wrapperStyle}>
-      <div
-        className="card p-3 po-udf-sidebar-card"
-        style={cardStyle}
-      >
+    <div className={(sidebar ? 'sap-header-udf-panel ' : 'po-form-settings-floating ') + className} style={wrapperStyle}>
+      <div className="card p-3 po-udf-sidebar-card h-100">
         <div className="po-udf-sidebar-header">
           <div>
             <h6 className="mb-1">Form Settings</h6>
             <small className="text-muted">
-              {loadingSettings
-                ? 'Loading company Form Settings...'
-                : `Loaded for ${settingsScopeLabel || 'the selected user and company'}`}
+              {loading ? 'Loading company Form Settings...' : `Content Columns for ${settingsScopeLabel || 'the selected scope'}`}
             </small>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close Form Settings"
-            title="Close"
-            className="po-udf-sidebar-close"
-          />
+          <button type="button" onClick={close} aria-label="Close Form Settings"
+            title="Close and discard unsaved changes" className="po-udf-sidebar-close" />
         </div>
-
-        <div
-          className="po-udf-sidebar-body"
-          aria-busy={loadingSettings}
-          style={isSidebar ? { flex: '1 1 auto', minHeight: 0, overflowY: 'auto', overflowX: 'hidden' } : undefined}
-        >
-          {loadingSettings ? (
-            <div className="small text-muted py-3">Loading saved visibility before document lines...</div>
-          ) : (
+        <div className="po-udf-sidebar-body overflow-auto" aria-busy={loading}>
+          {loading ? <div className="small text-muted py-3">Loading saved Content-column settings...</div> : (
             <>
-          <SettingsSection
-            title="Matrix Columns"
-            fields={matrixFields}
-            groupKey="matrixColumns"
-            formSettings={formSettings}
-            onSettingChange={onSettingChange}
-            readOnly={readOnlyGroups.includes('matrixColumns')}
-            editableProperties={getEditableProperties('matrixColumns')}
-            editableSapControlledProperties={getEditableSapProperties('matrixColumns')}
-          />
-          <SettingsSection
-            title="Header UDF Sidebar"
-            fields={headerUdfFields}
-            groupKey="headerUdfs"
-            formSettings={formSettings}
-            onSettingChange={onSettingChange}
-            readOnly={readOnlyGroups.includes('headerUdfs')}
-            editableProperties={getEditableProperties('headerUdfs')}
-            editableSapControlledProperties={getEditableSapProperties('headerUdfs')}
-          />
-          <SettingsSection
-            title="Row UDF Columns"
-            fields={uniqueRowUdfFields}
-            groupKey="rowUdfs"
-            formSettings={formSettings}
-            onSettingChange={onSettingChange}
-            readOnly={readOnlyGroups.includes('rowUdfs')}
-            editableProperties={getEditableProperties('rowUdfs')}
-            editableSapControlledProperties={getEditableSapProperties('rowUdfs')}
-          />
+              <h6 className="border-bottom pb-2 mb-1">Content Columns</h6>
+              <div className="small text-muted mb-2">Drag fields to arrange the Content tab.</div>
+              {!ordered.length && <div className="small text-muted py-3">No configurable columns are available.</div>}
+              {ordered.map((field, index) => {
+                const setting = getMatrixColumnSetting(field, formSettings);
+                const locked = isRequiredVisibleMatrixField(field, setting);
+                const visible = isMatrixColumnVisible(field, setting);
+                const label = field.label || field.columnTitle || field.caption || field.key;
+                const group = field.settingsGroup || 'matrixColumns';
+                const inputId = `form-setting-visible-${group}-${field.key}`;
+                return (
+                  <div key={`${group}:${field.key}`} draggable
+                    className={`d-flex align-items-center gap-2 border rounded px-2 py-2 mb-2 ${draggedKey === field.key ? 'opacity-50' : ''}`}
+                    onDragStart={(event) => {
+                      setDraggedKey(field.key);
+                      event.dataTransfer.effectAllowed = 'move';
+                      event.dataTransfer.setData('text/plain', field.key);
+                    }}
+                    onDragEnd={() => setDraggedKey('')}
+                    onDragOver={(event) => event.preventDefault()}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      move(event.dataTransfer.getData('text/plain') || draggedKey, index);
+                      setDraggedKey('');
+                    }}>
+                    <span title="Drag to reorder" style={{ cursor: 'grab', color: '#5b6572' }} aria-hidden="true">&#8942;&#8942;</span>
+                    <span className="small flex-grow-1 text-truncate" title={label}>
+                      {label}{locked && <span className="ms-1 text-muted" title="Required field is always visible">&#128274;</span>}
+                    </span>
+                    <button type="button" className="btn btn-outline-secondary btn-sm py-0 px-1"
+                      aria-label={`Move ${label} up`} disabled={index === 0}
+                      onClick={() => move(field.key, index - 1)}>&#8593;</button>
+                    <button type="button" className="btn btn-outline-secondary btn-sm py-0 px-1"
+                      aria-label={`Move ${label} down`} disabled={index === ordered.length - 1}
+                      onClick={() => move(field.key, index + 1)}>&#8595;</button>
+                    <div className="form-check mb-0">
+                      <input id={inputId} type="checkbox" className="form-check-input"
+                        checked={visible} disabled={locked}
+                        onChange={(event) => onSettingChange?.(group, field.key, 'visible', event.target.checked)} />
+                      <label className="form-check-label small" htmlFor={inputId}>Visible</label>
+                    </div>
+                  </div>
+                );
+              })}
             </>
           )}
         </div>
-        {typeof onSave === 'function' ? (
+        {typeof onSave === 'function' && (
           <div className="border-top pt-3 mt-2">
-            {saveError ? (
-              <div className="small text-danger mb-2" role="alert">{saveError}</div>
-            ) : (
+            {saveError ? <div className="small text-danger mb-2" role="alert">{saveError}</div> : (
               <div className="small text-muted mb-2" aria-live="polite">
-                {isSaving
-                  ? 'Saving for this user and company...'
-                  : hasUnsavedChanges
-                    ? 'Line-field visibility has unsaved changes.'
-                    : 'Line-field visibility is saved.'}
+                {isSaving ? 'Saving for this user and company...' : hasUnsavedChanges
+                  ? 'Content-column visibility or order has unsaved changes.'
+                  : 'Content-column settings are saved.'}
               </div>
             )}
-            <button
-              type="button"
-              className="btn btn-primary btn-sm w-100"
-              onClick={onSave}
-              disabled={loadingSettings || isSaving || !hasUnsavedChanges}
-            >
-              {isSaving ? 'Saving Fields...' : 'Save Line Fields'}
-            </button>
+            <div className="d-flex gap-2">
+              <button type="button" className="btn btn-outline-secondary btn-sm flex-grow-1"
+                onClick={close} disabled={isSaving}>Cancel</button>
+              <button type="button" className="btn btn-primary btn-sm flex-grow-1"
+                onClick={onSave} disabled={loading || isSaving || !hasUnsavedChanges}>
+                {isSaving ? 'Saving...' : 'Save'}
+              </button>
+            </div>
           </div>
-        ) : null}
+        )}
       </div>
     </div>
   );
 }
-
-export default FormSettingsPanel;

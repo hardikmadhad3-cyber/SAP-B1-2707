@@ -2,6 +2,7 @@ import React from 'react';
 import TaxCodeLookup from '../../../components/TaxCodeLookup';
 import { useSapItemCodeTab } from '../../../utils/sapTabNavigation';
 import { getLineTotalsForDisplay } from '../../../utils/lineTotals';
+import { getOrderedVisibleMatrixColumns } from '../../../utils/formSettingsColumns';
 
 const TABLE_MIN_WIDTH = 3400;
 
@@ -169,13 +170,7 @@ export default function ContentsTab({
     })),
   ];
 
-  const visibleColumns = matrixColumns.filter((col) => {
-    const setting = formSettings.matrixColumns?.[col.key];
-    if (col.isUdf) {
-      return formSettings.rowUdfs?.[col.key]?.visible !== false;
-    }
-    return setting?.visible !== false;
-  });
+  const visibleColumns = getOrderedVisibleMatrixColumns(matrixColumns, formSettings);
 
   const isColumnVisible = (columnKey) => {
     const setting = formSettings.matrixColumns?.[columnKey];

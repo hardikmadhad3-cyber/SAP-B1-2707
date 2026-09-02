@@ -3,7 +3,7 @@
 const express = require('express');
 const { authenticateAccessToken } = require('../../middleware/authMiddleware');
 const contextService = require('../newSalesOrder/newSalesOrderContextService');
-const controller = require('../newSalesOrder/newSalesOrderController');
+const controller = require('./salesDocumentSchemaController');
 
 const createSalesDocumentSchemaRouter = ({
   authenticate = authenticateAccessToken,

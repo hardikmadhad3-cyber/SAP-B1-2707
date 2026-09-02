@@ -1,10 +1,12 @@
+import { filterSafePurchaseMatrixColumns } from '../utils/purchaseDocumentFormSettings';
+
 const FORM_SETTINGS_STORAGE_KEY = 'sapb1.purchaseOrder.formSettings.v1';
 
 const HEADER_UDF_DEFINITIONS = [];
 
 const ROW_UDF_DEFINITIONS = [];
 
-const BASE_MATRIX_COLUMNS = [
+const CONFIGURED_MATRIX_COLUMNS = [
   { key: 'itemNo', label: 'Item No.', minWidth: 160 },
   { key: 'itemDescription', label: 'Item Description', minWidth: 240 },
   { key: 'quantity', label: 'Quantity', minWidth: 90 },
@@ -51,6 +53,7 @@ const BASE_MATRIX_COLUMNS = [
   { key: 'fixBrockSeller', label: 'Fix Brock Seller', minWidth: 140 },
 ];
 
+const BASE_MATRIX_COLUMNS = filterSafePurchaseMatrixColumns(CONFIGURED_MATRIX_COLUMNS);
 const BASE_MATRIX_COLUMN_KEYS = new Set(BASE_MATRIX_COLUMNS.map((column) => column.key));
 
 const normalizePurchaseOrderMatrixColumns = (columns = BASE_MATRIX_COLUMNS) => {

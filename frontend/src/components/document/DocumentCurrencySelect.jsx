@@ -48,6 +48,19 @@ function DocumentCurrencySelect({
   const [currencyDropdownOpen, setCurrencyDropdownOpen] = React.useState(false);
   const mode = normalizeCurrencyMode(header.currencyMode);
   const currentCurrency = String(header.currency || '').trim();
+  const selectedPartner = (Array.isArray(businessPartners) ? businessPartners : []).find(
+    (partner) => String(partner.CardCode || '') === String(header.vendor || ''),
+  );
+  const partnerCurrency = String(selectedPartner?.Currency || '').trim();
+  const isAllCurrenciesPartner = partnerCurrency === '##';
+  const includedPartnerCurrencies = new Set(
+    (selectedPartner?.BPCurrencies || selectedPartner?.Currencies || selectedPartner?.currencies || [])
+      .filter((currency) => String(currency?.Include ?? currency?.INCLUDE ?? 'Y').toUpperCase() !== 'N')
+      .map((currency) => String(
+        currency?.CurrencyCode || currency?.CurrCode || currency?.code || currency || '',
+      ).trim().toUpperCase())
+      .filter(Boolean),
+  );
   const displayCurrency = resolveDocumentCurrency({
     mode,
     cardCode: header.vendor,
@@ -86,14 +99,33 @@ function DocumentCurrencySelect({
   };
 
   (Array.isArray(currencyOptions) ? currencyOptions : []).forEach((currency) => {
+    const code = String(currency.CurrCode || currency.Code || currency.code || currency.value || '').trim();
+    if (partnerCurrency && !isAllCurrenciesPartner && code.toUpperCase() !== partnerCurrency.toUpperCase()) return;
+    if (isAllCurrenciesPartner && includedPartnerCurrencies.size && !includedPartnerCurrencies.has(code.toUpperCase())) return;
     addCurrencyOption(
-      currency.CurrCode || currency.Code || currency.code || currency.value,
+      code,
       currency.CurrName || currency.Name || currency.name || currency.label,
     );
   });
-  addCurrencyOption(currentCurrency || displayCurrency);
-  addCurrencyOption(localCurrency);
-  addCurrencyOption(systemCurrency);
+  const canShowCurrentCurrency = !partnerCurrency
+    || (!isAllCurrenciesPartner && currentCurrency.toUpperCase() === partnerCurrency.toUpperCase())
+    || (isAllCurrenciesPartner && (
+      !includedPartnerCurrencies.size || includedPartnerCurrencies.has(currentCurrency.toUpperCase())
+    ));
+  if (canShowCurrentCurrency) addCurrencyOption(currentCurrency || displayCurrency);
+  if (!partnerCurrency) {
+    addCurrencyOption(localCurrency);
+    addCurrencyOption(systemCurrency);
+  } else if (isAllCurrenciesPartner) {
+    if (!includedPartnerCurrencies.size || includedPartnerCurrencies.has(String(localCurrency || '').trim().toUpperCase())) {
+      addCurrencyOption(localCurrency);
+    }
+    if (!includedPartnerCurrencies.size || includedPartnerCurrencies.has(String(systemCurrency || '').trim().toUpperCase())) {
+      addCurrencyOption(systemCurrency);
+    }
+  } else {
+    addCurrencyOption(partnerCurrency);
+  }
   if (includeSapB1CommonCurrencies) {
     SAP_B1_COMMON_CURRENCIES.forEach((currency) => addCurrencyOption(currency.code, currency.name));
   }
@@ -104,7 +136,8 @@ function DocumentCurrencySelect({
   const selectedCurrencyOption = documentCurrencyOptions.find(
     (currency) => currency.code === selectedDocumentCurrency
   ) || { code: selectedDocumentCurrency, name: selectedDocumentCurrency };
-  const showDocumentCurrencyField = mode === 'BP' || mode === 'CUSTOM';
+  const showDocumentCurrencyField = (mode === 'BP' || mode === 'CUSTOM')
+    && (!partnerCurrency || isAllCurrenciesPartner || mode === 'CUSTOM');
   const hasExchangeRateField = Boolean(showDocumentCurrencyField && currentCurrency && currentCurrency !== String(localCurrency || '').trim());
   const useSapCurrencyDropdown = documentCurrencyOptions.length > 1;
 

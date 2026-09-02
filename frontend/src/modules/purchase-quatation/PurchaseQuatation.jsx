@@ -1,6 +1,8 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import './styles/PurchaseQuatation.css';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { useAuth } from '../../auth/AuthContext';
+import DocumentCurrencySelect from '../../components/document/DocumentCurrencySelect';
 import FormSettingsPanel from '../../components/purchase-order/FormSettingsPanel';
 import HeaderUdfSidebar from '../../components/purchase-order/HeaderUdfSidebar';
 import ContentsTab from './components/ContentsTab';
@@ -36,7 +38,9 @@ import useSalesEmployeeSetup from '../../hooks/useSalesEmployeeSetup';
 import useValidationHighlights from '../../utils/useValidationHighlights';
 import useClosedDocumentViewMode from '../../hooks/useClosedDocumentViewMode';
 import { getDocumentLayout } from '../../api/sapLayoutApi';
-import { buildMatrixColumnsFromSapLayout, mergeLiveMatrixSettings } from '../../utils/liveDocumentLayout';
+import { fetchSalesDocumentSchema } from '../../api/salesDocumentSchemaApi';
+import { buildSalesDocumentLiveFields } from '../../utils/salesDocumentLiveFields';
+import { mergeLiveMatrixSettings } from '../../utils/liveDocumentLayout';
 import {
   fetchPurchaseQuotationByDocEntry,
   fetchPurchaseQuotationReferenceData,
@@ -52,7 +56,6 @@ import {
   fetchPurchaseRequestForCopy,
 } from '../../api/purchaseOrderApi';
 import { fetchHSNCodes } from '../../api/hsnCodeApi';
-import { PURCHASE_ORDER_COMPANY_ID } from '../../config/appConfig';
 import { summarizeFreightRows } from '../../components/freight/freightUtils';
 import { normaliseDocumentHeader, normaliseDocumentLine, unwrapCopyFromDocument } from '../../api/copyFromApi';
 import {
@@ -64,7 +67,7 @@ import {
   readSavedFormSettings,
 } from '../../config/purchaseQuotationForm';
 
-// ─── helpers ─────────────────────────────────────────────────────────────────
+// â”€â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const getErrMsg = (e, fb) => {
   const d = e?.response?.data?.detail;
   if (typeof d === 'string' && d.trim()) return d;
@@ -121,7 +124,7 @@ const findPreferredGstTaxCode = ({ taxCodes = [], gstType = '', currentTaxCode =
   return availableTaxCodes.find((taxCode) => Number(taxCode.Rate) === 18) || availableTaxCodes[0];
 };
 
-// ─── constants ────────────────────────────────────────────────────────────────
+// â”€â”€â”€ constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const DEC = { QtyDec: 2, PriceDec: 2, SumDec: 2, RateDec: 2, PercentDec: 2 };
 const TAB_NAMES = ['Contents', 'Logistics', 'Accounting', 'Tax', 'Electronic Documents', 'Attachments'];
 const GENERAL_SETTINGS = readGeneralSettings();
@@ -216,6 +219,9 @@ const INIT_HEADER = {
   documentDate: today(),
   contractDate: '',
   branchRegNo: '',
+  currencyMode: 'BP',
+  currency: '',
+  exchangeRate: '',
   shipTo: '',
   shipToCode: '',
   billTo: '',
@@ -300,10 +306,12 @@ const PURCHASE_QUOTATION_COPY_BASE_TYPE = {
   purchaseRequest: 1470000113,
 };
 
-// ─── Main Component ───────────────────────────────────────────────────────────
+// â”€â”€â”€ Main Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const FALLBACK_UOM = ['EA', 'PCS', 'KG', 'LTR', 'MTR', 'BOX', 'SET', 'NOS', 'PKT', 'DZN'];
 
 function PurchaseOrder() {
+  const { company } = useAuth();
+  const activeCompanyId = company?.companyId || '';
   const location = useLocation();
   const navigate = useNavigate();
   const { removeTask, upsertTask } = useSapWindowTaskbarActions();
@@ -317,16 +325,20 @@ function PurchaseOrder() {
   const [attachments] = useState(INIT_ATTACH);
   const [activeTab, setActiveTab] = useState('Contents');
   const [headerUdfs, setHeaderUdfs] = useState(() => createUdfState(HEADER_UDF_DEFINITIONS));
-  const [formSettings, setFormSettings, formSettingsStorageKey] = useCompanyScopedFormSettings(
+  const [formSettings, setFormSettings, formSettingsStorageKey, , formSettingsStatus] = useCompanyScopedFormSettings(
     FORM_SETTINGS_STORAGE_KEY,
     readSavedFormSettings,
     [headerUdfDefinitions, rowUdfDefinitions, matrixColumnDefinitions],
+    { saveMode: 'explicit' },
   );
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [formSettingsOpen, setFormSettingsOpen] = useState(false);
   const [refData, setRefData] = useState({
     company: '',
     company_state: '',
+    local_currency: '',
+    system_currency: '',
+    currencies: [],
     vendors: [],
     contacts: [],
     pay_to_addresses: [],
@@ -492,12 +504,12 @@ function PurchaseOrder() {
   const hasUnsavedChanges = Boolean(currentDocEntry && isDirty);
   const updateActionLabel = hasUnsavedChanges ? 'Update' : 'OK';
   const primaryActionLabel = pageState.posting
-    ? 'Saving…'
+    ? 'Savingâ€¦'
     : currentDocEntry
       ? updateActionLabel
       : 'Add';
   const secondaryActionLabel = pageState.posting
-    ? 'Saving…'
+    ? 'Savingâ€¦'
     : currentDocEntry
       ? updateActionLabel
       : 'Add & New';
@@ -512,41 +524,62 @@ function PurchaseOrder() {
     if (currentDocEntry) setIsDirty(true);
   }, [currentDocEntry]);
 
-  // ── load reference data ───────────────────────────────────────────────────
+  // â”€â”€ load reference data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     let ignore = false;
     const load = async () => {
       setPageState(p => ({ ...p, loading: true, error: '', success: '' }));
       try {
-        const [refDataRes, hsnRes, layoutRes] = await Promise.all([
-          fetchPurchaseQuotationReferenceData(PURCHASE_ORDER_COMPANY_ID),
+        setHeaderUdfDefinitions([]);
+        setRowUdfDefinitions([]);
+        setMatrixColumnDefinitions([]);
+        setHeaderUdfs({});
+        setLines([createLine([])]);
+        if (!activeCompanyId) return;
+        const [refDataRes, hsnRes, layoutRes, schema] = await Promise.all([
+          fetchPurchaseQuotationReferenceData(activeCompanyId),
           fetchHSNCodes(),
-          getDocumentLayout({ documentType: 'PURCHASE_QUOTATION' }).catch((error) => ({
+          getDocumentLayout({ documentType: 'PURCHASE_QUOTATION', companyDb: company?.dbName }).catch((error) => ({
             data: {
               success: false,
               columns: [],
               warning: getErrMsg(error, 'Failed to load SAP layout.'),
             },
           })),
+          fetchSalesDocumentSchema({ documentType: 'PURCHASE_QUOTATION' }).catch(() => null),
         ]);
 
         if (!ignore) {
-          const nextHeaderUdfs = refDataRes.data.udf_metadata?.header || [];
-          const nextRowUdfs = refDataRes.data.udf_metadata?.rows || [];
           const liveMatrixColumns = refDataRes.data.line_field_metadata?.matrix_columns?.length
             ? refDataRes.data.line_field_metadata.matrix_columns
             : BASE_MATRIX_COLUMNS;
-          const sapLayoutColumns = layoutRes?.data?.source === 'fallback'
-            ? []
-            : (layoutRes?.data?.columns || []);
-          const nextMatrixColumns = buildMatrixColumnsFromSapLayout({
-            baseColumns: liveMatrixColumns,
-            layoutColumns: sapLayoutColumns,
-            fallbackColumns: BASE_MATRIX_COLUMNS,
+          const liveFields = buildSalesDocumentLiveFields({
+            schema,
+            documentType: 'PURCHASE_QUOTATION',
+            objectType: '540000006',
+            headerTable: 'OPQT',
+            lineTable: 'PQT1',
+            companyId: activeCompanyId,
+            companyDb: company?.dbName || '',
+            layoutResponse: layoutRes,
+            referenceMatrixColumns: liveMatrixColumns,
+            referenceSapForm: refDataRes.data.line_field_metadata?.sap_form || {},
+            includeLineNumber: false,
+            safeFallbackMatrixColumns: BASE_MATRIX_COLUMNS,
+            useSafeFallbackWithoutLayout: true,
           });
+          const nextHeaderUdfs = liveFields.liveAvailable
+            ? liveFields.headerUdfFields
+            : (refDataRes.data.udf_metadata?.header || []);
+          const nextRowUdfs = liveFields.liveAvailable
+            ? liveFields.rowUdfFields
+            : (refDataRes.data.udf_metadata?.rows || []);
+          const nextMatrixColumns = liveFields.matrixColumns?.length
+            ? liveFields.matrixColumns
+            : BASE_MATRIX_COLUMNS;
           const hasSapMatrixPreferences = Boolean(
-            Number(refDataRes.data.line_field_metadata?.sap_form?.preferenceRows || 0) ||
-            sapLayoutColumns.length
+            liveFields.usedSapLayout ||
+            Number(refDataRes.data.line_field_metadata?.sap_form?.preferenceRows || 0)
           );
           setHeaderUdfDefinitions(nextHeaderUdfs);
           setRowUdfDefinitions(nextRowUdfs);
@@ -562,6 +595,9 @@ function PurchaseOrder() {
           setRefData({
             company: refDataRes.data.company || '',
             company_state: refDataRes.data.company_state || '',
+            local_currency: refDataRes.data.local_currency || refDataRes.data.company_currency || '',
+            system_currency: refDataRes.data.system_currency || refDataRes.data.company_currency || '',
+            currencies: refDataRes.data.currencies || [],
             vendors: refDataRes.data.vendors || [],
             contacts: refDataRes.data.contacts || [],
             pay_to_addresses: refDataRes.data.pay_to_addresses || [],
@@ -602,9 +638,9 @@ function PurchaseOrder() {
     };
     load();
     return () => { ignore = true; };
-  }, []);
+  }, [activeCompanyId, company?.dbName, formSettingsStorageKey]);
 
-  // ── load existing order ───────────────────────────────────────────────────
+  // â”€â”€ load existing order â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     const docEntry = location.state?.purchaseQuotationDocEntry;
     if (!docEntry) return;
@@ -684,7 +720,7 @@ function PurchaseOrder() {
     return () => { ignore = true; };
   }, [currentDocEntry]);
 
-  // ── derived / computed ────────────────────────────────────────────────────
+  // â”€â”€ derived / computed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const vendorContacts = refData.contacts.filter(c => String(c.CardCode || '') === String(header.vendor || ''));
   const contactOptions = header.contactPerson && !vendorContacts.some(c => String(c.CntctCode || '') === String(header.contactPerson || ''))
     ? [{ CardCode: header.vendor, CntctCode: header.contactPerson, Name: header.contactPerson }, ...vendorContacts]
@@ -760,7 +796,7 @@ function PurchaseOrder() {
     return branch ? branch.BPLName : branchId;
   };
 
-  // ── calculations ──────────────────────────────────────────────────────────
+  // â”€â”€ calculations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const calcLineTotal = (line) => {
     const qty = parseNum(line.quantity), price = parseNum(line.unitPrice), disc = parseNum(line.stdDiscount);
     return roundTo(qty * price * (1 - disc / 100), numDec.total);
@@ -835,7 +871,7 @@ function PurchaseOrder() {
     setHeader(prev => prev.gstType === inferredGstType ? prev : { ...prev, gstType: inferredGstType });
   }, [inferredGstType]);
 
-  // ── GST Logic - Recalculate Tax Codes ────────────────────────────────────
+  // â”€â”€ GST Logic - Recalculate Tax Codes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Automatically recalculate tax codes when place of supply or vendor changes
   useEffect(() => {
     if (true) return;
@@ -843,11 +879,11 @@ function PurchaseOrder() {
     const companyState = refData.company_address?.State || selectedBranch?.State || '';
     
     if (!companyState) {
-      console.warn('⚠️ Company state not available for tax recalculation');
+      console.warn('âš ï¸ Company state not available for tax recalculation');
       return;
     }
 
-    console.log('🔄 Recalculating Tax Codes for All Lines:', {
+    console.log('ðŸ”„ Recalculating Tax Codes for All Lines:', {
       placeOfSupply: header.placeOfSupply,
       companyState,
       gstType: '',
@@ -860,18 +896,18 @@ function PurchaseOrder() {
     setLines(updatedLines);
   }, [header.placeOfSupply, header.vendor, refData.company_address, selectedBranch, refData.items, effectiveTaxCodes]);
 
-  // ── address sync ──────────────────────────────────────────────────────────
+  // â”€â”€ address sync â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Sync branch to all lines when header branch changes
   useEffect(() => {
     if (header.branch) {
-      console.log('🔄 Syncing branch to all lines:', header.branch);
+      console.log('ðŸ”„ Syncing branch to all lines:', header.branch);
       setLines(prev => {
         const updated = prev.map(l => ({ 
           ...l, 
           branch: String(header.branch), 
           loc: String(header.branch)
         }));
-        console.log('✅ Lines updated with branch:', updated.map(l => ({ branch: l.branch, loc: l.loc })));
+        console.log('âœ… Lines updated with branch:', updated.map(l => ({ branch: l.branch, loc: l.loc })));
         return updated;
       });
     }
@@ -935,7 +971,7 @@ function PurchaseOrder() {
     });
   }, [header.vendor, vendorEffectiveBillToAddresses]);
 
-  // ── vendor details ────────────────────────────────────────────────────────
+  // â”€â”€ vendor details â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const loadVendorDetails = async (code) => {
     if (!code) {
       setRefData(p => ({ ...p, contacts: [], pay_to_addresses: [], ship_to_addresses: [], bill_to_addresses: [] }));
@@ -978,7 +1014,7 @@ function PurchaseOrder() {
       if (effectiveShipTo.length > 0) {
         const defaultShipTo = effectiveShipTo[0];
         if (defaultShipTo.State) {
-          console.log('🌍 Auto-setting Place of Supply from vendor ship-to address:', defaultShipTo.State);
+          console.log('ðŸŒ Auto-setting Place of Supply from vendor ship-to address:', defaultShipTo.State);
           setHeader(prev => ({
             ...prev,
             placeOfSupply: defaultShipTo.State,
@@ -1019,6 +1055,11 @@ function PurchaseOrder() {
       nextHeader: {
         ...hdr,
         name: m.CardName || m.Name || hdr.name,
+        currencyMode: 'BP',
+        currency: m.Currency && m.Currency !== '##'
+          ? m.Currency
+          : (hdr.currency || refData.local_currency || ''),
+        exchangeRate: '',
         paymentTerms: m.GroupNum != null ? String(m.GroupNum) : hdr.paymentTerms,
         contactPerson: '',
         shipTo: '',
@@ -1037,7 +1078,7 @@ function PurchaseOrder() {
     };
   };
 
-  // ── handlers ──────────────────────────────────────────────────────────────
+  // â”€â”€ handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    const handleHeaderChange = (e) => {
     const { name, value, type, checked } = e.target;
     setValErrors(p => ({ ...p, header: { ...p.header, [name]: '' }, form: '' }));
@@ -1088,7 +1129,11 @@ function PurchaseOrder() {
       setHeader(p => ({ ...p, [name]: sanitize(value, numDec[name]) }));
       return;
     }
-    setHeader(p => ({ ...p, [name]: type === 'checkbox' ? checked : value }));
+    setHeader(p => ({
+      ...p,
+      [name]: type === 'checkbox' ? checked : value,
+      ...(['currency', 'postingDate'].includes(name) ? { exchangeRate: '' } : {}),
+    }));
   };
 
   const handleShipToCodeChange = (e) => {
@@ -1111,6 +1156,8 @@ function PurchaseOrder() {
     setLines(prev => prev.map((line, idx) => {
       if (idx !== i) return line;
       const next = { ...line, [name]: numDec[name] !== undefined ? sanitize(value, numDec[name]) : value };
+                if (name === 'uomName') next.uomNameEdited = true;
+                if (name === 'uomCode') { next.uomName = value; next.uomNameEdited = false; }
 
       if (name === 'taxCode') {
         next.taxCodeManuallyOverridden = true;
@@ -1268,7 +1315,7 @@ function PurchaseOrder() {
     setFormSettingsOpen(p => !p);
   };
 
-  // ── Series and Auto-Numbering handlers ────────────────────────────────────
+  // â”€â”€ Series and Auto-Numbering handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleSeriesChange = async (seriesValue) => {
     if (!seriesValue) return;
 
@@ -1334,7 +1381,7 @@ function PurchaseOrder() {
     }));
   };
 
-  // ── Address Modal handlers ────────────────────────────────────────────────
+  // â”€â”€ Address Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openAddressModal = (type) => {
     const shipAddress = resolveAddressForModal(
       header.shipToCode,
@@ -1387,7 +1434,7 @@ function PurchaseOrder() {
     setAddressForm(p => ({ ...p, [name]: value }));
   };
 
-  // ── Tax Info Modal handlers ───────────────────────────────────────────────
+  // â”€â”€ Tax Info Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openTaxInfoModal = () => {
     setTaxInfoModal(true);
   };
@@ -1405,7 +1452,7 @@ function PurchaseOrder() {
     setTaxInfoForm(p => ({ ...p, [name]: value }));
   };
 
-  // ── HSN Modal handlers ────────────────────────────────────────────────────
+  // â”€â”€ HSN Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openHSNModal = (lineIndex) => {
     setHsnModal({ open: true, lineIndex });
   };
@@ -1425,7 +1472,7 @@ function PurchaseOrder() {
     closeHSNModal();
   };
 
-  // ── Business Partner Modal handlers ───────────────────────────────────────
+  // â”€â”€ Business Partner Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openBpModal = () => {
     setBpModal(true);
   };
@@ -1445,7 +1492,7 @@ function PurchaseOrder() {
     closeBpModal();
   };
 
-  // ── State Selection Modal handlers ────────────────────────────────────────
+  // â”€â”€ State Selection Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openStateModal = () => {
     setStateModal(true);
   };
@@ -1459,7 +1506,7 @@ function PurchaseOrder() {
     closeStateModal();
   };
 
-  // ── Browse Attachment handler ─────────────────────────────────────────────
+  // â”€â”€ Browse Attachment handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleBrowseAttachment = () => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -1471,7 +1518,7 @@ function PurchaseOrder() {
     input.click();
   };
 
-  // ── validation ────────────────────────────────────────────────────────────
+  // â”€â”€ validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleCopyFrom = (data, docType) => {
     const copySource = unwrapCopyFromDocument(data);
     const baseType = PURCHASE_QUOTATION_COPY_BASE_TYPE[docType] || 1470000113;
@@ -1653,7 +1700,7 @@ function PurchaseOrder() {
     return e;
   };
 
-  // ── submit ────────────────────────────────────────────────────────────────
+  // â”€â”€ submit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleSubmit = async (ev) => {
     ev.preventDefault();
     if (!isDocumentEditable) {
@@ -1681,7 +1728,7 @@ function PurchaseOrder() {
         ...line,
         udf: buildVisibleEnteredRowUdfPayload(rowUdfDefinitions, line.udf || {}, formSettings),
       }));
-      const payload = { company_id: PURCHASE_ORDER_COMPANY_ID, header: prep, lines: payloadLines, freightCharges: freightModal.freightCharges, header_udfs: headerUdfs };
+      const payload = { company_id: activeCompanyId, header: prep, lines: payloadLines, freightCharges: freightModal.freightCharges, header_udfs: headerUdfs };
       const r = currentDocEntry ? await updatePurchaseQuotation(currentDocEntry, payload) : await submitPurchaseQuotation(payload);
       const dn = r.data.doc_num ? ` Doc No: ${r.data.doc_num}.` : '';
       setSnapshotPending(false);
@@ -1714,15 +1761,14 @@ function PurchaseOrder() {
   const hasBuyerCode = Boolean(String(header.vendor || '').trim());
   const visHdrUdfs = headerUdfDefinitions.filter(f => formSettings.headerUdfs?.[f.key]?.visible !== false);
   const isRightSidebarOpen = sidebarOpen || formSettingsOpen;
-  const visibleRowUdfs = rowUdfDefinitions.filter(f => formSettings.rowUdfs?.[f.key]?.visible !== false);
 
-  // ── render ────────────────────────────────────────────────────────────────
+  // â”€â”€ render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   return (
     <form className={`po-page sap-document-page${isRightSidebarOpen ? ' po-page--sidebar-open' : ''}`} onSubmit={handleSubmit} onChangeCapture={markDirty}>
 
       {/* toolbar */}
       <div className="po-toolbar sap-document-toolbar">
-        <span className="po-toolbar__title">Purchase Quotation{currentDocEntry ? ` — #${header.docNo || currentDocEntry}` : ''}</span>
+        <span className="po-toolbar__title">Purchase Quotation{currentDocEntry ? ` â€” #${header.docNo || currentDocEntry}` : ''}</span>
         <button type="submit" className="po-btn po-btn--primary sap-document-toolbar__primary" disabled={pageState.posting}>
           {primaryActionLabel}
         </button>
@@ -1749,7 +1795,7 @@ function PurchaseOrder() {
               if (!isActive) dropdown.classList.add('active');
             }}
           >
-            Copy From ▼
+            Copy From â–¼
           </button>
           <div className="po-dropdown-menu">
             <button
@@ -1787,7 +1833,7 @@ function PurchaseOrder() {
               if (!isActive) dropdown.classList.add('active');
             }}
           >
-            Copy To ▼
+            Copy To â–¼
           </button>
           <div className="po-dropdown-menu">
             <button
@@ -1813,7 +1859,7 @@ function PurchaseOrder() {
       </div>
 
       {/* alerts */}
-      {pageState.loading && <div className="po-alert po-alert--success" style={{ marginTop: 0 }}>Loading…</div>}
+      {pageState.loading && <div className="po-alert po-alert--success" style={{ marginTop: 0 }}>Loadingâ€¦</div>}
       {pageState.error && <div className="po-alert po-alert--error">{pageState.error}</div>}
       {pageState.success && <div className="po-alert po-alert--success">{pageState.success}</div>}
       {refData.warnings?.length > 0 && (
@@ -1821,7 +1867,7 @@ function PurchaseOrder() {
           <strong>SAP warnings:</strong>
           {refData.warnings.map((w, i) => <div key={i}>{w}</div>)}
           <div style={{ marginTop: 4, color: '#555' }}>Dropdowns are showing fallback values. Connect to SAP to load live data.</div>
-          <div style={{ marginTop: 4, color: '#d00', fontWeight: 600 }}>⚠️ Tax codes shown are examples only. Use actual SAP tax codes to avoid submission errors.</div>
+          <div style={{ marginTop: 4, color: '#d00', fontWeight: 600 }}>âš ï¸ Tax codes shown are examples only. Use actual SAP tax codes to avoid submission errors.</div>
         </div>
       )}
 
@@ -1829,7 +1875,7 @@ function PurchaseOrder() {
         <div className={`po-layout${isRightSidebarOpen ? ' is-sidebar-open' : ''}`}>
           <div className="po-layout__main">
 
-            {/* ══ HEADER CARD ══════════════════════════════════════════════ */}
+            {/* â•â• HEADER CARD â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             <div className="po-header-card">
               <div className="po-document-header-grid">
                 {/* LEFT COLUMN */}
@@ -1892,6 +1938,18 @@ function PurchaseOrder() {
                         ))}
                       </select>
                     </div>
+
+                    <DocumentCurrencySelect
+                      classPrefix="po"
+                      header={header}
+                      onHeaderChange={handleHeaderChange}
+                      businessPartners={refData.vendors || []}
+                      currencyOptions={refData.currencies || []}
+                      localCurrency={refData.local_currency || ''}
+                      systemCurrency={refData.system_currency || refData.local_currency || ''}
+                      fallbackLocalCurrency=""
+                      disabled={!header.vendor || Boolean(currentDocEntry)}
+                    />
 
                     {/* Place of Supply */}
                     <div className="po-field">
@@ -2062,7 +2120,7 @@ function PurchaseOrder() {
               </div>
             </div>
 
-            {/* ══ TABS ══════════════════════════════════════════════════════ */}
+            {/* â•â• TABS â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             <div className="po-tabs">
               {TAB_NAMES.map(t => (
                 <button
@@ -2076,7 +2134,7 @@ function PurchaseOrder() {
               ))}
             </div>
 
-            {/* ══ TAB CONTENT ═══════════════════════════════════════════════ */}
+            {/* â•â• TAB CONTENT â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {activeTab === 'Contents' && (
               <ContentsTab
                 lines={lines}
@@ -2095,7 +2153,7 @@ function PurchaseOrder() {
                 hsnCodes={refData.hsn_codes || []}
                 formSettings={formSettings}
                 matrixFields={matrixColumnDefinitions}
-                rowUdfFields={visibleRowUdfs}
+                rowUdfFields={rowUdfDefinitions}
                 onRowUdfChange={handleRowUdfChange}
                 valErrors={valErrors}
               />
@@ -2134,7 +2192,7 @@ function PurchaseOrder() {
               <AttachmentsTab attachments={attachments} onBrowseAttachment={handleBrowseAttachment} />
             )}
 
-            {/* ══ TOTALS FOOTER ═════════════════════════════════════════════ */}
+            {/* â•â• TOTALS FOOTER â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             <div className="po-header-card">
               <div className="po-field-grid" style={{ gridTemplateColumns: '1fr 1fr' }}>
                 <div>
@@ -2220,7 +2278,7 @@ function PurchaseOrder() {
               </div>
             </div>
 
-            {/* ══ ACTION BUTTONS ════════════════════════════════════════════ */}
+            {/* â•â• ACTION BUTTONS â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {false && (
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '12px', marginBottom: '12px', gap: '8px' }}>
               <div style={{ display: 'flex', gap: '8px' }}>
@@ -2246,7 +2304,7 @@ function PurchaseOrder() {
                       if (!isActive) dropdown.classList.add('active');
                     }}
                   >
-                    Copy From ▼
+                    Copy From â–¼
                   </button>
                   <div className="po-dropdown-menu">
                     <button
@@ -2276,7 +2334,7 @@ function PurchaseOrder() {
                       if (!isActive) dropdown.classList.add('active');
                     }}
                   >
-                    Copy To ▼
+                    Copy To â–¼
                   </button>
                   <div className="po-dropdown-menu">
                     <button
@@ -2315,9 +2373,17 @@ function PurchaseOrder() {
             onClose={() => setFormSettingsOpen(false)}
             matrixFields={matrixColumnDefinitions}
             headerUdfFields={headerUdfDefinitions}
-            rowUdfFields={rowUdfDefinitions}
+            rowUdfFields={[]}
             formSettings={formSettings}
-            onSettingChange={updateFormSetting}
+          onSettingChange={updateFormSetting}
+          onColumnOrderChange={formSettingsStatus.reorder}
+          settingsLoaded={formSettingsStatus.loaded}
+          isSaving={formSettingsStatus.saving}
+          hasUnsavedChanges={formSettingsStatus.hasUnsavedChanges}
+          saveError={formSettingsStatus.error}
+          onSave={formSettingsStatus.save}
+          onCancel={formSettingsStatus.discard}
+          settingsScopeLabel={formSettingsStatus.scopeLabel}
           />
         </div>
 

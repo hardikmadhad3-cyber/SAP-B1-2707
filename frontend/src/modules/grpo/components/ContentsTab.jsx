@@ -5,6 +5,7 @@ import { GRPO_LINE_UDF_FIELD_MAP } from '../../../config/grpoForm';
 import { getLineTotalsForDisplay } from '../../../utils/lineTotals';
 import { useSapItemCodeTab } from '../../../utils/sapTabNavigation';
 import { normalizeUdfLookupKey } from '../grpoLineUdfMapping';
+import { getOrderedVisibleMatrixColumns } from '../../../utils/formSettingsColumns';
 
 const normalizeFieldIdentity = (field = {}) =>
   [
@@ -72,6 +73,12 @@ const getUdfFieldForColumn = (column, rowUdfFieldMap, rowUdfTokenMap) => {
   return null;
 };
 
+const isLiveUdfColumn = (column = {}) => (
+  Boolean(column.isUdf)
+  || String(column.key || '').trim().toUpperCase().startsWith('U_')
+  || String(column.sapField || '').trim().toUpperCase().startsWith('U_')
+);
+
 const getSapPairDropdownOptions = (field) => {
   const options = Array.isArray(field.options) ? field.options : [];
   if (options.length) return options;
@@ -135,6 +142,7 @@ export default function ContentsTab({
   valErrors,
   visibleColumns,
   visibleRowUdfs,
+  onRowUdfChange,
   formSettings,
 }) {
   const sapItemTab = useSapItemCodeTab({ lineItemOptions, onLineChange, onOpenItemModal });
@@ -150,7 +158,24 @@ export default function ContentsTab({
     ),
     [visibleRowUdfs]
   );
-  const displayColumns = Array.isArray(visibleColumns) ? visibleColumns : [];
+  const liveColumns = (Array.isArray(visibleColumns) ? visibleColumns : [])
+    .map((column) => {
+      const field = isLiveUdfColumn(column)
+        ? (column.field
+          || rowUdfFieldMap.get(column.key)
+          || rowUdfTokenMap.get(normalizeUdfLookupKey(column.key)))
+        : getUdfFieldForColumn(column, rowUdfFieldMap, rowUdfTokenMap);
+      return isLiveUdfColumn(column) ? { ...column, field } : column;
+    })
+    .filter((column) => (
+      !isLiveUdfColumn(column)
+      || (
+        Boolean(column.field)
+        && (formSettings.matrixColumns?.[column.key] || formSettings.rowUdfs?.[column.field.key] || {}).visible !== false
+        && column.visible !== false
+      )
+    ));
+  const displayColumns = getOrderedVisibleMatrixColumns(liveColumns, formSettings);
   const tableMinWidth = INDEX_COL_WIDTH + ACTION_COL_WIDTH + displayColumns.reduce(
     (total, col) => total + getColumnWidth(col),
     0
@@ -198,6 +223,51 @@ export default function ContentsTab({
         disabled={disabled}
         onChange={e => onLineChange(index, e)}
         onBlur={() => onNumBlur && onNumBlur(col.key, 'line', index)}
+      />
+    );
+  };
+
+  const renderLiveUdfInput = (line, index, col, isActive) => {
+    const field = col.field;
+    const disabled = !isActive || field.active === false || field.readOnly === true;
+    const value = line.udf?.[field.key] ?? '';
+    const updateValue = (nextValue) => onRowUdfChange && onRowUdfChange(index, field.key, nextValue);
+
+    if (field.type === 'select' || (field.options || []).length || isSapPairDropdownField(field)) {
+      return (
+        <select
+          className="so-grid__input"
+          value={value}
+          disabled={disabled}
+          onChange={(event) => updateValue(event.target.value)}
+        >
+          <option value=""></option>
+          {getSapPairDropdownOptions(field).map((option) => {
+            const normalized = normalizeSapPairDropdownOption(field, option);
+            return <option key={normalized.value} value={normalized.value}>{normalized.label}</option>;
+          })}
+        </select>
+      );
+    }
+
+    if (field.type === 'checkbox') {
+      return (
+        <input
+          type="checkbox"
+          checked={['Y', 'YES', 'TRUE', '1', 'TYES'].includes(String(value).trim().toUpperCase())}
+          disabled={disabled}
+          onChange={(event) => updateValue(event.target.checked ? 'Y' : 'N')}
+        />
+      );
+    }
+
+    return (
+      <input
+        className="so-grid__input"
+        type={field.type === 'date' ? 'date' : field.type === 'number' ? 'number' : 'text'}
+        value={value}
+        disabled={disabled}
+        onChange={(event) => updateValue(event.target.value)}
       />
     );
   };
@@ -278,6 +348,17 @@ export default function ContentsTab({
                 {displayColumns.map(col => {
                   const isActive = formSettings.matrixColumns[col.key]?.active !== false;
                   const isTotal = col.key === 'total' || col.key === 'totalBeforeTax';
+
+                  if (isLiveUdfColumn(col) && col.field) return (
+                    <td key={col.key}>
+                      {renderLiveUdfInput(
+                        line,
+                        index,
+                        col,
+                        (formSettings.matrixColumns?.[col.key] || formSettings.rowUdfs?.[col.field.key] || {}).active !== false
+                      )}
+                    </td>
+                  );
 
                   if (col.key === 'itemNo') return (
                     <td key={col.key}>
@@ -377,10 +458,9 @@ export default function ContentsTab({
                       <input
                         className="so-grid__input"
                         name="uomName"
-                        value={line.uomName || line.uomCode || ''}
-                        readOnly
-                        disabled
-                        style={{ background: '#f5f8fc' }}
+                        value={line.uomNameEdited ? (line.uomName ?? '') : (line.uomName || line.uomCode || '')}
+                        disabled={!isActive}
+                        onChange={(e) => onLineChange(index, e)}
                       />
                     </td>
                   );

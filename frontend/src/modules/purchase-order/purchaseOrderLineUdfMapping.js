@@ -104,7 +104,9 @@ export const buildPurchaseOrderLineUdfPayload = (line = {}, rowUdfDefinitions = 
   Object.entries(PURCHASE_ORDER_LINE_UDF_FIELD_MAP).forEach(([lineKey, udfKey]) => {
     const value = line[lineKey];
     const udfKeys = Array.isArray(udfKey) ? udfKey : [udfKey];
-    const actualUdfKey = udfKeys.map((key) => knownUdfKeyByToken.get(normalizePurchaseOrderUdfKey(key))).find(Boolean) || udfKeys[0];
+    const actualUdfKey = udfKeys
+      .map((key) => knownUdfKeyByToken.get(normalizePurchaseOrderUdfKey(key)))
+      .find(Boolean);
     if (actualUdfKey && value !== undefined && value !== null && String(value).trim() !== '') {
       udf[actualUdfKey] = value;
     }

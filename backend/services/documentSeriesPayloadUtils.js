@@ -6,7 +6,7 @@ const isManualDocumentSeries = (value) => {
 };
 
 const getManualDocumentNumber = (header = {}) => {
-  const rawValue = header.manualDocumentNumber ?? header.nextNumber ?? header.docNo;
+  const rawValue = header.nextNumber ?? header.manualDocumentNumber ?? header.docNo;
   const normalized = String(rawValue ?? '').trim();
   const documentNumber = Number(normalized);
 
@@ -23,6 +23,7 @@ const buildDocumentSeriesPayload = (header = {}) => {
   if (isManualDocumentSeries(header.series)) {
     return {
       Series: SAP_MANUAL_SERIES,
+      HandWritten: 'tYES',
       DocNum: getManualDocumentNumber(header),
     };
   }

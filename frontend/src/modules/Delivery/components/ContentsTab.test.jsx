@@ -82,6 +82,28 @@ test('does not show hard-coded company fields while the live Delivery schema is 
   expect(screen.queryByText('Packing-Type')).not.toBeInTheDocument();
 });
 
+test('configured lookup overrides the specialized Delivery item renderer', () => {
+  renderContentsTab([{
+    key: 'itemNo',
+    valueKey: 'itemNo',
+    rendererKey: 'itemNo',
+    fieldName: 'ItemCode',
+    label: 'Item No.',
+    active: true,
+    readOnly: false,
+    importedLayout: true,
+    schemaDriven: true,
+    lookupConfigured: true,
+    lookupSource: 'countries',
+    lookup: { source: 'countries', fieldId: 'DLN1.ItemCode' },
+  }], {
+    lines: [{ itemNo: '' }],
+    onLoadLookupOptions: jest.fn().mockResolvedValue([]),
+  });
+
+  expect(screen.getByTitle('List of Item No.')).toBeEnabled();
+});
+
 test('applies the logged-in user matrix visibility setting to a Delivery row UDF', () => {
   renderContentsTab([
     { key: 'U_AgentMaster', label: 'Agent Master', isUdf: true, importedLayout: true },

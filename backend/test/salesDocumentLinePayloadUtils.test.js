@@ -124,6 +124,21 @@ test('QUT1 writable standard fields serialize from live canonical values', async
   });
 });
 
+test('skips negative SAP location codes from copied document lines', async () => {
+  const line = await buildMetadataValidatedStandardLine({
+    line: {
+      itemNo: 'I-101',
+      quantity: '1',
+      unitPrice: '10',
+      whse: '01',
+      loc: '-1',
+    },
+    fieldMetadata: QUT1_FIELDS,
+  });
+
+  assert.equal(Object.prototype.hasOwnProperty.call(line, 'LocationCode'), false);
+});
+
 test('ShipDate is canonical on INV1/RIN1 while quotation RequiredDate is physical-field gated', async () => {
   const source = {
     itemNo: 'I-200',
@@ -180,6 +195,72 @@ test('an unsupported numeric UoM entry is never mislabeled as UoMCode', async ()
   assert.equal(Object.hasOwn(line, 'UoMCode'), false);
 });
 
+test('edited UoM Name serializes as MeasureUnit when no UoM entry is resolved', async () => {
+  const line = await buildMetadataValidatedStandardLine({
+    line: { itemNo: 'I-252', quantity: 1, unitPrice: 1, uomName: 'Mtr.', uomNameEdited: true },
+    fieldMetadata: { UomCode: 'nvarchar' },
+  });
+
+  assert.equal(line.MeasureUnit, 'Mtr.');
+  assert.equal(Object.hasOwn(line, 'UoMCode'), false);
+});
+test('edited UoM Name overrides a loaded UoMEntry', async () => {
+  const resolverCalls = [];
+  const line = await buildMetadataValidatedStandardLine({
+    line: {
+      itemNo: 'I-254',
+      quantity: 1,
+      unitPrice: 1,
+      uomEntry: 7,
+      uomCode: 'MTR',
+      uomName: 'KGS',
+      uomNameEdited: true,
+    },
+    fieldMetadata: { UomEntry: 'int', UomCode: 'nvarchar' },
+    resolveUomEntry: async (itemCode, uomValue) => {
+      resolverCalls.push([itemCode, uomValue]);
+      return 9;
+    },
+  });
+
+  assert.deepEqual(resolverCalls, [['I-254', 'KGS']]);
+  assert.equal(line.UoMEntry, 9);
+  assert.equal(Object.hasOwn(line, 'UoMCode'), false);
+});
+
+test('does not use the default UoM fallback for an edited UoM Name', async () => {
+  const resolverCalls = [];
+  const line = await buildMetadataValidatedStandardLine({
+    line: {
+      itemNo: 'I-256',
+      quantity: 1,
+      unitPrice: 1,
+      uomEntry: 7,
+      uomCode: 'MTR',
+      uomName: 'KGS',
+      uomNameEdited: true,
+    },
+    fieldMetadata: { UomEntry: 'int', UomCode: 'nvarchar' },
+    resolveUomEntry: async (itemCode, uomValue, options) => {
+      resolverCalls.push([itemCode, uomValue, options]);
+      return null;
+    },
+  });
+
+  assert.deepEqual(resolverCalls, [['I-256', 'KGS', { allowDefaultFallback: false }]]);
+  assert.equal(Object.hasOwn(line, 'UoMEntry'), false);
+  assert.equal(Object.hasOwn(line, 'UoMCode'), false);
+  assert.equal(line.MeasureUnit, 'KGS');
+});
+
+test('does not restore UoMCode after UoM Name is cleared', async () => {
+  const line = await buildMetadataValidatedStandardLine({
+    line: { itemNo: 'I-253', quantity: 1, unitPrice: 1, uomName: '', uomCode: 'MTR', uomNameEdited: true },
+    fieldMetadata: { UomCode: 'nvarchar' },
+  });
+
+  assert.equal(Object.hasOwn(line, 'UoMCode'), false);
+});
 test('PATCH callers can explicitly clear a supported discount without changing create defaults', async () => {
   const source = { itemNo: 'I-255', quantity: 1, unitPrice: 10, stdDiscount: '' };
   const createLine = await buildMetadataValidatedStandardLine({

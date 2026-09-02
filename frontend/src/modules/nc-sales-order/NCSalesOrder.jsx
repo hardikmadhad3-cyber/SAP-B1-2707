@@ -74,7 +74,7 @@ import {
     readSavedFormSettings,
 } from '../../config/ncSalesOrderForm';
 
-// ─── helpers ─────────────────────────────────────────────────────────────────
+// â”€â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const getErrMsg = (e, fb) => {
     const d = e?.response?.data?.detail;
     if (typeof d === 'string' && d.trim()) return d;
@@ -385,7 +385,7 @@ const applyChangedUdfPatch = (current, patch) => {
     return hasChanges ? { ...current, ...patch } : current;
 };
 
-// ─── static fallbacks ────────────────────────────────────────────────────────
+// â”€â”€â”€ static fallbacks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const FALLBACK_PAYMENT_TERMS = [
     { value: '0', label: 'Immediate' },
     { value: '1', label: 'Net 30' },
@@ -406,7 +406,7 @@ const FALLBACK_WAREHOUSES = [
     { WhsCode: 'WH01', WhsName: 'Main Warehouse' },
     { WhsCode: 'WH02', WhsName: 'Secondary Warehouse' },
 ];
-// ─── constants ────────────────────────────────────────────────────────────────
+// â”€â”€â”€ constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const DEC = { QtyDec: 2, PriceDec: 2, SumDec: 2, RateDec: 2, PercentDec: 2 };
 const TAB_NAMES = ['Contents', 'Logistics', 'Accounting', 'Tax', 'Electronic Documents', 'Attachments'];
 
@@ -463,7 +463,7 @@ const closeDocumentDropdowns = () => {
     document.querySelectorAll('.so-dropdown').forEach(d => d.classList.remove('active'));
 };
 
-// ─── Main Component ───────────────────────────────────────────────────────────
+// â”€â”€â”€ Main Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function NCSalesOrder() {
     const location = useLocation();
     const navigate = useNavigate();
@@ -485,10 +485,12 @@ function NCSalesOrder() {
     const [attachments] = useState(INIT_ATTACH);
     const [activeTab, setActiveTab] = useState('Contents');
     const [headerUdfs, setHeaderUdfs] = useState(() => normalizeUdfState(HEADER_UDF_DEFINITIONS));
-    const [formSettings, setFormSettings] = useCompanyScopedFormSettings(
+  const [formSettings, setFormSettings, , , formSettingsStatus] = useCompanyScopedFormSettings(
         FORM_SETTINGS_STORAGE_KEY,
-        readSavedFormSettings,
-    );
+    readSavedFormSettings,
+    [],
+    { saveMode: 'explicit' },
+  );
     const [sidebarOpen, setSidebarOpen] = useState(true);
     const [formSettingsOpen, setFormSettingsOpen] = useState(false);
     const [refData, setRefData] = useState({
@@ -647,7 +649,7 @@ function NCSalesOrder() {
             ? updateActionLabel
             : 'Add';
     const secondaryActionLabel = pageState.posting
-        ? 'Saving…'
+        ? 'Savingâ€¦'
         : currentDocEntry
             ? updateActionLabel
             : 'Add & New';
@@ -666,7 +668,7 @@ function NCSalesOrder() {
 
     // Continue in next part...
 
-    // ── load reference data ───────────────────────────────────────────────────
+    // â”€â”€ load reference data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     useEffect(() => {
         let ignore = false;
         const load = async () => {
@@ -706,9 +708,9 @@ function NCSalesOrder() {
                     fetchHSNCodes(),
                 ]);
 
-                // ═══ LOGGING: Reference Data ═══
-                console.log('═══════════════════════════════════════════════════');
-                console.log('📚 Reference Data Loaded:');
+                // â•â•â• LOGGING: Reference Data â•â•â•
+                console.log('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
+                console.log('ðŸ“š Reference Data Loaded:');
                 console.log('  - Vendors/Customers:', refDataRes.data.vendors?.length || 0);
                 console.log('  - Items:', refDataRes.data.items?.length || 0);
                 console.log('  - Tax Codes:', refDataRes.data.tax_codes?.length || 0);
@@ -720,28 +722,28 @@ function NCSalesOrder() {
                 console.log('  - HSN Codes:', hsnRes.data?.length || 0);
                 console.log('  - Sales Employees:', refDataRes.data.sales_employees?.length || 0);
                 console.log('  - Owners:', refDataRes.data.owners?.length || 0);
-                console.log('───────────────────────────────────────────────────');
-                console.log('🏢 Company Address:', refDataRes.data.company_address);
-                console.log('⚙️  Decimal Settings:', refDataRes.data.decimal_settings);
-                console.log('⚠️  Warnings:', refDataRes.data.warnings);
-                console.log('───────────────────────────────────────────────────');
-                console.log('💰 TAX CODES LOADED:');
+                console.log('â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€');
+                console.log('ðŸ¢ Company Address:', refDataRes.data.company_address);
+                console.log('âš™ï¸  Decimal Settings:', refDataRes.data.decimal_settings);
+                console.log('âš ï¸  Warnings:', refDataRes.data.warnings);
+                console.log('â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€');
+                console.log('ðŸ’° TAX CODES LOADED:');
                 (refDataRes.data.tax_codes || []).forEach(tc => {
                     console.log(`  ${tc.Code} - ${tc.Name} (Rate: ${tc.Rate}%, Type: ${tc.GSTType || 'N/A'})`);
                 });
                 if (refDataRes.data.sales_employees && refDataRes.data.sales_employees.length > 0) {
-                    console.log('👥 SALES EMPLOYEES LOADED:');
+                    console.log('ðŸ‘¥ SALES EMPLOYEES LOADED:');
                     refDataRes.data.sales_employees.forEach(emp => {
                         console.log(`  ${emp.SlpName} (Code: ${emp.SlpCode})`);
                     });
                 }
                 if (refDataRes.data.owners && refDataRes.data.owners.length > 0) {
-                    console.log('👤 OWNERS LOADED:');
+                    console.log('ðŸ‘¤ OWNERS LOADED:');
                     refDataRes.data.owners.forEach(owner => {
                         console.log(`  ${owner.FullName} (empID: ${owner.empID})`);
                     });
                 }
-                console.log('═══════════════════════════════════════════════════');
+                console.log('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
 
                 if (!ignore) {
                     const nextHeaderUdfs = refDataRes.data.udf_metadata?.header || [];
@@ -802,7 +804,7 @@ function NCSalesOrder() {
                     }));
                 }
             } catch (e) {
-                console.error('❌ Error loading reference data:', e);
+                console.error('âŒ Error loading reference data:', e);
                 if (!ignore) setPageState(p => ({ ...p, error: getErrMsg(e, 'Failed to load reference data.') }));
             } finally {
                 if (!ignore) setPageState(p => ({ ...p, loading: false }));
@@ -812,7 +814,7 @@ function NCSalesOrder() {
         return () => { ignore = true; };
     }, [activeCompanyId]);
 
-    // ── load existing order ───────────────────────────────────────────────────
+    // â”€â”€ load existing order â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     useEffect(() => {
         if (currentDocEntry) return;
 
@@ -887,9 +889,9 @@ function NCSalesOrder() {
                     editSeries = [];
                 }
 
-                console.log('📥 Loaded NC Sales Order:', so);
-                console.log('📥 Header data:', so.header);
-                console.log('📥 Series:', so.header?.series);
+                console.log('ðŸ“¥ Loaded NC Sales Order:', so);
+                console.log('ðŸ“¥ Header data:', so.header);
+                console.log('ðŸ“¥ Series:', so.header?.series);
 
                 if (ignore || !so) return;
                 setCurrentDocEntry(so.doc_entry || Number(docEntry));
@@ -897,14 +899,14 @@ function NCSalesOrder() {
                 // Get warehouse from first line if available
                 const firstLineWarehouse = so.lines && so.lines.length > 0 ? so.lines[0].whse : '';
 
-                console.log('📥 EDIT DATA - Sales Employee:', so.header?.salesEmployee, 'Code:', so.header?.salesEmployee);
-                console.log('📥 EDIT DATA - Purchaser:', so.header?.purchaser);
-                console.log('📥 EDIT DATA - Owner:', so.header?.owner);
-                console.log('📥 EDIT DATA - Remarks:', so.header?.remarks);
-                console.log('📥 EDIT DATA - Other Instruction:', so.header?.otherInstruction);
-                console.log('📥 EDIT DATA - Freight:', so.header?.freight);
-                console.log('📥 EDIT DATA - refData.sales_employees:', refData.sales_employees?.length || 0);
-                console.log('📥 EDIT DATA - refData.owners:', refData.owners?.length || 0);
+                console.log('ðŸ“¥ EDIT DATA - Sales Employee:', so.header?.salesEmployee, 'Code:', so.header?.salesEmployee);
+                console.log('ðŸ“¥ EDIT DATA - Purchaser:', so.header?.purchaser);
+                console.log('ðŸ“¥ EDIT DATA - Owner:', so.header?.owner);
+                console.log('ðŸ“¥ EDIT DATA - Remarks:', so.header?.remarks);
+                console.log('ðŸ“¥ EDIT DATA - Other Instruction:', so.header?.otherInstruction);
+                console.log('ðŸ“¥ EDIT DATA - Freight:', so.header?.freight);
+                console.log('ðŸ“¥ EDIT DATA - refData.sales_employees:', refData.sales_employees?.length || 0);
+                console.log('ðŸ“¥ EDIT DATA - refData.owners:', refData.owners?.length || 0);
 
                 if (editSeries.length) {
                     setRefData(prev => ({
@@ -961,7 +963,7 @@ function NCSalesOrder() {
                     }),
                 };
 
-                console.log('📥 Final header state:', newHeader);
+                console.log('ðŸ“¥ Final header state:', newHeader);
                 setHeader(newHeader);
                 setFreightModal({ open: false, freightCharges: [], loading: false });
 
@@ -984,6 +986,7 @@ function NCSalesOrder() {
                                 hsnCode: hsnCode,
                                 stcode: l.stcode || '',
                                 uomName: l.uomName || l.uomCode || '',
+                                uomNameEdited: l.uomNameEdited,
                                 documentCreated: l.documentCreated || so.header?.documentCreated || '',
                                 loc: l.loc || resolveLineLocation(l.whse, l.branch || so.header?.branch || header.branch),
                                 udf: normalizeUdfState(rowUdfDefinitions, l.udf || {})
@@ -1049,7 +1052,7 @@ function NCSalesOrder() {
         return () => { ignore = true; };
     }, [currentDocEntry]);
 
-    // ── derived / computed ────────────────────────────────────────────────────
+    // â”€â”€ derived / computed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const vendorContacts = useMemo(
         () => refData.contacts.filter(c => String(c.CardCode || '') === String(header.vendor || '')),
         [refData.contacts, header.vendor],
@@ -1380,7 +1383,7 @@ function NCSalesOrder() {
         getWarehouseLocation(warehouseCode) || getBranchName(branchId) || ''
     ), [getBranchName, getWarehouseLocation]);
 
-    // ── calculations ──────────────────────────────────────────────────────────
+    // â”€â”€ calculations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const getLineDiscountAmount = (line) => {
         const explicitDiscount = String(line.discountAmount ?? '').trim();
         if (explicitDiscount) return parseNum(explicitDiscount);
@@ -1464,7 +1467,7 @@ function NCSalesOrder() {
         total: totals.total,
     });
 
-    // ── GST determination logic ───────────────────────────────────────────────
+    // â”€â”€ GST determination logic â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const determineGSTType = (gstState) => {
         if (!gstState) return 'IGST';
 
@@ -1508,19 +1511,19 @@ function NCSalesOrder() {
         return taxCodes.length > 0 ? taxCodes[0].Code : '';
     };
 
-    // ── address sync ──────────────────────────────────────────────────────────
+    // â”€â”€ address sync â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Sync branch to all lines when header branch changes
     useEffect(() => {
        if (copyFromMode || isCopyFromClick) return;
         if (header.branch) {
-            console.log('🔄 Syncing branch to all lines:', header.branch);
+            console.log('ðŸ”„ Syncing branch to all lines:', header.branch);
             setLines(prev => {
                 const updated = prev.map(l => ({
                     ...l,
                     branch: String(header.branch),
                     loc: resolveLineLocation(l.whse || header.warehouse, header.branch)
                 }));
-                console.log('✅ Lines updated with branch:', updated.map(l => ({ branch: l.branch, loc: l.loc })));
+                console.log('âœ… Lines updated with branch:', updated.map(l => ({ branch: l.branch, loc: l.loc })));
                 return updated;
             });
         }
@@ -1567,7 +1570,7 @@ function NCSalesOrder() {
                 const selectedWarehouse = refData.warehouses.find(w => w.WhsCode === header.warehouse);
                 if (selectedWarehouse && selectedWarehouse.BranchID &&
                     String(selectedWarehouse.BranchID) !== String(header.branch)) {
-                    console.warn(`⚠️ Warehouse "${header.warehouse}" is assigned to Branch ${selectedWarehouse.BranchID}, but document is for Branch ${header.branch}`);
+                    console.warn(`âš ï¸ Warehouse "${header.warehouse}" is assigned to Branch ${selectedWarehouse.BranchID}, but document is for Branch ${header.branch}`);
                     setPageState(p => ({
                         ...p,
                         error: `Warning: Warehouse "${header.warehouse}" is assigned to a different branch. This may cause submission errors.`
@@ -1577,7 +1580,7 @@ function NCSalesOrder() {
         }
     }, [header.warehouse, header.branch, refData.warehouses]);
 
-    // ── Recalculate Tax Codes on State/Address Changes ────────────────────────
+    // â”€â”€ Recalculate Tax Codes on State/Address Changes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     useEffect(() => {
         if (currentDocEntry) return;
         if (!header.vendor || !header.placeOfSupply) return;
@@ -1585,11 +1588,11 @@ function NCSalesOrder() {
         const companyState = refData.company_address?.State || selectedBranch?.State || '';
 
         if (!companyState) {
-            console.warn('⚠️ Company state not available for tax recalculation');
+            console.warn('âš ï¸ Company state not available for tax recalculation');
             return;
         }
 
-        console.log('🔄 Recalculating Tax Codes for All Lines:', {
+        console.log('ðŸ”„ Recalculating Tax Codes for All Lines:', {
             placeOfSupply: header.placeOfSupply,
             companyState,
             gstType: getGSTTypeLabel(companyState, header.placeOfSupply),
@@ -1684,7 +1687,7 @@ function NCSalesOrder() {
         );
     }, [currentDocEntry, header.placeOfSupply, header.vendor]);
 
-    // ── vendor details ────────────────────────────────────────────────────────
+    // â”€â”€ vendor details â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const loadVendorDetails = async (code) => {
         if (!code) {
             setRefData(p => ({ ...p, contacts: [], pay_to_addresses: [], ship_to_addresses: [], bill_to_addresses: [] }));
@@ -1713,7 +1716,7 @@ function NCSalesOrder() {
             }
 
         } catch (err) {
-            console.error('❌ Error loading vendor details:', err);
+            console.error('âŒ Error loading vendor details:', err);
             console.error('Error response:', err.response?.data);
             setRefData(p => ({ ...p, contacts: [], pay_to_addresses: [], ship_to_addresses: [], bill_to_addresses: [] }));
         } finally {
@@ -1748,7 +1751,7 @@ function NCSalesOrder() {
         };
     };
 
-    // ── handlers ──────────────────────────────────────────────────────────────
+    // â”€â”€ handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const handleHeaderChange = (e) => {
         const { name, value, type, checked } = e.target;
         setValErrors(p => ({ ...p, header: { ...p.header, [name]: '' }, form: '' }));
@@ -1798,7 +1801,7 @@ function NCSalesOrder() {
             return;
         }
 
-        // ✅ FIX: When purchaser (Sales Employee name) changes, update salesEmployee (code) too
+        // âœ… FIX: When purchaser (Sales Employee name) changes, update salesEmployee (code) too
         if (name === 'purchaser') {
             if (value === '__DEFINE_NEW__') {
                 openSalesEmployeeSetup();
@@ -1813,7 +1816,7 @@ function NCSalesOrder() {
                 salesEmployee: selectedEmployee ? String(selectedEmployee.SlpCode) : '-1'
             }));
 
-            console.log('🔄 Sales Employee changed:', {
+            console.log('ðŸ”„ Sales Employee changed:', {
                 name: value,
                 code: selectedEmployee ? selectedEmployee.SlpCode : '-1'
             });
@@ -1901,7 +1904,7 @@ function NCSalesOrder() {
                     const hsnResponse = await fetchHSNCodeFromItem(value);
                     const hsnData = hsnResponse.data;
 
-                    console.log('🔍 Item Selected - HSN Data:', {
+                    console.log('ðŸ” Item Selected - HSN Data:', {
                         itemCode: value,
                         hsnCode: hsnData.hsnCode,
                         hsnDescription: hsnData.hsnDescription,
@@ -1929,7 +1932,7 @@ function NCSalesOrder() {
                         // Step 3: Get Base Tax Code from Item Master
                         const baseTaxCode = item.TaxCodeAR || item.SalTaxCode || '';
 
-                        console.log('🔍 Item Selected:', {
+                        console.log('ðŸ” Item Selected:', {
                             itemCode: item.ItemCode,
                             itemName: item.ItemName,
                             hsnCode: next.hsnCode,
@@ -1943,7 +1946,7 @@ function NCSalesOrder() {
 
                         // Step 5: Validate States
                         if (!gstState || !companyState) {
-                            console.warn('⚠️ Missing state information for tax determination');
+                            console.warn('âš ï¸ Missing state information for tax determination');
                             next.taxCode = '';
                             next.stcode = next.stcode || '';
                         } else {
@@ -1960,12 +1963,12 @@ function NCSalesOrder() {
                             if (determinedTaxCode) {
                                 next.taxCode = determinedTaxCode;
                                 next.stcode = next.stcode || '';
-                                console.log('✅ Tax Code Auto-Selected:', {
+                                console.log('âœ… Tax Code Auto-Selected:', {
                                     gstType: getGSTTypeLabel(companyState, gstState),
                                     taxCode: determinedTaxCode
                                 });
                             } else {
-                                console.warn('⚠️ Could not determine tax code');
+                                console.warn('âš ï¸ Could not determine tax code');
                                 next.taxCode = '';
                                 next.stcode = next.stcode || '';
                             }
@@ -1975,7 +1978,7 @@ function NCSalesOrder() {
                     }));
                 }
             } catch (error) {
-                console.error('❌ Error fetching HSN code:', error);
+                console.error('âŒ Error fetching HSN code:', error);
                 // Fallback to reference data if API fails
                 setLines(prev => prev.map((line, idx) => {
                     if (idx !== i) return line;
@@ -2001,6 +2004,7 @@ function NCSalesOrder() {
             setLines(prev => prev.map((line, idx) => {
                 if (idx !== i) return line;
                 const next = { ...line, [name]: numDec[name] !== undefined ? sanitize(value, numDec[name]) : value };
+                if (name === 'uomName') next.uomNameEdited = true;
                 if (name === 'unitPrice') {
                     if (String(next.discountAmount ?? '').trim()) {
                         next.stdDiscount = fmtDec(roundTo(getLineDiscountPercent(next), numDec.stdDiscount), numDec.stdDiscount);
@@ -2017,7 +2021,7 @@ function NCSalesOrder() {
                         ? fmtDec(roundTo(price * parseNum(next.stdDiscount) / 100, numDec.discountAmount), numDec.discountAmount)
                         : '';
                 }
-                if (name === 'uomCode') next.uomName = value;
+                if (name === 'uomCode') { next.uomName = value; next.uomNameEdited = false; }
                 if (name === 'taxCode') next.stcode = next.stcode || '';
                 if (name === 'whse') next.loc = resolveLineLocation(next.whse, next.branch || header.branch);
                 return applyLineCalculatedFields(next);
@@ -2034,7 +2038,7 @@ function NCSalesOrder() {
 
     const addLine = () => {
         markDirty();
-        // 🚨 SKIP ALL VALIDATION DURING COPY MODE
+        // ðŸš¨ SKIP ALL VALIDATION DURING COPY MODE
         if (copyFromMode) {
             setLines(p => [...p, {
                 ...createLine(rowUdfDefinitions),
@@ -2153,7 +2157,7 @@ function NCSalesOrder() {
         setFormSettingsOpen(p => !p);
     };
 
-    // ── Address Modal handlers ────────────────────────────────────────────────
+    // â”€â”€ Address Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const openAddressModal = (type) => {
         const shipAddress = resolveSalesOrderAddress(
             header.shipToCode,
@@ -2226,7 +2230,7 @@ function NCSalesOrder() {
         setAddressForm(p => ({ ...p, [name]: value }));
     };
 
-    // ── E-Way Bill Modal handlers ──────────────────────────────────────────────
+    // â”€â”€ E-Way Bill Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const openEWayBillModal = () => {
         setEWayBillModal(true);
     };
@@ -2240,7 +2244,7 @@ function NCSalesOrder() {
         console.log('E-Way Bill Data saved:', data);
     };
 
-    // ── Tax Info Modal handlers ───────────────────────────────────────────────
+    // â”€â”€ Tax Info Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const openTaxInfoModal = () => {
         setTaxInfoModal(true);
     };
@@ -2258,7 +2262,7 @@ function NCSalesOrder() {
         setTaxInfoForm(p => ({ ...p, [name]: value }));
     };
 
-    // ── State Selection Modal handlers ────────────────────────────────────────
+    // â”€â”€ State Selection Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const openStateModal = () => {
         setStateModal(true);
     };
@@ -2271,7 +2275,7 @@ function NCSalesOrder() {
         setHeader(p => ({ ...p, placeOfSupply: getStateCodeValue(state, refData.states) }));
     };
 
-    // ── Business Partner Modal handlers ───────────────────────────────────────
+    // â”€â”€ Business Partner Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const openBpModal = () => {
         setBpModal(true);
     };
@@ -2297,7 +2301,7 @@ function NCSalesOrder() {
         loadVendorDetails(code);
     };
 
-    // ── HSN Code Modal handlers ───────────────────────────────────────────────
+    // â”€â”€ HSN Code Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const openHSNModal = (lineIndex) => {
         setHsnModal({ open: true, lineIndex });
     };
@@ -2317,7 +2321,7 @@ function NCSalesOrder() {
         }
     };
 
-    // ── Item Selection Modal handlers ─────────────────────────────────────────
+    // â”€â”€ Item Selection Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const closeItemModal = () => {
         setItemModal({ open: false, lineIndex: -1, items: [], loading: false });
     };
@@ -2431,9 +2435,9 @@ function NCSalesOrder() {
         }
     };
 
-    // ── Freight Selection Modal handlers ──────────────────────────────────────
+    // â”€â”€ Freight Selection Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const openFreightModal = async () => {
-        console.log('🚚 Opening freight modal, docEntry:', currentDocEntry);
+        console.log('ðŸšš Opening freight modal, docEntry:', currentDocEntry);
         if (freightModal.freightCharges.length > 0) {
             setFreightModal(prev => ({ ...prev, open: true, loading: false }));
             return;
@@ -2442,10 +2446,10 @@ function NCSalesOrder() {
         setFreightModal(prev => ({ ...prev, open: true, loading: true }));
 
         try {
-            console.log('📡 Fetching freight charges from API...');
+            console.log('ðŸ“¡ Fetching freight charges from API...');
             const response = await fetchFreightCharges(currentDocEntry);
-            console.log('✅ Freight charges received:', response.data);
-            console.log('📊 Freight charges count:', response.data.freightCharges?.length || 0);
+            console.log('âœ… Freight charges received:', response.data);
+            console.log('ðŸ“Š Freight charges count:', response.data.freightCharges?.length || 0);
 
             setFreightModal({
                 open: true,
@@ -2453,7 +2457,7 @@ function NCSalesOrder() {
                 loading: false
             });
         } catch (error) {
-            console.error('❌ Failed to load freight charges:', error);
+            console.error('âŒ Failed to load freight charges:', error);
             console.error('Error details:', error.response?.data || error.message);
             setFreightModal({
                 open: true,
@@ -2468,7 +2472,7 @@ function NCSalesOrder() {
     };
 
     const handleFreightApply = (summary) => {
-        console.log('🚚 Applied freight charges:', summary);
+        console.log('ðŸšš Applied freight charges:', summary);
         setFreightModal(prev => ({
             ...prev,
             open: false,
@@ -2481,7 +2485,7 @@ function NCSalesOrder() {
         }));
     };
 
-    // ── Copy From Handler ──────────────────────────────────────────────────────
+    // â”€â”€ Copy From Handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const handleCopyFrom = (data, docType) => {
         const copySource = unwrapCopyFromDocument(data);
         const baseType = BASE_TYPE[docType] || 23;
@@ -2514,7 +2518,7 @@ function NCSalesOrder() {
         setCopyFromMode(false);
     };
 
-    // ── Copy From Modal Handlers ───────────────────────────────────────────────
+    // â”€â”€ Copy From Modal Handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     useEffect(() => {
         const routedCopyFrom = location.state?.copyFrom;
         if (routedCopyFrom && !isRouteStateForActiveCompany(location.state)) {
@@ -2559,9 +2563,9 @@ function NCSalesOrder() {
     const openCopyFromModal = (docType) => {
         if (currentDocEntry) return;
 
-        console.log('🟢 Copy From Clicked');
+        console.log('ðŸŸ¢ Copy From Clicked');
 
-        // ✅ ONLY BUYER VALIDATION
+        // âœ… ONLY BUYER VALIDATION
         const buyerCode = String(header.vendor || '').trim();
 
         if (!buyerCode) {
@@ -2573,10 +2577,10 @@ function NCSalesOrder() {
             return;
         }
 
-        // ✅ ENABLE COPY MODE
+        // âœ… ENABLE COPY MODE
         setCopyFromMode(true);
 
-        // ✅ CLEAR ALL ERRORS
+        // âœ… CLEAR ALL ERRORS
         setValErrors({ header: {}, lines: {}, form: '' });
         setPageState(p => ({ ...p, error: '', success: '' }));
 
@@ -2603,7 +2607,7 @@ function NCSalesOrder() {
         }
     };
 
-    // ── Copy To Handler ────────────────────────────────────────────────────────
+    // â”€â”€ Copy To Handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const handleCopyTo = async (targetType) => {
         await copyToDocument({
             sourceDocType: 'ncSalesOrder',
@@ -2651,7 +2655,7 @@ function NCSalesOrder() {
         }
     };
 
-    // ── Browse Attachment handler ─────────────────────────────────────────────
+    // â”€â”€ Browse Attachment handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const handleBrowseAttachment = () => {
         const input = document.createElement('input');
         input.type = 'file';
@@ -2665,11 +2669,11 @@ function NCSalesOrder() {
 
     // Continue in next part...
 
-    // ── validation ────────────────────────────────────────────────────────────
+    // â”€â”€ validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const validate = () => {
-        // 🚨 GLOBAL BYPASS FOR COPY MODE
+        // ðŸš¨ GLOBAL BYPASS FOR COPY MODE
         if (copyFromMode) {
-            console.log('🚫 Validation skipped (Copy Mode)');
+            console.log('ðŸš« Validation skipped (Copy Mode)');
             return { header: {}, lines: {}, form: '' };
         }
 
@@ -2795,7 +2799,7 @@ function NCSalesOrder() {
         return e;
     };
 
-    // ── submit ────────────────────────────────────────────────────────────────
+    // â”€â”€ submit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const handleSubmit = async (ev) => {
         ev.preventDefault();
         if (!isDocumentEditable) {
@@ -2804,14 +2808,14 @@ function NCSalesOrder() {
         }
         if (currentDocEntry && !hasUnsavedChanges) return;
         if (copyFromMode) {
-            console.log('⚠️ Submit blocked in Copy Mode');
+            console.log('âš ï¸ Submit blocked in Copy Mode');
             return;
         }
         ev.preventDefault();
 
-        // 🚨 Don't submit if in copy mode
+        // ðŸš¨ Don't submit if in copy mode
         if (copyFromMode) {
-            console.log('⚠️ Form submission blocked - Copy From mode is active');
+            console.log('âš ï¸ Form submission blocked - Copy From mode is active');
             return;
         }
 
@@ -2903,13 +2907,13 @@ function NCSalesOrder() {
                 header_udfs: normalizeUdfState(headerUdfDefinitions, headerUdfs),
             };
 
-            // ═══ LOGGING: Payload Before Submit ═══
-            console.log('═══════════════════════════════════════════════════');
-            console.log('📤 SUBMITTING SALES ORDER:');
+            // â•â•â• LOGGING: Payload Before Submit â•â•â•
+            console.log('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
+            console.log('ðŸ“¤ SUBMITTING SALES ORDER:');
             console.log('Header:', prep);
             console.log('Lines:', cleanedLines);
             console.log('Header UDFs:', headerUdfs);
-            console.log('═══════════════════════════════════════════════════');
+            console.log('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
 
             const r = currentDocEntry ? await updateSalesOrder(currentDocEntry, payload) : await submitSalesOrder(payload);
             const dn = r.data.doc_num ? ` Doc No: ${r.data.doc_num}.` : '';
@@ -2930,7 +2934,7 @@ function NCSalesOrder() {
 
             setPageState(p => ({ ...p, success: `${r.data.message || 'NC sales order saved.'}${dn}` }));
         } catch (e) {
-            console.error('❌ NC Sales Order Submission Error:', e);
+            console.error('âŒ NC Sales Order Submission Error:', e);
             console.error('Error Response:', e.response?.data);
             setPageState(p => ({ ...p, error: getErrMsg(e, 'Sales order submission failed.') }));
         } finally {
@@ -2982,13 +2986,13 @@ function NCSalesOrder() {
 
     // Continue in next part with render...
 
-    // ── render ────────────────────────────────────────────────────────────────
+    // â”€â”€ render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     return (
         <form ref={formRef} className={`so-page sap-document-page${isRightSidebarOpen ? ' so-page--sidebar-open' : ''}`} onSubmit={handleSubmit} onChangeCapture={markDirty}>
 
             {/* toolbar */}
             <div className="so-toolbar sap-document-toolbar">
-                <span className="so-toolbar__title">NC Sales Order{currentDocEntry ? ` — #${header.docNo || currentDocEntry}` : ''}</span>
+                <span className="so-toolbar__title">NC Sales Order{currentDocEntry ? ` â€” #${header.docNo || currentDocEntry}` : ''}</span>
                 <button type="submit" className="so-btn so-btn--primary sap-document-toolbar__primary" disabled={pageState.posting || !isDocumentEditable} title={primaryActionLabel}>
                     {primaryActionLabel}
                 </button>
@@ -3022,17 +3026,17 @@ function NCSalesOrder() {
                             e.stopPropagation();
                             if (currentDocEntry || !hasBuyerCode) return;
 
-                            console.log('🔵 Copy From dropdown clicked');
+                            console.log('ðŸ”µ Copy From dropdown clicked');
 
-                            setIsCopyFromClick(true);   // 🚀 ADD THIS
-                            // // ✅ FIRST: Activate copy mode to disable all validation
+                            setIsCopyFromClick(true);   // ðŸš€ ADD THIS
+                            // // âœ… FIRST: Activate copy mode to disable all validation
                             // setCopyFromMode(true);
 
-                            // ✅ SECOND: Clear all validation errors immediately
+                            // âœ… SECOND: Clear all validation errors immediately
                             setValErrors({ header: {}, lines: {}, form: '' });
                             setPageState({ error: '', success: '', loading: false, posting: false, vendorLoading: false, seriesLoading: false });
 
-                            // ✅ THIRD: Force re-render by toggling dropdown
+                            // âœ… THIRD: Force re-render by toggling dropdown
                             const dropdown = e.currentTarget.parentElement;
                             const isActive = dropdown.classList.contains('active');
                             // Close all other dropdowns
@@ -3043,7 +3047,7 @@ function NCSalesOrder() {
                         }}
                         style={{ opacity: (!isDocumentEditable || !!currentDocEntry || !hasBuyerCode) ? 0.5 : 1 }}
                     >
-                        Copy From ▼
+                        Copy From â–¼
                     </button>
                     <div className="so-dropdown-menu">
                         <button
@@ -3052,7 +3056,7 @@ function NCSalesOrder() {
                                 e.preventDefault();
                                 e.stopPropagation();
 
-                                console.log('📋 Sales Quotations clicked');
+                                console.log('ðŸ“‹ Sales Quotations clicked');
 
                                 // Clear everything before opening modal
                                 // setCopyFromMode(true);
@@ -3074,7 +3078,7 @@ function NCSalesOrder() {
                                 e.preventDefault();
                                 e.stopPropagation();
 
-                                console.log('📋 Blanket Agreements clicked');
+                                console.log('ðŸ“‹ Blanket Agreements clicked');
 
                                 // Clear everything before opening modal
                                 // setCopyFromMode(true);
@@ -3108,7 +3112,7 @@ function NCSalesOrder() {
                         }}
                         style={{ opacity: !currentDocEntry ? 0.5 : 1 }}
                     >
-                        Copy To ▼
+                        Copy To â–¼
                     </button>
                     <div className="so-dropdown-menu">
                         <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleCopyTo('delivery'); document.querySelectorAll('.so-dropdown').forEach(d => d.classList.remove('active')); }}>
@@ -3130,7 +3134,7 @@ function NCSalesOrder() {
             </div>
 
             {/* alerts */}
-            {pageState.loading && <div className="so-alert so-alert--success" style={{ marginTop: 0 }}>Loading…</div>}
+            {pageState.loading && <div className="so-alert so-alert--success" style={{ marginTop: 0 }}>Loadingâ€¦</div>}
             {!copyFromMode && pageState.error && <div className="so-alert so-alert--error">{pageState.error}</div>}
             {pageState.success && <div className="so-alert so-alert--success">{pageState.success}</div>}
             {refData.warnings?.length > 0 && (
@@ -3138,7 +3142,7 @@ function NCSalesOrder() {
                     <strong>SAP warnings:</strong>
                     {refData.warnings.map((w, i) => <div key={i}>{w}</div>)}
                     <div style={{ marginTop: 4, color: '#555' }}>Dropdowns are showing fallback values. Connect to SAP to load live data.</div>
-                    <div style={{ marginTop: 4, color: '#d00', fontWeight: 600 }}>⚠️ Tax codes shown are examples only. Use actual SAP tax codes to avoid submission errors.</div>
+                    <div style={{ marginTop: 4, color: '#d00', fontWeight: 600 }}>âš ï¸ Tax codes shown are examples only. Use actual SAP tax codes to avoid submission errors.</div>
                 </div>
             )}
 
@@ -3146,7 +3150,7 @@ function NCSalesOrder() {
             <div className={`so-layout${isRightSidebarOpen ? ' is-sidebar-open' : ''}`}>
                 <div className="so-layout__main">
 
-                        {/* ══ HEADER CARD ══════════════════════════════════════════════ */}
+                        {/* â•â• HEADER CARD â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
                         <div className="so-header-card">
                             <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', minWidth: 0, maxWidth: '100%' }}>
                                 {/* LEFT COLUMN */}
@@ -3409,7 +3413,7 @@ function NCSalesOrder() {
                             </div>
                         </div>
 
-                        {/* ══ TABS ══════════════════════════════════════════════════════ */}
+                        {/* â•â• TABS â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
                         <fieldset
                             className="so-fieldset"
                             disabled={!hasBuyerCode}
@@ -3428,7 +3432,7 @@ function NCSalesOrder() {
                             ))}
                         </div>
 
-                        {/* ══ TAB CONTENT ═══════════════════════════════════════════════ */}
+                        {/* â•â• TAB CONTENT â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
                         {activeTab === 'Contents' && (
                             <ContentsTab
                                 lines={lines}
@@ -3493,7 +3497,7 @@ function NCSalesOrder() {
                             />
                         )}
 
-                        {/* ══ TOTALS FOOTER ═════════════════════════════════════════════ */}
+                        {/* â•â• TOTALS FOOTER â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
                         <div className="so-header-card">
                             <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', minWidth: 0, maxWidth: '100%' }}>
                                 <div style={{ flex: '1 1 45%', minWidth: '300px', maxWidth: '100%' }}>
@@ -3620,7 +3624,7 @@ function NCSalesOrder() {
                             </div>
                         </div>
 
-                        {/* ══ ACTION BUTTONS ════════════════════════════════════════════ */}
+                        {/* â•â• ACTION BUTTONS â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
                         {false && (
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '12px', marginBottom: '12px', gap: '8px' }}>
                             <div style={{ display: 'flex', gap: '8px' }}>
@@ -3651,7 +3655,7 @@ function NCSalesOrder() {
                                       }}
                                       style={{ opacity: (!isDocumentEditable || !!currentDocEntry || !hasBuyerCode) ? 0.5 : 1 }}
                                     >
-                                      Copy From ▼
+                                      Copy From â–¼
                                     </button>
                                     <div className="so-dropdown-menu">
                                         <button
@@ -3705,7 +3709,7 @@ function NCSalesOrder() {
                                         }}
                                         style={{ opacity: !currentDocEntry ? 0.5 : 1 }}
                                     >
-                                        Copy To ▼
+                                        Copy To â–¼
                                     </button>
                                     <div className="so-dropdown-menu">
                                         <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleCopyTo('delivery'); document.querySelectorAll('.so-dropdown').forEach(d => d.classList.remove('active')); }}>
@@ -3746,7 +3750,15 @@ function NCSalesOrder() {
                         headerUdfFields={headerUdfDefinitions}
                         rowUdfFields={rowUdfDefinitions}
                         formSettings={formSettings}
-                        onSettingChange={updateFormSetting}
+          onSettingChange={updateFormSetting}
+          onColumnOrderChange={formSettingsStatus.reorder}
+          settingsLoaded={formSettingsStatus.loaded}
+          isSaving={formSettingsStatus.saving}
+          hasUnsavedChanges={formSettingsStatus.hasUnsavedChanges}
+          saveError={formSettingsStatus.error}
+          onSave={formSettingsStatus.save}
+          onCancel={formSettingsStatus.discard}
+          settingsScopeLabel={formSettingsStatus.scopeLabel}
                     />
                 </div>
 

@@ -22,6 +22,11 @@ import HSNCodeModal from '../../components/common/HSNCodeModal';
 import ItemSelectionModal from '../../components/common/ItemSelectionModal';
 import LineValueLookupModal from '../../components/sales-document/LineValueLookupModal';
 import DocumentCurrencySelect from '../../components/document/DocumentCurrencySelect';
+import {
+  convertDocumentAmountForDisplay,
+  inferDocumentCurrencyMode,
+  resolveDisplayCurrency,
+} from '../../utils/documentCurrency';
 import PrintLayoutToolbar from '../../components/print-layout/PrintLayoutToolbar';
 import FreightChargesModal from '../../components/freight/FreightChargesModal';
 import ExchangeRatesIndexesModal from '../sales-order/components/ExchangeRatesIndexesModal';
@@ -63,6 +68,7 @@ import { fetchSalesDocumentLookup, fetchSalesDocumentSchema } from '../../api/sa
 import {
   buildSalesDocumentLiveFields,
   getSalesDocumentCompanyScopeKey,
+  isSalesDocumentFieldMetadataReady,
   loadSalesDocumentFieldLookupOptions,
   stripSalesDocumentTopLevelUdfs,
 } from '../../utils/salesDocumentLiveFields';
@@ -91,7 +97,7 @@ import {
   readSavedFormSettings,
 } from '../../config/salesQuotationForm';
 
-// ─── helpers ─────────────────────────────────────────────────────────────────
+// â”€â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const getErrMsg = (e, fb) => {
   const body = e?.response?.data || {};
   const d = body.detail || body.details;
@@ -155,7 +161,7 @@ const normalizeAddressText = (value) =>
     .replace(/\s+/g, ' ')
     .trim();
 
-// ─── constants ────────────────────────────────────────────────────────────────
+// â”€â”€â”€ constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const DEC = { QtyDec: 2, PriceDec: 2, SumDec: 2, RateDec: 2, PercentDec: 2 };
 const TAB_NAMES = ['Contents', 'Logistics', 'Accounting', 'Tax', 'Electronic Documents', 'Attachments'];
 const buildExchangeRatesFallbackData = ({ year, month, currencies = [], localCurrency = '', documentCurrency = '' }) => {
@@ -236,7 +242,7 @@ const INIT_HEADER = {
   shippingType: '', confirmed: false, journalRemark: '', paymentTerms: '',
   paymentMethod: '', otherInstruction: '', discount: '', freight: '', tax: '',
   totalPaymentDue: '', rounding: false, owner: '', purchaser: '',
-  placeOfSupply: '', currency: 'INR', exchangeRate: '', useBillToForTax: false,
+  placeOfSupply: '', currencyMode: 'BP', currency: '', exchangeRate: '', useBillToForTax: false,
   billToAddress: '', billToCode: '', shipToAddress: '',
   shipToAddressComponents: null, billToAddressComponents: null,
 };
@@ -252,7 +258,7 @@ const createInitialHeader = () => ({
   status: 'Open',
 });
 
-const resolveCurrencyCode = (currency, fallback = 'INR') => {
+const resolveCurrencyCode = (currency, fallback = '') => {
   const normalized = String(currency || '').trim();
   return normalized && normalized !== '##' ? normalized : fallback;
 };
@@ -278,7 +284,7 @@ const closeDocumentDropdowns = () => {
   document.querySelectorAll('.so-dropdown').forEach(d => d.classList.remove('active'));
 };
 
-// ─── Main Component ───────────────────────────────────────────────────────────
+// â”€â”€â”€ Main Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function SalesQuotation() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -311,9 +317,11 @@ function SalesQuotation() {
     [headerUdfDefinitions, rowUdfDefinitions, matrixColumnDefinitions],
     { saveMode: 'explicit' },
   );
-  const companyFormSettingsReady = Boolean(activeCompanyId || activeCompanyDb) && (
-    formSettingsStatus.loaded && hydratedFieldMetadataScope === activeFieldMetadataScope
-  );
+  const companyFormSettingsReady = formSettingsStatus.loaded && isSalesDocumentFieldMetadataReady({
+    companyId: activeCompanyId,
+    companyDb: activeCompanyDb,
+    hydratedScope: hydratedFieldMetadataScope,
+  });
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [formSettingsOpen, setFormSettingsOpen] = useState(false);
   const [refData, setRefData] = useState({
@@ -321,7 +329,7 @@ function SalesQuotation() {
     warehouses: [], warehouse_addresses: [], company_address: {}, tax_codes: [], hsn_codes: [],
     payment_terms: [], shipping_types: [], branches: [], uom_groups: [], sales_employees: [], owners: [],
     countries: [], distribution_rules: [], distribution_dimensions: [], quality_options: { buyer: [], seller: [] }, price_options: { buyer: [], seller: [] },
-    company_currencies: { localCurrency: 'INR', systemCurrency: 'INR' },
+    company_currencies: { localCurrency: '', systemCurrency: '', currencies: [] },
     decimal_settings: DEC, warnings: [], series: [], states: [], udf_metadata: { header: [], rows: [] },
     line_field_metadata: { matrix_columns: getSapStandardSalesMatrixColumns(), sap_form: {} },
     lookup_sources: {},
@@ -511,7 +519,7 @@ function SalesQuotation() {
       ? updateActionLabel
       : 'Add';
   const secondaryActionLabel = pageState.posting
-    ? 'Saving…'
+    ? 'Saving...'
     : currentDocEntry
       ? updateActionLabel
       : 'Add & New';
@@ -528,7 +536,7 @@ function SalesQuotation() {
 
   // Continue in next part...
 
-  // ── load reference data ───────────────────────────────────────────────────
+  // â”€â”€ load reference data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     let ignore = false;
     setHydratedFieldMetadataScope('');
@@ -548,7 +556,7 @@ function SalesQuotation() {
             items: [], warehouses: [], warehouse_addresses: [], company_address: {}, tax_codes: [], hsn_codes: [],
             payment_terms: [], shipping_types: [], branches: [], states: [], uom_groups: [], sales_employees: [], owners: [],
             countries: [], distribution_rules: [], distribution_dimensions: [], quality_options: { buyer: [], seller: [] }, price_options: { buyer: [], seller: [] },
-            company_currencies: { localCurrency: 'INR', systemCurrency: 'INR' },
+            company_currencies: { localCurrency: '', systemCurrency: '', currencies: [] },
             udf_metadata: { header: [], rows: [] },
             line_field_metadata: { matrix_columns: getSapStandardSalesMatrixColumns(), sap_form: {} },
             lookup_sources: {},
@@ -556,6 +564,8 @@ function SalesQuotation() {
           return;
         }
 
+        setHeaderUdfDefinitions([]);
+        setRowUdfDefinitions([]);
         setMatrixColumnDefinitions([]);
 
         const [refDataRes, hsnRes, layoutRes, liveSchema] = await Promise.all([
@@ -579,9 +589,9 @@ function SalesQuotation() {
           }),
         ]);
         
-        // ═══ LOGGING: Reference Data ═══
-        console.log('═══════════════════════════════════════════════════');
-        console.log('📚 Reference Data Loaded:');
+        // â•â•â• LOGGING: Reference Data â•â•â•
+        console.log('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
+        console.log('ðŸ“š Reference Data Loaded:');
         console.log('  - Vendors/Customers:', refDataRes.data.vendors?.length || 0);
         console.log('  - Items:', refDataRes.data.items?.length || 0);
         console.log('  - Tax Codes:', refDataRes.data.tax_codes?.length || 0);
@@ -594,28 +604,28 @@ function SalesQuotation() {
         console.log('  - HSN Codes:', hsnRes.data?.length || 0);
         console.log('  - Sales Employees:', refDataRes.data.sales_employees?.length || 0);
         console.log('  - Owners:', refDataRes.data.owners?.length || 0);
-        console.log('───────────────────────────────────────────────────');
-        console.log('🏢 Company Address:', refDataRes.data.company_address);
-        console.log('⚙️  Decimal Settings:', refDataRes.data.decimal_settings);
-        console.log('⚠️  Warnings:', refDataRes.data.warnings);
-        console.log('───────────────────────────────────────────────────');
-        console.log('💰 TAX CODES LOADED:');
+        console.log('â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€');
+        console.log('ðŸ¢ Company Address:', refDataRes.data.company_address);
+        console.log('âš™ï¸  Decimal Settings:', refDataRes.data.decimal_settings);
+        console.log('âš ï¸  Warnings:', refDataRes.data.warnings);
+        console.log('â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€');
+        console.log('ðŸ’° TAX CODES LOADED:');
         (refDataRes.data.tax_codes || []).forEach(tc => {
           console.log(`  ${tc.Code} - ${tc.Name} (Rate: ${tc.Rate}%, Type: ${tc.GSTType || 'N/A'})`);
         });
         if (refDataRes.data.sales_employees && refDataRes.data.sales_employees.length > 0) {
-          console.log('👥 SALES EMPLOYEES LOADED:');
+          console.log('ðŸ‘¥ SALES EMPLOYEES LOADED:');
           refDataRes.data.sales_employees.forEach(emp => {
             console.log(`  ${emp.SlpName} (Code: ${emp.SlpCode})`);
           });
         }
         if (refDataRes.data.owners && refDataRes.data.owners.length > 0) {
-          console.log('👤 OWNERS LOADED:');
+          console.log('ðŸ‘¤ OWNERS LOADED:');
           refDataRes.data.owners.forEach(owner => {
             console.log(`  ${owner.FullName} (empID: ${owner.empID})`);
           });
         }
-        console.log('═══════════════════════════════════════════════════');
+        console.log('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
         
         if (!ignore) {
           const sourceMatrixColumns = refDataRes.data.line_field_metadata?.matrix_columns || [];
@@ -668,7 +678,7 @@ function SalesQuotation() {
             distribution_rules: refDataRes.data.distribution_rules || [],
             quality_options: refDataRes.data.quality_options || { buyer: [], seller: [] },
             price_options: refDataRes.data.price_options || { buyer: [], seller: [] },
-            company_currencies: refDataRes.data.company_currencies || { localCurrency: 'INR', systemCurrency: 'INR' },
+            company_currencies: refDataRes.data.company_currencies || { localCurrency: '', systemCurrency: '', currencies: [] },
             decimal_settings: { ...DEC, ...(refDataRes.data.decimal_settings || {}) },
             warnings: [
               ...(refDataRes.data.warnings || []),
@@ -695,7 +705,7 @@ function SalesQuotation() {
           setHydratedFieldMetadataScope(activeFieldMetadataScope);
         }
       } catch (e) {
-        console.error('❌ Error loading reference data:', e);
+        console.error('âŒ Error loading reference data:', e);
         if (!ignore) {
           const fallbackColumns = getSapStandardSalesMatrixColumns();
           setHeaderUdfDefinitions([]);
@@ -736,7 +746,7 @@ function SalesQuotation() {
     ));
   }, [companyFormSettingsReady, formSettingsStatus.hasUnsavedChanges, formSettingsStorageKey, headerUdfDefinitions, matrixColumnDefinitions, replaceFormSettings, rowUdfDefinitions]);
 
-  // ── load existing order ───────────────────────────────────────────────────
+  // â”€â”€ load existing order â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     if (currentDocEntry) return;
 
@@ -866,11 +876,19 @@ function SalesQuotation() {
           shippingType: so.header?.shippingType || '',
           confirmed: so.header?.confirmed || false,
           journalRemark: so.header?.journalRemark || '',
-          currency: so.header?.currency || 'INR',
+          currency: so.header?.currency || refData.company_currencies?.localCurrency || '',
+          currencyMode: inferDocumentCurrencyMode({
+            currency: so.header?.currency || refData.company_currencies?.localCurrency || '',
+            cardCode: so.header?.customerCode || '',
+            businessPartners: refData.vendors || [],
+            localCurrency: refData.company_currencies?.localCurrency || '',
+            systemCurrency: refData.company_currencies?.systemCurrency || '',
+            fallbackLocalCurrency: '',
+          }),
           exchangeRate: so.header?.exchangeRate || so.header?.docRate || so.header?.DocRate || '',
         };
         
-        console.log('📥 Final header state:', newHeader);
+        console.log('ðŸ“¥ Final header state:', newHeader);
         setHeader(newHeader);
         setLines(
           Array.isArray(so.lines) && so.lines.length
@@ -958,7 +976,7 @@ function SalesQuotation() {
     return () => { ignore = true; };
   }, [currentDocEntry]);
 
-  // ── derived / computed ────────────────────────────────────────────────────
+  // â”€â”€ derived / computed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const vendorContacts = refData.contacts.filter(c => String(c.CardCode || '') === String(header.vendor || ''));
   const contactOptions = header.contactPerson && !vendorContacts.some(c => String(c.CntctCode || '') === String(header.contactPerson || ''))
     ? [{ CardCode: header.vendor, CntctCode: header.contactPerson, Name: header.contactPerson }, ...vendorContacts]
@@ -1023,7 +1041,7 @@ function SalesQuotation() {
     return branch ? branch.BPLName : branchId;
   };
 
-  // ── calculations ──────────────────────────────────────────────────────────
+  // â”€â”€ calculations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const calcLineTotal = (line) => {
     const qty = parseNum(line.quantity), price = parseNum(line.unitPrice), disc = parseNum(line.stdDiscount);
     return roundTo(qty * price * (1 - disc / 100), numDec.total);
@@ -1060,6 +1078,27 @@ function SalesQuotation() {
   };
 
   const totals = calcTotals();
+  const documentCurrency = String(header.currency || refData.company_currencies?.localCurrency || '').trim();
+  const displayMode = String(header.currencyMode || 'BP').trim().toUpperCase();
+  const displayCurrency = resolveDisplayCurrency({
+    mode: displayMode,
+    documentCurrency,
+    localCurrency: refData.company_currencies?.localCurrency,
+    systemCurrency: refData.company_currencies?.systemCurrency,
+  });
+  const formatDisplayMoney = (value, decimals) => {
+    const converted = convertDocumentAmountForDisplay(value, {
+      mode: displayMode,
+      documentCurrency,
+      localCurrency: refData.company_currencies?.localCurrency,
+      systemCurrency: refData.company_currencies?.systemCurrency,
+      documentRate: header.exchangeRate,
+      systemRate: header.systemExchangeRate,
+      postingMethod: refData.exchange_rate_settings?.postingMethod,
+    });
+    const amount = fmtDec(converted, decimals);
+    return amount !== '' && displayCurrency ? `${amount} ${displayCurrency}` : amount;
+  };
   useRelationshipMapRegistration({
     enabled: Boolean(currentDocEntry),
     objectType: 23,
@@ -1068,7 +1107,7 @@ function SalesQuotation() {
     total: totals.total,
   });
 
-  // ── GST determination logic ───────────────────────────────────────────────
+  // â”€â”€ GST determination logic â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const determineGSTType = (gstState) => {
     if (!gstState) return 'IGST';
 
@@ -1112,18 +1151,18 @@ function SalesQuotation() {
     return taxCodes.length > 0 ? taxCodes[0].Code : '';
   };
 
-  // ── address sync ──────────────────────────────────────────────────────────
+  // â”€â”€ address sync â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Sync branch to all lines when header branch changes
   useEffect(() => {
     if (header.branch) {
-      console.log('🔄 Syncing branch to all lines:', header.branch);
+      console.log('ðŸ”„ Syncing branch to all lines:', header.branch);
       setLines(prev => {
         const updated = prev.map(l => ({ 
           ...l, 
           branch: String(header.branch), 
           loc: String(header.branch)
         }));
-        console.log('✅ Lines updated with branch:', updated.map(l => ({ branch: l.branch, loc: l.loc })));
+        console.log('âœ… Lines updated with branch:', updated.map(l => ({ branch: l.branch, loc: l.loc })));
         return updated;
       });
     }
@@ -1159,7 +1198,7 @@ function SalesQuotation() {
         const selectedWarehouse = refData.warehouses.find(w => w.WhsCode === header.warehouse);
         if (selectedWarehouse && selectedWarehouse.BranchID && 
             String(selectedWarehouse.BranchID) !== String(header.branch)) {
-          console.warn(`⚠️ Warehouse "${header.warehouse}" is assigned to Branch ${selectedWarehouse.BranchID}, but document is for Branch ${header.branch}`);
+          console.warn(`âš ï¸ Warehouse "${header.warehouse}" is assigned to Branch ${selectedWarehouse.BranchID}, but document is for Branch ${header.branch}`);
           setPageState(p => ({ 
             ...p, 
             error: `Warning: Warehouse "${header.warehouse}" is assigned to a different branch. This may cause submission errors.` 
@@ -1169,7 +1208,7 @@ function SalesQuotation() {
     }
   }, [header.warehouse, header.branch, refData.warehouses]);
 
-  // ── Recalculate Tax Codes on State/Address Changes ────────────────────────
+  // â”€â”€ Recalculate Tax Codes on State/Address Changes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     if (currentDocEntry) return;
     if (!header.vendor || !header.placeOfSupply) return;
@@ -1177,11 +1216,11 @@ function SalesQuotation() {
     const companyState = refData.company_address?.State || selectedBranch?.State || '';
     
     if (!companyState) {
-      console.warn('⚠️ Company state not available for tax recalculation');
+      console.warn('âš ï¸ Company state not available for tax recalculation');
       return;
     }
 
-    console.log('🔄 Recalculating Tax Codes for All Lines:', {
+    console.log('ðŸ”„ Recalculating Tax Codes for All Lines:', {
       placeOfSupply: header.placeOfSupply,
       companyState,
       gstType: getGSTTypeLabel(companyState, header.placeOfSupply),
@@ -1279,7 +1318,7 @@ function SalesQuotation() {
     );
   }, [currentDocEntry, header.placeOfSupply, header.vendor]);
 
-  // ── vendor details ────────────────────────────────────────────────────────
+  // â”€â”€ vendor details â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const loadVendorDetails = async (code) => {
     if (!code) {
       setRefData(p => ({ ...p, contacts: [], pay_to_addresses: [], ship_to_addresses: [], bill_to_addresses: [] }));
@@ -1308,7 +1347,7 @@ function SalesQuotation() {
       }
 
     } catch (err) {
-      console.error('❌ Error loading vendor details:', err);
+      console.error('âŒ Error loading vendor details:', err);
       console.error('Error response:', err.response?.data);
       setRefData(p => ({ ...p, contacts: [], pay_to_addresses: [], ship_to_addresses: [], bill_to_addresses: [] }));
     } finally {
@@ -1319,7 +1358,7 @@ function SalesQuotation() {
   const syncVendor = (code, hdr) => {
     const m = refData.vendors.find(v => String(v.CardCode || '') === String(code || ''));
     if (!m) return { nextHeader: hdr };
-    const localCurrency = refData.company_currencies?.localCurrency || hdr.currency || 'INR';
+    const localCurrency = refData.company_currencies?.localCurrency || hdr.currency || '';
     return {
       nextHeader: {
         ...hdr,
@@ -1345,7 +1384,7 @@ function SalesQuotation() {
       setExchangeRatesModal((prev) => ({
         ...prev, loading: false,
         error: error?.response?.data?.detail || error?.message || 'Failed to load exchange rates.',
-        data: buildExchangeRatesFallbackData({ year, month, currencies: refData.currencies || refData.company_currencies?.currencies || [], localCurrency: refData.company_currencies?.localCurrency || 'INR', documentCurrency: exchangeRatesModal.currency }),
+        data: buildExchangeRatesFallbackData({ year, month, currencies: refData.currencies || refData.company_currencies?.currencies || [], localCurrency: refData.company_currencies?.localCurrency || '', documentCurrency: exchangeRatesModal.currency }),
       }));
     }
   }, [exchangeRatesModal.currency, refData.currencies, refData.company_currencies]);
@@ -1383,7 +1422,7 @@ function SalesQuotation() {
   const refreshExchangeRate = useCallback((nextCurrency = header.currency, nextDate = header.postingDate) => {
     const currency = String(nextCurrency || '').trim();
     const postingDate = String(nextDate || '').trim();
-    const localCurrency = String(refData.company_currencies?.localCurrency || 'INR').trim();
+    const localCurrency = String(refData.company_currencies?.localCurrency || '').trim();
     if (!currency || !postingDate || !localCurrency) return;
     if (currency === localCurrency) {
       setHeader((prev) => prev.exchangeRate ? { ...prev, exchangeRate: '' } : prev);
@@ -1400,7 +1439,7 @@ function SalesQuotation() {
     refreshExchangeRate(header.currency, header.postingDate);
   }, [currentDocEntry, header.vendor, header.currency, header.postingDate, refreshExchangeRate]);
 
-  // ── handlers ──────────────────────────────────────────────────────────────
+  // â”€â”€ handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleHeaderChange = (e) => {
     const { name, value, type, checked } = e.target;
     setValErrors(p => ({ ...p, header: { ...p.header, [name]: '' }, form: '' }));
@@ -1446,7 +1485,7 @@ function SalesQuotation() {
       setHeader((prev) => ({
         ...prev,
         postingDate: value,
-        exchangeRate: String(prev.currency || '').trim() === String(refData.company_currencies?.localCurrency || 'INR').trim()
+        exchangeRate: String(prev.currency || '').trim() === String(refData.company_currencies?.localCurrency || '').trim()
           ? prev.exchangeRate
           : '',
       }));
@@ -1463,7 +1502,7 @@ function SalesQuotation() {
       return;
     }
     
-    // ✅ FIX: When purchaser (Sales Employee name) changes, update salesEmployee (code) too
+    // âœ… FIX: When purchaser (Sales Employee name) changes, update salesEmployee (code) too
     if (name === 'purchaser') {
       if (value === '__DEFINE_NEW__') {
         openSalesEmployeeSetup();
@@ -1478,7 +1517,7 @@ function SalesQuotation() {
         salesEmployee: selectedEmployee ? String(selectedEmployee.SlpCode) : '-1'
       }));
       
-      console.log('🔄 Sales Employee changed:', {
+      console.log('ðŸ”„ Sales Employee changed:', {
         name: value,
         code: selectedEmployee ? selectedEmployee.SlpCode : '-1'
       });
@@ -1591,7 +1630,7 @@ function SalesQuotation() {
           const hsnResponse = await fetchHSNCodeFromItem(value);
           const hsnData = hsnResponse.data;
           
-          console.log('🔍 Item Selected - HSN Data:', {
+          console.log('ðŸ” Item Selected - HSN Data:', {
             itemCode: value,
             hsnCode: hsnData.hsnCode,
             hsnDescription: hsnData.hsnDescription,
@@ -1613,7 +1652,7 @@ function SalesQuotation() {
             // Step 3: Get Base Tax Code from Item Master
             const baseTaxCode = item.TaxCodeAR || item.SalTaxCode || '';
             
-            console.log('🔍 Item Selected:', {
+            console.log('ðŸ” Item Selected:', {
               itemCode: item.ItemCode,
               itemName: getSalesQuotationItemDescription(item),
               hsnCode: next.hsnCode,
@@ -1629,7 +1668,7 @@ function SalesQuotation() {
             if (next.taxCodeManuallyOverridden) {
               // Keep the tax code loaded from find mode or explicitly chosen by the user.
             } else if (!gstState || !companyState) {
-              console.warn('⚠️ Missing state information for tax determination');
+              console.warn('âš ï¸ Missing state information for tax determination');
               next.taxCode = '';
             } else {
               // Step 6: Determine Tax Code using Tax Engine
@@ -1644,12 +1683,12 @@ function SalesQuotation() {
               
               if (determinedTaxCode) {
                 next.taxCode = determinedTaxCode;
-                console.log('✅ Tax Code Auto-Selected:', {
+                console.log('âœ… Tax Code Auto-Selected:', {
                   gstType: getGSTTypeLabel(companyState, gstState),
                   taxCode: determinedTaxCode
                 });
               } else {
-                console.warn('⚠️ Could not determine tax code');
+                console.warn('âš ï¸ Could not determine tax code');
                 next.taxCode = '';
               }
             }
@@ -1659,7 +1698,7 @@ function SalesQuotation() {
           }));
         }
       } catch (error) {
-        console.error('❌ Error fetching HSN code:', error);
+        console.error('âŒ Error fetching HSN code:', error);
         // Fallback to reference data if API fails
         setLines(prev => prev.map((line, idx) => {
           if (idx !== i) return line;
@@ -1680,8 +1719,9 @@ function SalesQuotation() {
       setLines(prev => prev.map((line, idx) => {
         if (idx !== i) return line;
         const next = { ...line, [name]: numDec[name] !== undefined ? sanitize(value, numDec[name]) : value };
+                if (name === 'uomName') next.uomNameEdited = true;
         if (name === 'taxCode') next.taxCodeManuallyOverridden = true;
-        if (name === 'uomCode') next.uomName = value;
+        if (name === 'uomCode') { next.uomName = value; next.uomNameEdited = false; }
         next.total = fmtDec(calcLineTotal(next), numDec.total);
         return next;
       }));
@@ -1800,7 +1840,7 @@ function SalesQuotation() {
     setFormSettingsOpen(true);
   };
 
-  // ── Address Modal handlers ────────────────────────────────────────────────
+  // â”€â”€ Address Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openAddressModal = (type) => {
     const shipAddress = resolveSalesQuotationAddress(
       header.shipToCode,
@@ -1906,7 +1946,7 @@ function SalesQuotation() {
     setAddressForm(p => ({ ...p, [name]: value }));
   };
 
-  // ── E-Way Bill Modal handlers ──────────────────────────────────────────────
+  // â”€â”€ E-Way Bill Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openEWayBillModal = () => {
     setEWayBillModal(true);
   };
@@ -1920,7 +1960,7 @@ function SalesQuotation() {
     console.log('E-Way Bill Data saved:', data);
   };
 
-  // ── Tax Info Modal handlers ───────────────────────────────────────────────
+  // â”€â”€ Tax Info Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openTaxInfoModal = () => {
     setTaxInfoModal(true);
   };
@@ -1938,7 +1978,7 @@ function SalesQuotation() {
     setTaxInfoForm(p => ({ ...p, [name]: value }));
   };
 
-  // ── State Selection Modal handlers ────────────────────────────────────────
+  // â”€â”€ State Selection Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openStateModal = () => {
     setStateModal(true);
   };
@@ -1951,7 +1991,7 @@ function SalesQuotation() {
     setHeader(p => ({ ...p, placeOfSupply: getStateCodeValue(state, refData.states) }));
   };
 
-  // ── Business Partner Modal handlers ───────────────────────────────────────
+  // â”€â”€ Business Partner Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openBpModal = () => {
     setBpModal(true);
   };
@@ -1977,7 +2017,7 @@ function SalesQuotation() {
     loadVendorDetails(code);
   };
 
-  // ── HSN Code Modal handlers ───────────────────────────────────────────────
+  // â”€â”€ HSN Code Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openHSNModal = (lineIndex) => {
     setHsnModal({ open: true, lineIndex });
   };
@@ -1997,9 +2037,9 @@ function SalesQuotation() {
     }
   };
 
-  // ── Item Selection Modal handlers ─────────────────────────────────────────
+  // â”€â”€ Item Selection Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openItemModal = async (lineIndex) => {
-    console.log('🔍 Opening item modal for line:', lineIndex);
+    console.log('ðŸ” Opening item modal for line:', lineIndex);
     const fallbackItems = Array.isArray(refData.items) ? refData.items : [];
     setItemModal({
       open: true,
@@ -2009,7 +2049,7 @@ function SalesQuotation() {
     });
     
     try {
-      console.log('📡 Fetching items from API...');
+      console.log('ðŸ“¡ Fetching items from API...');
       const response = await fetchItemsForModal();
       const payload = response?.data;
       const normalizedItems = Array.isArray(payload?.items)
@@ -2017,8 +2057,8 @@ function SalesQuotation() {
         : Array.isArray(payload)
           ? payload
           : [];
-      console.log('✅ Items received:', payload);
-      console.log('📊 Items count:', normalizedItems.length);
+      console.log('âœ… Items received:', payload);
+      console.log('ðŸ“Š Items count:', normalizedItems.length);
       
       setItemModal((prev) => ({
         ...prev,
@@ -2026,7 +2066,7 @@ function SalesQuotation() {
         loading: false,
       }));
     } catch (error) {
-      console.error('❌ Failed to load items:', error);
+      console.error('âŒ Failed to load items:', error);
       console.error('Error details:', error.response?.data || error.message);
       setItemModal((prev) => ({
         ...prev,
@@ -2108,9 +2148,9 @@ function SalesQuotation() {
     }
   };
 
-  // ── Freight Selection Modal handlers ──────────────────────────────────────
+  // â”€â”€ Freight Selection Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openFreightModal = async () => {
-    console.log('🚚 Opening freight modal, docEntry:', currentDocEntry);
+    console.log('ðŸšš Opening freight modal, docEntry:', currentDocEntry);
     if (freightModal.freightCharges.length > 0) {
       setFreightModal(prev => ({ ...prev, open: true, loading: false }));
       return;
@@ -2118,10 +2158,10 @@ function SalesQuotation() {
     setFreightModal(prev => ({ ...prev, open: true, loading: true }));
     
     try {
-      console.log('📡 Fetching freight charges from API...');
+      console.log('ðŸ“¡ Fetching freight charges from API...');
       const response = await fetchFreightCharges(currentDocEntry);
-      console.log('✅ Freight charges received:', response.data);
-      console.log('📊 Freight charges count:', response.data.freightCharges?.length || 0);
+      console.log('âœ… Freight charges received:', response.data);
+      console.log('ðŸ“Š Freight charges count:', response.data.freightCharges?.length || 0);
       
       setFreightModal({
         open: true,
@@ -2129,7 +2169,7 @@ function SalesQuotation() {
         loading: false
       });
     } catch (error) {
-      console.error('❌ Failed to load freight charges:', error);
+      console.error('âŒ Failed to load freight charges:', error);
       console.error('Error details:', error.response?.data || error.message);
       setFreightModal({
         open: true,
@@ -2144,7 +2184,7 @@ function SalesQuotation() {
   };
 
   const handleFreightApply = (summary) => {
-    console.log('🚚 Applied freight charges:', summary);
+    console.log('ðŸšš Applied freight charges:', summary);
     setFreightModal(prev => ({
       ...prev,
       open: false,
@@ -2157,7 +2197,7 @@ function SalesQuotation() {
     }));
   };
 
-  // ── Copy From Handler ──────────────────────────────────────────────────────
+  // â”€â”€ Copy From Handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openCopyFromModal = () => {
     if (currentDocEntry) return;
 
@@ -2313,7 +2353,7 @@ function SalesQuotation() {
 
   // eslint-disable-next-line no-unused-vars
   const handleCopyFromLegacy = (documentData, docType) => {
-    console.log('📋 Copying from:', docType, documentData);
+    console.log('ðŸ“‹ Copying from:', docType, documentData);
     
     // Copy header
     setHeader(prev => ({
@@ -2346,7 +2386,7 @@ function SalesQuotation() {
     setCopyFromModal(false);
   };
 
-  // ── Browse Attachment handler ─────────────────────────────────────────────
+  // â”€â”€ Browse Attachment handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleBrowseAttachment = () => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -2360,10 +2400,20 @@ function SalesQuotation() {
 
   // Continue in next part...
 
-  // ── validation ────────────────────────────────────────────────────────────
+  // â”€â”€ validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const validate = () => {
     const isUpdate = !!currentDocEntry;
     const e = { header: {}, lines: {}, form: '' };
+    const localCurrency = String(refData.company_currencies?.localCurrency || '').trim();
+    const documentCurrency = String(header.currency || '').trim();
+    if (documentCurrency && localCurrency && documentCurrency !== localCurrency) {
+      const rate = Number(header.exchangeRate);
+      if (!Number.isFinite(rate) || rate <= 0) {
+        e.header.exchangeRate = 'Exchange rate is required for foreign currency documents.';
+        e.form = 'Please enter the SAP exchange rate before saving.';
+        return e;
+      }
+    }
 
     if (!isUpdate && isManualDocumentSeries(header.series) && !isValidManualDocumentNumber(header.nextNumber)) {
       e.header.nextNumber = 'Enter a positive document number for Manual series.';
@@ -2490,7 +2540,7 @@ function SalesQuotation() {
     return e;
   };
 
-  // ── submit ────────────────────────────────────────────────────────────────
+  // â”€â”€ submit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleSubmit = async (ev) => {
     ev.preventDefault();
     if (!companyFormSettingsReady) {
@@ -2559,6 +2609,7 @@ function SalesQuotation() {
         brokerageNumber: line.brokerageNumber,
         uomCode: line.uomCode,
         uomName: line.uomName,
+        uomNameEdited: line.uomNameEdited,
         uomEntry: line.uomEntry,
         stdDiscount: line.stdDiscount,
         stcode: line.stcode,
@@ -2626,7 +2677,7 @@ function SalesQuotation() {
       
       setPageState(p => ({ ...p, success: `${r.data.message || 'Sales Quotation saved.'}${dn}` }));
     } catch (e) {
-      console.error('❌ Sales Quotation Submission Error:', e);
+      console.error('âŒ Sales Quotation Submission Error:', e);
       console.error('Error Response:', e.response?.data);
       setPageState(p => ({ ...p, error: getErrMsg(e, 'Sales Quotation submission failed.') }));
     } finally {
@@ -2669,13 +2720,13 @@ function SalesQuotation() {
 
   // Continue in next part with render...
 
-  // ── render ────────────────────────────────────────────────────────────────
+  // â”€â”€ render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   return (
     <form ref={formRef} className={`so-page sap-document-page${isRightSidebarOpen ? ' so-page--sidebar-open' : ''}`} onSubmit={handleSubmit} onChangeCapture={markDirty}>
 
       {/* toolbar */}
       <div className="so-toolbar sap-document-toolbar">
-        <span className="so-toolbar__title">Sales Quotation{currentDocEntry ? ` — #${header.docNo || currentDocEntry}` : ''}</span>
+        <span className="so-toolbar__title">Sales Quotation{currentDocEntry ? ` â€” #${header.docNo || currentDocEntry}` : ''}</span>
         <button type="submit" className="so-btn so-btn--primary sap-document-toolbar__primary" disabled={pageState.posting || !isDocumentEditable} title={primaryActionLabel}>
           {primaryActionLabel}
         </button>
@@ -2716,7 +2767,7 @@ function SalesQuotation() {
       </div>
 
       {/* alerts */}
-      {pageState.loading && <div className="so-alert so-alert--success" style={{ marginTop: 0 }}>Loading…</div>}
+      {pageState.loading && <div className="so-alert so-alert--success" style={{ marginTop: 0 }}>Loading...</div>}
       {pageState.error && <div className="so-alert so-alert--error">{pageState.error}</div>}
       {pageState.success && <div className="so-alert so-alert--success">{pageState.success}</div>}
       {refData.warnings?.length > 0 && (
@@ -2724,7 +2775,7 @@ function SalesQuotation() {
           <strong>SAP warnings:</strong>
           {refData.warnings.map((w, i) => <div key={i}>{w}</div>)}
           <div style={{ marginTop: 4, color: '#555' }}>Dropdowns are showing fallback values. Connect to SAP to load live data.</div>
-          <div style={{ marginTop: 4, color: '#d00', fontWeight: 600 }}>⚠️ Tax codes shown are examples only. Use actual SAP tax codes to avoid submission errors.</div>
+          <div style={{ marginTop: 4, color: '#d00', fontWeight: 600 }}>âš ï¸ Tax codes shown are examples only. Use actual SAP tax codes to avoid submission errors.</div>
         </div>
       )}
 
@@ -2732,7 +2783,7 @@ function SalesQuotation() {
       <div className={`so-layout${isRightSidebarOpen ? ' is-sidebar-open' : ''}`}>
         <div className="so-layout__main">
 
-            {/* ══ HEADER CARD ══════════════════════════════════════════════ */}
+            {/* â•â• HEADER CARD â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             <div className="so-header-card">
               <div className="row g-2">
                 {/* LEFT COLUMN */}
@@ -2801,8 +2852,10 @@ function SalesQuotation() {
                       header={header}
                       onHeaderChange={handleHeaderChange}
                       businessPartners={refData.vendors || []}
-                      localCurrency={refData.company_currencies?.localCurrency || 'INR'}
-                      systemCurrency={refData.company_currencies?.systemCurrency || refData.company_currencies?.localCurrency || 'INR'}
+                      currencyOptions={refData.currencies || refData.company_currencies?.currencies || []}
+                      localCurrency={refData.company_currencies?.localCurrency || ''}
+                      systemCurrency={refData.company_currencies?.systemCurrency || refData.company_currencies?.localCurrency || ''}
+                      fallbackLocalCurrency=""
                       disabled={pageState.vendorLoading || !header.vendor || !!currentDocEntry}
                     />
 
@@ -2980,7 +3033,7 @@ function SalesQuotation() {
               </div>
             </div>
 
-            {/* ══ TABS ══════════════════════════════════════════════════════ */}
+            {/* â•â• TABS â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             <div className="so-tabs">
               {TAB_NAMES.map(t => (
                 <button
@@ -2994,7 +3047,7 @@ function SalesQuotation() {
               ))}
             </div>
 
-            {/* ══ TAB CONTENT ═══════════════════════════════════════════════ */}
+            {/* â•â• TAB CONTENT â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {activeTab === 'Contents' && (
               <ContentsTab
                 lines={lines}
@@ -3024,6 +3077,9 @@ function SalesQuotation() {
                 rowUdfFields={visibleRowUdfs}
                 onRowUdfChange={handleRowUdfChange}
                 onLoadLookupOptions={loadDynamicLineLookupOptions}
+                displayCurrency={displayCurrency}
+                documentCurrency={documentCurrency}
+                formatDisplayMoney={formatDisplayMoney}
               />
             )}
 
@@ -3063,7 +3119,7 @@ function SalesQuotation() {
               />
             )}
 
-            {/* ══ TOTALS FOOTER ═════════════════════════════════════════════ */}
+            {/* â•â• TOTALS FOOTER â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             <div className="so-header-card">
               <div className="so-field-grid" style={{ gridTemplateColumns: '1fr 1fr' }}>
                 <div>
@@ -3114,7 +3170,7 @@ function SalesQuotation() {
                       {totals.taxBreakdown.map(t => (
                         <div key={t.taxCode} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 4 }}>
                           <span>{t.taxCode} ({t.taxRate}%)</span>
-                          <span>{fmtDec(t.taxAmount, numDec.tax)}</span>
+                          <span>{formatDisplayMoney(t.taxAmount, numDec.tax)}</span>
                         </div>
                       ))}
                     </div>
@@ -3124,7 +3180,7 @@ function SalesQuotation() {
                       <tbody>
                         <tr>
                           <td>Total Before Discount</td>
-                          <td className="so-grid__cell--num"><input className="so-grid__input" value={fmtDec(totals.subtotal, numDec.total)} readOnly /></td>
+                          <td className="so-grid__cell--num"><input className="so-grid__input" value={formatDisplayMoney(totals.subtotal, numDec.total)} readOnly /></td>
                         </tr>
                         <tr>
                           <td>Discount %</td>
@@ -3161,11 +3217,11 @@ function SalesQuotation() {
                         </tr>
                         <tr>
                           <td>Tax</td>
-                          <td className="so-grid__cell--num"><input className="so-grid__input" value={fmtDec(totals.taxAmt, numDec.tax)} readOnly /></td>
+                          <td className="so-grid__cell--num"><input className="so-grid__input" value={formatDisplayMoney(totals.taxAmt, numDec.tax)} readOnly /></td>
                         </tr>
                         <tr style={{ borderTop: '2px solid #a0aab4' }}>
                           <td style={{ fontWeight: 700, color: '#003366' }}>Total</td>
-                          <td className="so-grid__cell--num" style={{ fontWeight: 700, color: '#003366' }}><input className="so-grid__input" style={{ fontWeight: 700, color: '#003366' }} value={fmtDec(totals.total, numDec.totalPaymentDue)} readOnly /></td>
+                          <td className="so-grid__cell--num" style={{ fontWeight: 700, color: '#003366' }}><input className="so-grid__input" style={{ fontWeight: 700, color: '#003366' }} value={formatDisplayMoney(totals.total, numDec.totalPaymentDue)} readOnly /></td>
                         </tr>
                       </tbody>
                     </table>
@@ -3174,7 +3230,7 @@ function SalesQuotation() {
               </div>
             </div>
 
-            {/* ══ ACTION BUTTONS ════════════════════════════════════════════ */}
+            {/* â•â• ACTION BUTTONS â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {false && (
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '12px', marginBottom: '12px', gap: '8px' }}>
               <div style={{ display: 'flex', gap: '8px' }}>
@@ -3215,7 +3271,8 @@ function SalesQuotation() {
             headerUdfFields={headerUdfDefinitions}
             rowUdfFields={rowUdfDefinitions}
             formSettings={formSettings}
-            onSettingChange={updateFormSetting}
+          onSettingChange={updateFormSetting}
+          onColumnOrderChange={formSettingsStatus.reorder}
             settingsLoaded={companyFormSettingsReady}
             editablePropertiesByGroup={{ matrixColumns: ['visible'], rowUdfs: ['visible'] }}
             editableSapControlledProperties={{ matrixColumns: ['visible'], headerUdfs: [], rowUdfs: ['visible'] }}
@@ -3223,6 +3280,7 @@ function SalesQuotation() {
             hasUnsavedChanges={formSettingsStatus.hasUnsavedChanges}
             saveError={formSettingsStatus.error}
             onSave={formSettingsStatus.save}
+            onCancel={formSettingsStatus.discard}
             settingsScopeLabel={formSettingsStatus.scopeLabel}
           />
         </div>
@@ -3328,7 +3386,7 @@ function SalesQuotation() {
         freightCharges={freightModal.freightCharges}
         taxCodes={effectiveTaxCodes}
         loading={freightModal.loading}
-        currency={header.currency || refData.company_currencies?.localCurrency || 'INR'}
+        currency={header.currency || refData.company_currencies?.localCurrency || ''}
       />
       <ExchangeRatesIndexesModal
         isOpen={exchangeRatesModal.open}

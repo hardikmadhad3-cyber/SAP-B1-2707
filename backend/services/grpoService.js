@@ -8,6 +8,13 @@ const { applyUdfValues } = require('./udfPayloadUtils');
 const { buildGRPODocumentLine } = require('./grpoPayloadUtils');
 const { applyPlaceOfSupplyUdf } = require('./placeOfSupplyUtils');
 const { buildDocumentSeriesPayload } = require('./documentSeriesPayloadUtils');
+const {
+  applySapDocumentCurrency,
+  loadCompanyCurrencyContext,
+  loadDocumentCurrencyReferenceData,
+  mergeCurrencyReferenceData,
+  normalizeCopyDocumentRate,
+} = require('./salesDocumentCurrencyService');
 
 // ───────── HELPERS ─────────
 
@@ -30,8 +37,11 @@ const getUdfDefinitionsByKey = async (tableId) => {
 
 const getReferenceData = async (companyId) => {
   try {
-    const data = await grpoDb.getReferenceData();
-    return data;
+    const [data, currencyContext] = await Promise.all([
+      grpoDb.getReferenceData(),
+      loadCompanyCurrencyContext(),
+    ]);
+    return mergeCurrencyReferenceData(data, currencyContext);
   } catch (error) {
     return {
       company: '',
@@ -151,7 +161,7 @@ const getGRPOList = async ({
 const getGRPO = async (docEntry) => {
   try {
     const result = await grpoDb.getGRPO(docEntry);
-    return result;
+    return normalizeCopyDocumentRate(result, await loadDocumentCurrencyReferenceData());
   } catch (error) {
     throw new Error(`Failed to load GRPO: ${error.message}`);
   }
@@ -203,7 +213,7 @@ const getOpenPurchaseOrders = async (vendorCode = null) => {
 const getPurchaseOrderForCopy = async (docEntry) => {
   try {
     const result = await grpoDb.getPurchaseOrderForCopy(docEntry);
-    return result;
+    return normalizeCopyDocumentRate(result, await loadDocumentCurrencyReferenceData());
   } catch (error) {
     throw new Error(`Failed to load Purchase Order: ${error.message}`);
   }
@@ -246,7 +256,6 @@ const submitGRPO = async (payload) => {
       Comments: header.otherInstruction || '',
       JournalMemo: header.journalRemark || '',
       NumAtCard: header.salesContractNo || '',
-      DocCurrency: header.currency || 'INR',
       DiscountPercent: header.discount ? parseFloat(header.discount) : 0,
       DocumentAdditionalExpenses: documentAdditionalExpenses,
       Rounding: toSapYesNo(header.rounding),
@@ -274,6 +283,11 @@ const submitGRPO = async (payload) => {
       ...(header.buyerLocation !== undefined ? { U_ShipLocation: header.buyerLocation } : {}),
     }, null, headerUdfDefinitionsByKey);
     applyPlaceOfSupplyUdf(sapPayload, headerUdfDefinitionsByKey, header.placeOfSupply);
+    applySapDocumentCurrency(
+      sapPayload,
+      header,
+      await loadDocumentCurrencyReferenceData(header),
+    );
 
    
 
@@ -327,6 +341,11 @@ const updateGRPO = async (docEntry, payload) => {
       ...(header.buyerLocation !== undefined ? { U_ShipLocation: header.buyerLocation } : {}),
     }, null, headerUdfDefinitionsByKey);
     applyPlaceOfSupplyUdf(sapPayload, headerUdfDefinitionsByKey, header.placeOfSupply);
+    applySapDocumentCurrency(
+      sapPayload,
+      header,
+      await loadDocumentCurrencyReferenceData(header),
+    );
 
     await sapService.request({
       method: 'PATCH',

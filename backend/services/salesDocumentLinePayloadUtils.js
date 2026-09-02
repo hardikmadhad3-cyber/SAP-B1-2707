@@ -15,6 +15,12 @@ const compact = (value) => String(value || '').trim().toUpperCase().replace(/[^A
 
 const firstPresent = (...values) => values.find(hasValue);
 
+const isTruthyFlag = (value) => (
+  value === true
+  || value === 1
+  || ['Y', 'YES', 'TRUE', '1'].includes(String(value ?? '').trim().toUpperCase())
+);
+
 const getCaseInsensitiveValue = (source, key) => {
   if (!source || typeof source !== 'object') return undefined;
   if (Object.prototype.hasOwnProperty.call(source, key)) return source[key];
@@ -175,24 +181,49 @@ const buildMetadataValidatedStandardLine = async ({
     ) {
       normalized = coerceValue(defaultDiscountPercent, mapping.kind, physicalField);
     }
+    if (mapping.serviceLayerField === 'LocationCode' && normalized !== undefined && normalized < 0) {
+      normalized = undefined;
+    }
     if (normalized !== undefined) target[mapping.serviceLayerField] = normalized;
   }
 
   const rawUomEntry = getLineValue(line, ['uomEntry', 'UoMEntry']);
-  const rawUomCode = getLineValue(line, ['uomCode', 'UoMCode', 'unitMsr']);
-  const rawUomValue = firstPresent(rawUomEntry, rawUomCode);
+  const uomNameEdited = isTruthyFlag(
+    getCaseInsensitiveValue(line, 'uomNameEdited')
+    ?? getCaseInsensitiveValue(line.values, 'uomNameEdited')
+  );
+  const editedUomCode = getCaseInsensitiveValue(line, 'uomName')
+    ?? getCaseInsensitiveValue(line, 'UoMName')
+    ?? getCaseInsensitiveValue(line, 'UomName')
+    ?? getCaseInsensitiveValue(line, 'UnitMsr')
+    ?? getCaseInsensitiveValue(line, 'unitMsr')
+    ?? getCaseInsensitiveValue(line.values, 'uomName')
+    ?? getCaseInsensitiveValue(line.values, 'UoMName')
+    ?? getCaseInsensitiveValue(line.values, 'UomName')
+    ?? getCaseInsensitiveValue(line.values, 'UnitMsr')
+    ?? getCaseInsensitiveValue(line.values, 'unitMsr');
+  const rawUomCode = uomNameEdited
+    ? editedUomCode
+    : getLineValue(line, ['uomName', 'UoMName', 'UomName', 'UnitMsr', 'unitMsr', 'uomCode', 'UoMCode']);
+  const rawUomValue = uomNameEdited
+    ? firstPresent(rawUomCode, rawUomEntry)
+    : firstPresent(rawUomEntry, rawUomCode);
   const supportsUomEntry = Boolean(resolvePhysicalField(metadata, ['UomEntry']));
   const supportsUomCode = Boolean(resolvePhysicalField(metadata, ['UomCode', 'unitMsr'])) || metadata.size === 0;
-  const explicitUomEntry = toInteger(rawUomEntry);
+  const explicitUomEntry = uomNameEdited ? undefined : toInteger(rawUomEntry);
   if (supportsUomEntry && explicitUomEntry !== undefined) {
     target.UoMEntry = explicitUomEntry;
   } else if (hasValue(rawUomValue) && supportsUomEntry && typeof resolveUomEntry === 'function') {
     const itemCode = getLineValue(line, ['itemNo', 'ItemCode']);
-    const entry = toInteger(await resolveUomEntry(itemCode, rawUomValue));
+    const entry = toInteger(await resolveUomEntry(itemCode, rawUomValue, { allowDefaultFallback: !uomNameEdited }));
     if (entry !== undefined) target.UoMEntry = entry;
   }
   if (!Object.prototype.hasOwnProperty.call(target, 'UoMEntry') && hasValue(rawUomCode) && supportsUomCode) {
-    target.UoMCode = String(rawUomCode).trim();
+    if (uomNameEdited) {
+      target.MeasureUnit = String(rawUomCode).trim();
+    } else {
+      target.UoMCode = String(rawUomCode).trim();
+    }
   }
 
   const resolvedFields = [

@@ -295,7 +295,10 @@ const resolvePurchaseOrderLineUomEntry = async (itemCode, uomValue) => {
         FROM UGP1 G
         INNER JOIN OUOM U ON U.UomEntry = G.UomEntry
         WHERE G.UgpEntry = @ugpEntry
-          AND UPPER(LTRIM(RTRIM(U.UomCode))) = @uomCode
+          AND (
+            UPPER(LTRIM(RTRIM(U.UomCode))) = @uomCode
+            OR UPPER(LTRIM(RTRIM(U.UomName))) = @uomCode
+          )
       `, { ugpEntry, uomCode: requestedUomCode }));
 
       return rows[0]?.UomEntry != null ? Number(rows[0].UomEntry) : null;
@@ -305,6 +308,7 @@ const resolvePurchaseOrderLineUomEntry = async (itemCode, uomValue) => {
       SELECT TOP 1 UomEntry
       FROM OUOM
       WHERE UPPER(LTRIM(RTRIM(UomCode))) = @uomCode
+         OR UPPER(LTRIM(RTRIM(UomName))) = @uomCode
       ORDER BY UomEntry
     `, { uomCode: requestedUomCode }));
 
@@ -781,6 +785,7 @@ const getPurchaseOrder = async (docEntry) => {
       T0.TaxDate AS DocumentDate,
       T0.BPLId AS Branch,
       T0.DocCur AS Currency,
+      T0.DocRate AS ExchangeRate,
       T0.GroupNum AS PaymentTerms,
       T0.SlpCode AS SalesEmployeeCode,
       T1.SlpName AS SalesEmployeeName,
@@ -862,7 +867,8 @@ const lineRows = await safe(db.query(`
         postingDate: header.PostingDate ? header.PostingDate.toISOString().split('T')[0] : '',
         deliveryDate: header.DeliveryDate ? header.DeliveryDate.toISOString().split('T')[0] : '',
         documentDate: header.DocumentDate ? header.DocumentDate.toISOString().split('T')[0] : '',
-        currency: header.Currency || 'INR',
+        currency: header.Currency || '',
+        exchangeRate: header.ExchangeRate == null ? '' : String(header.ExchangeRate),
         shipToCode: header.ShipToCode || '',
         shipTo: '',
         shipToAddress: '',

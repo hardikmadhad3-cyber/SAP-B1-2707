@@ -9,6 +9,7 @@ import { filterSalesOrderRowUdfDefinitions } from '../../../config/salesOrderFor
 import LineValueLookupModal from '../../../components/sales-document/LineValueLookupModal';
 import { SALES_ORDER_LINE_NUMBER_KEY } from '../documentLayout';
 import { getReadableDocumentLineColumnWidth } from '../../../utils/documentLineColumnWidth';
+import { getOrderedVisibleMatrixColumns } from '../../../utils/formSettingsColumns';
 
 import { getCalculatedForRate, getLineTotalsForDisplay } from '../../../utils/lineTotals';
 
@@ -395,6 +396,8 @@ function ReadyContentsTab({
   locations = [],
   shippingTypeOptions = [],
   displayCurrency = '',
+  documentCurrency = '',
+  formatDisplayMoney,
 }) {
   const sapItemTab = useSapItemCodeTab({ lineItemOptions, onLineChange, onOpenItemModal });
   const [dynamicUdfLookup, setDynamicUdfLookup] = React.useState({
@@ -416,6 +419,7 @@ function ReadyContentsTab({
     return (parseNumber(totals.total) - parseNumber(totals.beforeTax)).toFixed(2);
   };
   const formatMoneyValue = (value) => {
+    if (typeof formatDisplayMoney === 'function') return formatDisplayMoney(value);
     const text = String(value ?? '').trim();
     const currency = String(displayCurrency || '').trim();
     return text && currency ? `${text} ${currency}` : text;
@@ -449,7 +453,7 @@ function ReadyContentsTab({
       locationCode
     ).trim();
   }, [effectiveWarehouses, locations]);
-  const renderCurrencyInput = (inputProps, suffix = displayCurrency) => (
+  const renderCurrencyInput = (inputProps, suffix = documentCurrency || displayCurrency) => (
     <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
       <input {...inputProps} style={{ ...(inputProps.style || {}), flex: 1 }} />
       {String(suffix || '').trim() ? <span style={{ fontSize: 11, color: '#1f2937', minWidth: 28 }}>{suffix}</span> : null}
@@ -559,7 +563,7 @@ function ReadyContentsTab({
     }))),
   ].sort((left, right) => (Number(left.order ?? 99999) - Number(right.order ?? 99999)));
 
-  const visibleColumns = matrixColumns.filter((col) => getColumnVisibility(col));
+  const visibleColumns = getOrderedVisibleMatrixColumns(matrixColumns, formSettings);
 
   // Helper to check if a column is visible
   const isColumnVisible = (columnKey) => {
@@ -753,6 +757,9 @@ function ReadyContentsTab({
       ? (matchedUdfColumn ? { ...matchedUdfColumn, ...column, valueKey } : column)
       : null;
     if (udfColumn) return renderGenericMatrixCell(udfColumn, line, i);
+    if (column.lookupConfigured && column.lookupSource) {
+      return renderGenericMatrixCell(column, line, i);
+    }
 
     if (!isColumnVisible(columnKey)) return null;
 
@@ -1173,9 +1180,9 @@ function ReadyContentsTab({
         <td key="uomName">
           <input
             className="so-grid__input"
-            value={line.uomName || line.uomCode || ''}
-            readOnly
-            style={{ background: '#f5f8fc' }}
+            name="uomName"
+            value={line.uomNameEdited ? (line.uomName ?? '') : (line.uomName || line.uomCode || '')}
+            onChange={(e) => onLineChange(i, e)}
           />
         </td>
       ),

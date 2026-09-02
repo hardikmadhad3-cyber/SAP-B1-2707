@@ -187,4 +187,37 @@ describe('useCompanyScopedFormSettings explicit-save lifecycle', () => {
 
     setItemSpy.mockRestore();
   });
+
+  test('discard restores the last saved company-scoped settings', async () => {
+    const backendSettings = {
+      ...DEFAULT_SETTINGS,
+      matrixColumns: { itemCode: { visible: true, order: 1 } },
+    };
+    fetchFormSettings.mockResolvedValue({
+      companyId: 7,
+      userId: 10,
+      settings: backendSettings,
+    });
+
+    const { result } = renderExplicitSettingsHook();
+    await waitFor(() => expect(result.current[4].loaded).toBe(true));
+
+    act(() => {
+      result.current[1]((current) => ({
+        ...current,
+        matrixColumns: {
+          ...current.matrixColumns,
+          itemCode: { ...current.matrixColumns.itemCode, visible: false, order: 3 },
+        },
+      }));
+    });
+    expect(result.current[4].hasUnsavedChanges).toBe(true);
+
+    act(() => {
+      result.current[4].discard();
+    });
+    expect(result.current[0]).toEqual(backendSettings);
+    expect(result.current[4].hasUnsavedChanges).toBe(false);
+    expect(saveFormSettings).not.toHaveBeenCalled();
+  });
 });

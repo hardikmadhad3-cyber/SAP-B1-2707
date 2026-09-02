@@ -45,7 +45,7 @@ import { readGeneralSettings } from '../../utils/generalSettingsStorage';
 import { useCompanyScopedFormSettings } from '../../utils/formSettingsStorage';
 import { updateFormSettingPreference } from '../../utils/formSettingsPreferences';
 import { buildVisibleEnteredRowUdfPayload } from '../../utils/rowUdfPayload';
-import { resolveDocumentCurrency } from '../../utils/documentCurrency';
+import { convertDocumentAmountForDisplay, resolveDisplayCurrency } from '../../utils/documentCurrency';
 import { getStateCodeValue, getStateDisplayName } from '../../utils/stateDisplay';
 import { findTaxCode, getTaxComponentCodes } from '../../utils/taxCodeComponents';
 import { isRouteStateForActiveCompany } from '../../utils/companyStorageScope';
@@ -75,6 +75,7 @@ import {
   buildSalesDocumentLiveFields,
   filterLayoutToCurrentSchema,
   getSalesDocumentCompanyScopeKey,
+  isSalesDocumentFieldMetadataReady,
   loadSalesDocumentFieldLookupOptions,
 } from '../../utils/salesDocumentLiveFields';
 import { buildDeliveryLiveMatrixColumns } from './deliveryLiveMatrix';
@@ -116,7 +117,7 @@ import {
   readSavedFormSettings,
 } from '../../config/deliveryForm';
 
-// ─── helpers ─────────────────────────────────────────────────────────────────
+// â”€â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const getErrMsg = (e, fb) => {
   const body = e?.response?.data || {};
   const d = body.detail || body.details;
@@ -373,26 +374,26 @@ const checkBatchAvailability = async (itemCode, whsCode) => {
   if (!itemCode || !whsCode) return false;
   
   try {
-    console.log('🔍 [checkBatchAvailability] Checking batches for:', { itemCode, whsCode });
+    console.log('ðŸ” [checkBatchAvailability] Checking batches for:', { itemCode, whsCode });
     const response = await fetchBatchesByItem(itemCode, whsCode);
-    console.log('🔍 [checkBatchAvailability] API Response:', response);
+    console.log('ðŸ” [checkBatchAvailability] API Response:', response);
     
     const batches = response.data?.batches || [];
     const hasBatches = batches.length > 0;
     
-    console.log('🔍 [checkBatchAvailability] Found batches:', batches.length, 'Has batches:', hasBatches);
-    console.log('🔍 [checkBatchAvailability] Batch details:', batches);
+    console.log('ðŸ” [checkBatchAvailability] Found batches:', batches.length, 'Has batches:', hasBatches);
+    console.log('ðŸ” [checkBatchAvailability] Batch details:', batches);
     
     return hasBatches;
   } catch (error) {
-    console.error('❌ [checkBatchAvailability] Error:', error);
+    console.error('âŒ [checkBatchAvailability] Error:', error);
     // If there's an error, assume batches are available for batch-managed items
     // This prevents the button from being hidden due to API errors
     return true;
   }
 };
 
-// ─── constants ────────────────────────────────────────────────────────────────
+// â”€â”€â”€ constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const DEC = { QtyDec: 2, PriceDec: 2, SumDec: 2, RateDec: 2, PercentDec: 2 };
 const TAB_NAMES = ['Contents', 'Logistics', 'Accounting', 'Tax', 'Electronic Documents', 'Attachments'];
 const buildExchangeRatesFallbackData = ({
@@ -583,7 +584,7 @@ const getBpGstTypeLabel = (value) => ({
   6: 'OIDAR', 7: 'TDS', 8: 'TCS', 9: 'UN Embassy/Body',
 })[String(value || '')] || String(value || '');
 
-// ─── Main Component ───────────────────────────────────────────────────────────
+// â”€â”€â”€ Main Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function Delivery() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -633,9 +634,11 @@ function Delivery() {
     [headerUdfDefinitions, rowUdfDefinitions, matrixColumnDefinitions],
     { saveMode: 'explicit' },
   );
-  const companyFormSettingsReady = Boolean(activeCompanyId || activeCompanyDb) && (
-    formSettingsStatus.loaded && hydratedFieldMetadataScope === activeFieldMetadataScope
-  );
+  const companyFormSettingsReady = formSettingsStatus.loaded && isSalesDocumentFieldMetadataReady({
+    companyId: activeCompanyId,
+    companyDb: activeCompanyDb,
+    hydratedScope: hydratedFieldMetadataScope,
+  });
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   const [formSettingsOpen, setFormSettingsOpen] = useState(false);
@@ -767,7 +770,7 @@ function Delivery() {
       ? updateActionLabel
       : 'Add';
   const secondaryActionLabel = pageState.posting
-    ? 'Saving…'
+    ? 'Saving...'
     : currentDocEntry
       ? updateActionLabel
       : 'Add & New';
@@ -1164,7 +1167,7 @@ function Delivery() {
 
   // Continue in next part...
 
-  // ── load reference data ───────────────────────────────────────────────────
+  // â”€â”€ load reference data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     let ignore = false;
     setHydratedFieldMetadataScope('');
@@ -1414,7 +1417,7 @@ function Delivery() {
     return () => { ignore = true; };
   }, [currentDocEntry, requestedEditDocEntry, header.postingDate]);
 
-  // ── load existing order ───────────────────────────────────────────────────
+  // â”€â”€ load existing order â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     if (staleRequestedEditDocEntry) {
       setPageState(p => ({ ...p, loading: false, error: '', success: '' }));
@@ -1458,9 +1461,9 @@ function Delivery() {
               ''
             )
           : '';
-        console.log('📦 [Delivery] Loaded delivery data:', so);
-        console.log('📦 [Delivery] Header:', so.header);
-        console.log('📦 [Delivery] Lines:', so.lines);
+        console.log('ðŸ“¦ [Delivery] Loaded delivery data:', so);
+        console.log('ðŸ“¦ [Delivery] Header:', so.header);
+        console.log('ðŸ“¦ [Delivery] Lines:', so.lines);
         
         if (ignore || !so) return;
         setCurrentDocEntry(so.doc_entry || Number(docEntry));
@@ -1535,7 +1538,7 @@ function Delivery() {
         loadedLinesSignatureRef.current = getDeliveryLinesUpdateSignature(hydratedLoadedLines);
         setLines(hydratedLoadedLines);
         
-        console.log('📦 [Delivery] Lines after mapping:', lines);
+        console.log('ðŸ“¦ [Delivery] Lines after mapping:', lines);
         
         setHeaderUdfs(normalizeCompanyUdfState(headerUdfDefinitions, so.header_udfs || {}));
         setSnapshotPending(true);
@@ -1626,7 +1629,7 @@ function Delivery() {
     refreshBatchAvailabilityForLines,
   ]);
 
-  // ── Copy To: populate form from Sales Order / other source ────────────────
+  // â”€â”€ Copy To: populate form from Sales Order / other source â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     const routedCopyFrom = location.state?.copyFrom;
     if (routedCopyFrom && !isRouteStateForActiveCompany(location.state)) {
@@ -1765,7 +1768,7 @@ function Delivery() {
     replaceRouteStatePreservingWindow(navigate, location.pathname, location.state || persistedCopyState);
   }, [location.pathname, location.state?.copyFrom, navigate]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── derived / computed ────────────────────────────────────────────────────
+  // â”€â”€ derived / computed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const vendorCode = String(header.vendor || '');
   const vendorContacts = useMemo(
     () => refData.contacts.filter(c => String(c.CardCode || '') === vendorCode),
@@ -2004,7 +2007,7 @@ function Delivery() {
     return branch ? branch.BPLName : branchId;
   };
 
-  // ── calculations ──────────────────────────────────────────────────────────
+  // â”€â”€ calculations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const calcLineTotal = (line) => {
     const qty = parseNum(line.quantity), price = parseNum(line.unitPrice), disc = parseNum(line.stdDiscount);
     return roundTo(qty * price * (1 - disc / 100), numDec.total);
@@ -2058,6 +2061,27 @@ function Delivery() {
   };
 
   const totals = calcTotals();
+  const documentCurrency = String(header.currency || refData.local_currency || '').trim();
+  const displayMode = String(header.currencyMode || 'BP').trim().toUpperCase();
+  const displayCurrency = resolveDisplayCurrency({
+    mode: displayMode,
+    documentCurrency,
+    localCurrency: refData.local_currency,
+    systemCurrency: refData.system_currency,
+  });
+  const formatDisplayMoney = (value, decimals) => {
+    const converted = convertDocumentAmountForDisplay(value, {
+      mode: displayMode,
+      documentCurrency,
+      localCurrency: refData.local_currency,
+      systemCurrency: refData.system_currency,
+      documentRate: header.exchangeRate,
+      systemRate: header.systemExchangeRate,
+      postingMethod: refData.exchange_rate_settings?.postingMethod,
+    });
+    const amount = fmtDec(converted, decimals);
+    return amount !== '' && displayCurrency ? `${amount} ${displayCurrency}` : amount;
+  };
   useRelationshipMapRegistration({
     enabled: Boolean(currentDocEntry),
     objectType: 15,
@@ -2068,7 +2092,7 @@ function Delivery() {
 
   // Continue in next part...
 
-  // ── address sync ──────────────────────────────────────────────────────────
+  // â”€â”€ address sync â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     setHeader(prev => {
       if (prev.shipToCode) return prev;
@@ -2156,7 +2180,7 @@ function Delivery() {
     vendorEffectiveBillToAddresses,
   ]);
 
-  // ── vendor details ────────────────────────────────────────────────────────
+  // â”€â”€ vendor details â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const loadVendorDetails = async (code, options = {}) => {
     const { preserveExisting = false, selectedBillToCode = '' } = options;
     if (!code) {
@@ -2212,7 +2236,7 @@ function Delivery() {
           }
 
           if (defaultShipToAddress.State && (!preserveExisting || !prev.placeOfSupply)) {
-            console.log('🌍 Auto-setting Place of Supply from customer address:', defaultShipToAddress.State);
+            console.log('ðŸŒ Auto-setting Place of Supply from customer address:', defaultShipToAddress.State);
             const stateMatch = refData.states.find(st =>
               st.Name === defaultShipToAddress.State || st.Code === defaultShipToAddress.State
             );
@@ -2376,14 +2400,18 @@ function Delivery() {
         journalRemark: getDefaultJournalRemark(code),
         paymentTerms: m.PayTermsGrpCode != null ? String(m.PayTermsGrpCode) : hdr.paymentTerms,
         paymentMethod: getDefaultPaymentMethod(m) || hdr.paymentMethod,
-        currency: String(m.Currency || m.CardCurrency || '').trim() || refData.local_currency || hdr.currency,
+        currency: (
+          String(m.Currency || m.CardCurrency || '').trim() !== '##'
+            ? String(m.Currency || m.CardCurrency || '').trim()
+            : ''
+        ) || refData.local_currency || hdr.currency,
         exchangeRate: '',
         contactPerson: '',
       },
     };
   };
 
-  // ── handlers ──────────────────────────────────────────────────────────────
+  // â”€â”€ handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const buildSalesEmployeeSetupRows = () => {
     const rows = effectiveSalesEmployees.map(employee => {
       const row = {
@@ -2477,7 +2505,7 @@ function Delivery() {
     setValErrors(p => ({ ...p, header: { ...p.header, [name]: '' }, form: '' }));
     setPageState(p => ({ ...p, error: '', success: '' }));
     
-    console.log('🔧 [Delivery] handleHeaderChange called:', { name, value, type });
+    console.log('ðŸ”§ [Delivery] handleHeaderChange called:', { name, value, type });
     
     if (name === 'series') {
       handleSeriesChange(value);
@@ -2525,22 +2553,7 @@ function Delivery() {
     }
 
     if (name === 'currencyMode') {
-      setHeader((previous) => {
-        const nextCurrency = resolveDocumentCurrency({
-          mode: value,
-          cardCode: previous.vendor,
-          businessPartners: refData.vendors || [],
-          currentCurrency: previous.currency,
-          localCurrency: refData.local_currency || '',
-          systemCurrency: refData.system_currency || refData.local_currency || '',
-        });
-        return {
-          ...previous,
-          currencyMode: value,
-          currency: nextCurrency,
-          exchangeRate: nextCurrency === previous.currency ? previous.exchangeRate : '',
-        };
-      });
+      setHeader((previous) => ({ ...previous, currencyMode: value }));
       return;
     }
 
@@ -2584,7 +2597,7 @@ function Delivery() {
     }
     
     if (name === 'branch') {
-      console.log('🏢 [Delivery] Branch changing to:', value);
+      console.log('ðŸ¢ [Delivery] Branch changing to:', value);
       // Clear warehouse when branch changes since it might not belong to the new branch
       setHeader(p => ({ ...p, [name]: value, warehouse: '' }));
       return;
@@ -2675,7 +2688,7 @@ function Delivery() {
           const hsnResponse = await fetchHSNCodeFromItem(value);
           const hsnData = hsnResponse.data;
           
-          console.log('🔍 Item Selected - HSN Data:', {
+          console.log('ðŸ” Item Selected - HSN Data:', {
             itemCode: value,
             hsnCode: hsnData.hsnCode,
             hsnDescription: hsnData.hsnDescription,
@@ -2712,7 +2725,7 @@ function Delivery() {
             // Step 3: Get Base Tax Code from Item Master
             const baseTaxCode = item.TaxCodeAR || item.SalTaxCode || '';
             
-            console.log('🔍 Item Selected:', {
+            console.log('ðŸ” Item Selected:', {
               itemCode: item.ItemCode,
               itemName: item.ItemName,
               hsnCode: next.hsnCode,
@@ -2726,7 +2739,7 @@ function Delivery() {
             
             // Step 5: Validate States
             if (!gstState || !companyState) {
-              console.warn('⚠️ Missing state information for tax determination');
+              console.warn('âš ï¸ Missing state information for tax determination');
               next.taxCode = '';
               next.total = fmtDec(calcLineTotal(next), numDec.total);
               return next;
@@ -2744,9 +2757,9 @@ function Delivery() {
             
             if (determinedTaxCode) {
               next.taxCode = determinedTaxCode;
-              console.log(`✅ Auto-assigned tax code: ${determinedTaxCode} (${getGSTTypeLabel(companyState, gstState)})`);
+              console.log(`âœ… Auto-assigned tax code: ${determinedTaxCode} (${getGSTTypeLabel(companyState, gstState)})`);
             } else {
-              console.warn('⚠️ Could not determine tax code automatically');
+              console.warn('âš ï¸ Could not determine tax code automatically');
               next.taxCode = '';
             }
             
@@ -2755,7 +2768,7 @@ function Delivery() {
           }));
         }
       } catch (error) {
-        console.error('❌ Error fetching HSN code:', error);
+        console.error('âŒ Error fetching HSN code:', error);
         // Fallback to basic item selection without HSN
         setLines(prev => prev.map((line, idx) => {
           if (idx !== i) return line;
@@ -2797,6 +2810,8 @@ function Delivery() {
     setLines(prev => prev.map((line, idx) => {
       if (idx !== i) return line;
       const next = { ...line, [name]: numDec[name] !== undefined ? sanitize(value, numDec[name]) : value };
+                if (name === 'uomName') next.uomNameEdited = true;
+                if (name === 'uomCode') { next.uomName = value; next.uomNameEdited = false; }
       if (TAX_SENSITIVE_LINE_FIELDS.has(name)) {
         next.taxAmount = '';
       }
@@ -2834,7 +2849,7 @@ function Delivery() {
         fetchUomConversionFactor(next.itemNo, value)
           .then(response => {
             const { factor, inventoryUOM: invUoM } = response.data;
-            console.log('🔄 UoM Conversion:', {
+            console.log('ðŸ”„ UoM Conversion:', {
               itemCode: next.itemNo,
               documentUoM: value,
               inventoryUOM: invUoM,
@@ -2852,7 +2867,7 @@ function Delivery() {
             ));
           })
           .catch(error => {
-            console.error('❌ Failed to fetch UoM conversion factor:', error);
+            console.error('âŒ Failed to fetch UoM conversion factor:', error);
             // Default to factor 1 if fetch fails
             setLines(prevLines => prevLines.map((l, lIdx) => 
               lIdx === i ? { ...l, uomFactor: 1 } : l
@@ -2938,7 +2953,7 @@ function Delivery() {
     setPageState(p => ({ ...p, error: '' }));
     markDirty();
     
-    console.log('➕ [Delivery] Adding new line with header values:', {
+    console.log('âž• [Delivery] Adding new line with header values:', {
       branch: header.branch,
       loc: header.branch,
       whse: header.warehouse
@@ -3001,7 +3016,7 @@ function Delivery() {
     setFormSettingsOpen(true);
   };
 
-  // ── Address Modal handlers ────────────────────────────────────────────────
+  // â”€â”€ Address Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openAddressModal = (type) => {
     const shipAddress = resolveDeliveryAddress(
       header.shipToCode,
@@ -3107,7 +3122,7 @@ function Delivery() {
     setAddressForm(p => ({ ...p, [name]: value }));
   };
 
-  // ── Tax Info Modal handlers ───────────────────────────────────────────────
+  // â”€â”€ Tax Info Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openTaxInfoModal = () => {
     setTaxInfoModal(true);
   };
@@ -3120,7 +3135,7 @@ function Delivery() {
     closeTaxInfoModal();
   };
 
-  // ── BP Modal handlers ─────────────────────────────────────────────────────
+  // â”€â”€ BP Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openBpModal = () => {
     setBpModal(true);
   };
@@ -3130,7 +3145,7 @@ function Delivery() {
   };
 
   
-  // ── State Modal handlers ──────────────────────────────────────────────────
+  // â”€â”€ State Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openStateModal = () => {
     setStateModal(true);
   };
@@ -3143,7 +3158,7 @@ function Delivery() {
     setHeader(p => ({ ...p, placeOfSupply: getStateCodeValue(state, refData.states) }));
   };
 
-  // ── BP Modal handlers ─────────────────────────────────────────────────────
+  // â”€â”€ BP Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleBpSelect = (bp) => {
     const code = bp.CardCode;
     setHeader(prev => {
@@ -3166,7 +3181,7 @@ function Delivery() {
     setTaxInfoForm(p => ({ ...p, [name]: value }));
   };
 
-  // ── Browse Attachment handler ─────────────────────────────────────────────
+  // â”€â”€ Browse Attachment handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleBrowseAttachment = () => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -3225,7 +3240,7 @@ function Delivery() {
     closeBatchModal();
   };
 
-  // ── HSN Modal handlers ────────────────────────────────────────────────────
+  // â”€â”€ HSN Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openHSNModal = (lineIndex) => {
     setHsnModal({ open: true, lineIndex });
   };
@@ -3245,7 +3260,7 @@ function Delivery() {
     closeHSNModal();
   };
 
-  // ── Item Selection Modal handlers ─────────────────────────────────────────
+  // â”€â”€ Item Selection Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const getPaymentTermsLookupOptions = () => {
     const sourceTerms = (refData.payment_terms || []).map((term) => ({
       code: String(term.GroupNum ?? ''),
@@ -3401,15 +3416,15 @@ function Delivery() {
   };
 
   const openItemModal = async (lineIndex) => {
-    console.log('🔍 Opening item modal for line:', lineIndex);
+    console.log('ðŸ” Opening item modal for line:', lineIndex);
     setItemModal({ open: true, lineIndex, items: [], loading: true });
     
     try {
-      console.log('📡 Fetching items from API...');
+      console.log('ðŸ“¡ Fetching items from API...');
       const selectedWarehouse = lines[lineIndex]?.whse || header.warehouse || '';
       const response = await fetchItemsForModal(selectedWarehouse);
-      console.log('✅ Items received:', response.data);
-      console.log('📊 Items count:', response.data.items?.length || 0);
+      console.log('âœ… Items received:', response.data);
+      console.log('ðŸ“Š Items count:', response.data.items?.length || 0);
       
       setItemModal(prev => ({
         ...prev,
@@ -3417,7 +3432,7 @@ function Delivery() {
         loading: false,
       }));
     } catch (error) {
-      console.error('❌ Failed to load items:', error);
+      console.error('âŒ Failed to load items:', error);
       console.error('Error details:', error.response?.data || error.message);
       setItemModal(prev => ({
         ...prev,
@@ -3437,7 +3452,7 @@ function Delivery() {
     const lineIndex = itemModal.lineIndex;
     const mergedItem = mergeItemMaster(item, refData.items);
     
-    console.log('🎯 [handleItemSelect] Item selected:', {
+    console.log('ðŸŽ¯ [handleItemSelect] Item selected:', {
       ItemCode: item.ItemCode,
       ItemName: item.ItemName,
       BatchManaged: item.BatchManaged,
@@ -3463,7 +3478,7 @@ function Delivery() {
       const selectedUoM = mergedItem.SalesUnit || mergedItem.InventoryUOM || '';
       const displayUoM = selectedUoM;
       
-      console.log('🔍 [handleItemSelect] Selected UoM:', {
+      console.log('ðŸ” [handleItemSelect] Selected UoM:', {
         SalesUnit: item.SalesUnit,
         InventoryUOM: item.InventoryUOM,
         selectedUoM,
@@ -3475,13 +3490,13 @@ function Delivery() {
       if (item.UoMGroupEntry && refData.uom_groups) {
         const uomGroup = refData.uom_groups.find(g => g.AbsEntry === item.UoMGroupEntry);
         if (uomGroup) {
-          console.log('📦 [handleItemSelect] UoM Group Info:', {
+          console.log('ðŸ“¦ [handleItemSelect] UoM Group Info:', {
             groupName: uomGroup.Name,
             availableUoMs: uomGroup.uomCodes,
             conversions: uomGroup.conversions
           });
         } else {
-          console.warn('⚠️ [handleItemSelect] UoM Group not found:', item.UoMGroupEntry);
+          console.warn('âš ï¸ [handleItemSelect] UoM Group not found:', item.UoMGroupEntry);
         }
       }
       
@@ -3491,7 +3506,7 @@ function Delivery() {
       
       if (selectedUoM && mergedItem.ItemCode) {
         try {
-          console.log('🔍 [handleItemSelect] Fetching UoM conversion for:', {
+          console.log('ðŸ” [handleItemSelect] Fetching UoM conversion for:', {
             itemCode: item.ItemCode,
             selectedUoM,
             itemInventoryUOM: item.InventoryUOM
@@ -3499,32 +3514,32 @@ function Delivery() {
           
           const uomRes = await fetchUomConversionFactor(mergedItem.ItemCode, selectedUoM);
           
-          console.log('📦 [handleItemSelect] UoM API Response:', uomRes.data);
+          console.log('ðŸ“¦ [handleItemSelect] UoM API Response:', uomRes.data);
           
           uomFactor = uomRes.data.factor || 1;
           inventoryUOM = uomRes.data.inventoryUOM || mergedItem.InventoryUOM || '';
           
           const docQty = parseNum(currentLine.quantity);
           
-          console.log('🔄 [handleItemSelect] UoM Conversion Applied:', {
+          console.log('ðŸ”„ [handleItemSelect] UoM Conversion Applied:', {
             itemCode: item.ItemCode,
             documentUoM: selectedUoM,
             inventoryUOM,
             factor: uomFactor,
             documentQty: docQty,
             baseQty: docQty * uomFactor,
-            calculation: `${docQty} ${selectedUoM} × ${uomFactor} = ${docQty * uomFactor} ${inventoryUOM}`
+            calculation: `${docQty} ${selectedUoM} Ã— ${uomFactor} = ${docQty * uomFactor} ${inventoryUOM}`
           });
         } catch (uomError) {
-          console.error('❌ [handleItemSelect] Failed to fetch UoM conversion:', uomError);
-          console.error('❌ [handleItemSelect] Error details:', {
+          console.error('âŒ [handleItemSelect] Failed to fetch UoM conversion:', uomError);
+          console.error('âŒ [handleItemSelect] Error details:', {
             message: uomError.message,
             response: uomError.response?.data,
             status: uomError.response?.status
           });
         }
       } else {
-        console.warn('⚠️ [handleItemSelect] Skipping UoM conversion - missing data:', {
+        console.warn('âš ï¸ [handleItemSelect] Skipping UoM conversion - missing data:', {
           hasSelectedUoM: !!selectedUoM,
           hasItemCode: !!item.ItemCode
         });
@@ -3533,12 +3548,12 @@ function Delivery() {
       // Check batch availability BEFORE updating state if item is batch-managed
       let hasBatchesAvailable = false;
       if (itemIsBatchManaged && currentLine.whse) {
-        console.log('🔍 [handleItemSelect] Checking batch availability for:', {
+        console.log('ðŸ” [handleItemSelect] Checking batch availability for:', {
           itemCode: item.ItemCode,
           warehouse: currentLine.whse
         });
         hasBatchesAvailable = await checkBatchAvailability(mergedItem.ItemCode, currentLine.whse);
-        console.log('✅ [handleItemSelect] Batch availability result:', hasBatchesAvailable);
+        console.log('âœ… [handleItemSelect] Batch availability result:', hasBatchesAvailable);
       }
       
       setLines(prev => prev.map((line, idx) => {
@@ -3568,7 +3583,7 @@ function Delivery() {
             taxAmount: '',
           });
           
-          console.log('📝 [handleItemSelect] Updated line:', {
+          console.log('ðŸ“ [handleItemSelect] Updated line:', {
             itemNo: updatedLine.itemNo,
             batchManaged: updatedLine.batchManaged,
             hasBatchesAvailable: updatedLine.hasBatchesAvailable,
@@ -3605,7 +3620,7 @@ function Delivery() {
       
       closeItemModal();
     } catch (error) {
-      console.error('❌ [handleItemSelect] Error selecting item:', error);
+      console.error('âŒ [handleItemSelect] Error selecting item:', error);
       // Still set basic item info even if HSN fetch fails
       const currentLine = lines[lineIndex];
       const itemIsBatchManaged = isBatchManaged(mergedItem);
@@ -3624,7 +3639,7 @@ function Delivery() {
           uomFactor = uomRes.data.factor || 1;
           inventoryUOM = uomRes.data.inventoryUOM || mergedItem.InventoryUOM || '';
         } catch (uomError) {
-          console.error('❌ [handleItemSelect] Failed to fetch UoM conversion in error handler:', uomError);
+          console.error('âŒ [handleItemSelect] Failed to fetch UoM conversion in error handler:', uomError);
         }
       }
       
@@ -3634,7 +3649,7 @@ function Delivery() {
         try {
           hasBatchesAvailable = await checkBatchAvailability(mergedItem.ItemCode, currentLine.whse);
         } catch (batchError) {
-          console.error('❌ [handleItemSelect] Error checking batch availability:', batchError);
+          console.error('âŒ [handleItemSelect] Error checking batch availability:', batchError);
         }
       }
       
@@ -3674,9 +3689,9 @@ function Delivery() {
     }
   };
 
-  // ── Freight Selection Modal handlers ──────────────────────────────────────
+  // â”€â”€ Freight Selection Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openFreightModal = async () => {
-    console.log('🚚 Opening freight modal, docEntry:', currentDocEntry);
+    console.log('ðŸšš Opening freight modal, docEntry:', currentDocEntry);
     if (freightModal.freightCharges.length > 0) {
       setFreightModal(prev => ({ ...prev, open: true, loading: false }));
       return;
@@ -3684,10 +3699,10 @@ function Delivery() {
     setFreightModal(prev => ({ ...prev, open: true, loading: true }));
     
     try {
-      console.log('📡 Fetching freight charges from API...');
+      console.log('ðŸ“¡ Fetching freight charges from API...');
       const response = await fetchFreightCharges(currentDocEntry);
-      console.log('✅ Freight charges received:', response.data);
-      console.log('📊 Freight charges count:', response.data.freightCharges?.length || 0);
+      console.log('âœ… Freight charges received:', response.data);
+      console.log('ðŸ“Š Freight charges count:', response.data.freightCharges?.length || 0);
       
       setFreightModal({
         open: true,
@@ -3695,7 +3710,7 @@ function Delivery() {
         loading: false
       });
     } catch (error) {
-      console.error('❌ Failed to load freight charges:', error);
+      console.error('âŒ Failed to load freight charges:', error);
       console.error('Error details:', error.response?.data || error.message);
       setFreightModal({
         open: true,
@@ -3710,7 +3725,7 @@ function Delivery() {
   };
 
   const handleFreightApply = (summary) => {
-    console.log('🚚 Applied freight charges:', summary);
+    console.log('ðŸšš Applied freight charges:', summary);
     setFreightModal(prev => ({
       ...prev,
       open: false,
@@ -3723,31 +3738,31 @@ function Delivery() {
     }));
   };
 
-  // ── Sync warehouse and branch from header to lines ────────────────────────
+  // â”€â”€ Sync warehouse and branch from header to lines â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Sync branch to all lines when header branch changes
   useEffect(() => {
     if (isHydratingDocumentRef.current) return;
-    console.log('🔄 [Delivery] Branch sync useEffect triggered');
-    console.log('🔄 [Delivery] header.branch value:', header.branch);
-    console.log('🔄 [Delivery] header.branch type:', typeof header.branch);
-    console.log('🔄 [Delivery] Current lines count:', lines.length);
+    console.log('ðŸ”„ [Delivery] Branch sync useEffect triggered');
+    console.log('ðŸ”„ [Delivery] header.branch value:', header.branch);
+    console.log('ðŸ”„ [Delivery] header.branch type:', typeof header.branch);
+    console.log('ðŸ”„ [Delivery] Current lines count:', lines.length);
     
     if (!header.branch || !lines.some(l => String(l.branch || '') !== String(header.branch) || String(l.loc || '') !== String(header.branch))) return;
 
     if (header.branch) {
-      console.log('🔄 [Delivery] Syncing branch to all lines:', header.branch);
+      console.log('ðŸ”„ [Delivery] Syncing branch to all lines:', header.branch);
       setLines(prev => {
-        console.log('🔄 [Delivery] Previous lines:', prev.map(l => ({ itemNo: l.itemNo, branch: l.branch, loc: l.loc })));
+        console.log('ðŸ”„ [Delivery] Previous lines:', prev.map(l => ({ itemNo: l.itemNo, branch: l.branch, loc: l.loc })));
         const updated = prev.map(l => ({ 
           ...l, 
           branch: String(header.branch), 
           loc: String(header.branch)
         }));
-        console.log('✅ [Delivery] Updated lines:', updated.map(l => ({ itemNo: l.itemNo, branch: l.branch, loc: l.loc })));
+        console.log('âœ… [Delivery] Updated lines:', updated.map(l => ({ itemNo: l.itemNo, branch: l.branch, loc: l.loc })));
         return updated;
       });
     } else {
-      console.log('⚠️ [Delivery] Branch is empty, skipping sync');
+      console.log('âš ï¸ [Delivery] Branch is empty, skipping sync');
     }
   }, [header.branch, lines]);
   
@@ -3757,7 +3772,7 @@ function Delivery() {
     if (header.branch && lines.length > 0) {
       const needsSync = lines.some(l => !l.branch || l.branch !== String(header.branch));
       if (needsSync) {
-        console.log('🔄 [Delivery] Initial branch sync needed');
+        console.log('ðŸ”„ [Delivery] Initial branch sync needed');
         setLines(prev => prev.map(l => ({ 
           ...l, 
           branch: String(header.branch), 
@@ -3839,7 +3854,7 @@ function Delivery() {
     });
   }, [header.warehouse]);
 
-  // ── Recalculate Tax Codes on State/Address Changes ────────────────────────
+  // â”€â”€ Recalculate Tax Codes on State/Address Changes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     if (currentDocEntry) return;
     if (!header.vendor || !header.placeOfSupply) return;
@@ -3847,11 +3862,11 @@ function Delivery() {
     const companyState = refData.company_address?.State || selectedBranch?.State || '';
     
     if (!companyState) {
-      console.warn('⚠️ Company state not available for tax recalculation');
+      console.warn('âš ï¸ Company state not available for tax recalculation');
       return;
     }
 
-    console.log('🔄 Recalculating Tax Codes for All Lines:', {
+    console.log('ðŸ”„ Recalculating Tax Codes for All Lines:', {
       placeOfSupply: header.placeOfSupply,
       companyState,
       gstType: getGSTTypeLabel(companyState, header.placeOfSupply),
@@ -3873,7 +3888,7 @@ function Delivery() {
 
   // Continue in next part...
 
-  // ── validation ────────────────────────────────────────────────────────────
+  // â”€â”€ validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const validate = async ({ validateDocumentLines = true } = {}) => {
     const isUpdate = !!currentDocEntry;
     const e = { header: {}, lines: {}, form: '' };
@@ -4175,7 +4190,7 @@ function Delivery() {
     return e;
   };
 
-  // ── Copy From handler ─────────────────────────────────────────────────────
+  // â”€â”€ Copy From handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleCopyFrom = (data, sourceType) => {
     const sourceDocument = data || {};
     const unwrappedDocument =
@@ -4289,13 +4304,13 @@ function Delivery() {
     setPageState(p => ({ ...p, success: `Copied from ${labels[sourceType] || sourceType}` }));
   };
 
-  // ── Copy From Modal Handlers ───────────────────────────────────────────────
+  // â”€â”€ Copy From Modal Handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openCopyFromModal = (docType) => {
     if (currentDocEntry) return;
 
-    console.log('🟢 Copy From Clicked');
+    console.log('ðŸŸ¢ Copy From Clicked');
 
-    // ✅ ONLY BUYER VALIDATION
+    // âœ… ONLY BUYER VALIDATION
     if (!header.vendor) {
       setValErrors({
         header: { vendor: 'Select Customer first' },
@@ -4305,7 +4320,7 @@ function Delivery() {
       return;
     }
 
-    // ✅ CLEAR ALL ERRORS
+    // âœ… CLEAR ALL ERRORS
     setValErrors({ header: {}, lines: {}, form: '' });
     setPageState(p => ({ ...p, error: '', success: '' }));
 
@@ -4313,7 +4328,7 @@ function Delivery() {
     setCopyFromModal(true);
   };
 
-  // ── Copy From fetch handlers ───────────────────────────────────────────────
+  // â”€â”€ Copy From fetch handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const fetchCopyFromDocuments = async (docType) => {
     try {
       const bpCode = String(header.vendor || '').trim();
@@ -4369,7 +4384,7 @@ function Delivery() {
     }
   };
 
-  // ── Copy To handler ───────────────────────────────────────────────────────
+  // â”€â”€ Copy To handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleCopyTo = async (targetType) => {
     await copyToDocument({
       sourceDocType: 'delivery',
@@ -4450,7 +4465,7 @@ function Delivery() {
     }
   };
 
-  // ── submit ────────────────────────────────────────────────────────────────
+  // â”€â”€ submit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleSubmit = async (ev) => {
     ev.preventDefault();
     if (!companyFormSettingsReady) {
@@ -4679,13 +4694,13 @@ function Delivery() {
 
   // Continue in next part with render...
 
-  // ── render ────────────────────────────────────────────────────────────────
+  // â”€â”€ render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   return (
     <form ref={formRef} className={`del-page sap-document-page${isRightSidebarOpen ? ' del-page--sidebar-open' : ''}`} onSubmit={handleSubmit} onChangeCapture={markDirty}>
 
       {/* toolbar */}
       <div className="del-toolbar sap-document-toolbar">
-        <span className="del-toolbar__title">Delivery{currentDocEntry ? ` — #${header.docNo || currentDocEntry}` : ''}</span>
+        <span className="del-toolbar__title">Delivery{currentDocEntry ? ` â€” #${header.docNo || currentDocEntry}` : ''}</span>
         <button type="submit" className="del-btn del-btn--primary sap-document-toolbar__primary" disabled={pageState.posting || !isDocumentEditable} title={primaryActionLabel}>
           {primaryActionLabel}
         </button>
@@ -4740,7 +4755,7 @@ function Delivery() {
               if (!isActive) dropdown.classList.add('active');
             }}
           >
-            Copy From ▼
+            Copy From
           </button>
           <div className="del-dropdown-menu">
             {[
@@ -4779,7 +4794,7 @@ function Delivery() {
               if (!isActive) dropdown.classList.add('active');
             }}
           >
-            Copy To ▼
+            Copy To
           </button>
           <div className="del-dropdown-menu">
             {[
@@ -4810,7 +4825,7 @@ function Delivery() {
       </div>
 
       {/* alerts */}
-      {pageState.loading && <div className="del-alert del-alert--success" style={{ marginTop: 0 }}>Loading…</div>}
+      {pageState.loading && <div className="del-alert del-alert--success" style={{ marginTop: 0 }}>Loading...</div>}
       {pageState.error && <div className="del-alert del-alert--error">{pageState.error}</div>}
       {pageState.success && <div className="del-alert del-alert--success">{pageState.success}</div>}
       {refData.warnings?.length > 0 && (
@@ -4818,7 +4833,7 @@ function Delivery() {
           <strong>SAP warnings:</strong>
           {refData.warnings.map((w, i) => <div key={i}>{w}</div>)}
           <div style={{ marginTop: 4, color: '#555' }}>Dropdowns are showing fallback values. Connect to SAP to load live data.</div>
-          <div style={{ marginTop: 4, color: '#d00', fontWeight: 600 }}>⚠️ Tax codes shown are examples only. Use actual SAP tax codes to avoid submission errors.</div>
+          <div style={{ marginTop: 4, color: '#d00', fontWeight: 600 }}>âš ï¸ Tax codes shown are examples only. Use actual SAP tax codes to avoid submission errors.</div>
         </div>
       )}
 
@@ -4827,7 +4842,7 @@ function Delivery() {
 
           <div className="sap-document-main del-layout__main">
 
-            {/* ══ HEADER CARD ══════════════════════════════════════════════ */}
+            {/* â•â• HEADER CARD â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             <div className="del-header-card">
               <div className="row g-2">
                 {/* LEFT COLUMN */}
@@ -5047,7 +5062,7 @@ function Delivery() {
               </div>
             </div>
 
-            {/* ══ TABS ══════════════════════════════════════════════════════ */}
+            {/* â•â• TABS â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             <fieldset disabled={!hasBuyerCode} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
             <div className="del-tabs" role="tablist" aria-label="Delivery details">
               {TAB_NAMES.map(t => (
@@ -5070,7 +5085,7 @@ function Delivery() {
               ))}
             </div>
 
-            {/* ══ TAB CONTENT ═══════════════════════════════════════════════ */}
+            {/* â•â• TAB CONTENT â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {activeTab === 'Contents' && (
               <ContentsTab
                 lines={lines}
@@ -5154,7 +5169,7 @@ function Delivery() {
 
             {/* Continue in next part... */}
 
-            {/* ══ TOTALS FOOTER ═════════════════════════════════════════════ */}
+            {/* â•â• TOTALS FOOTER â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             <div className="del-header-card">
               <div className="del-field-grid del-field-grid--summary">
                 <div>
@@ -5188,7 +5203,7 @@ function Delivery() {
                       {totals.taxBreakdown.map(t => (
                         <div key={t.taxCode} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 4 }}>
                           <span>{t.taxCode} ({t.taxRate}%)</span>
-                          <span>{fmtDec(t.taxAmount, numDec.tax)}</span>
+                          <span>{formatDisplayMoney(t.taxAmount, numDec.tax)}</span>
                         </div>
                       ))}
                     </div>
@@ -5198,7 +5213,7 @@ function Delivery() {
                       <tbody>
                         <tr>
                           <td>Total Before Discount</td>
-                          <td className="del-grid__cell--num"><input className="del-grid__input" value={fmtDec(totals.subtotal, numDec.total)} readOnly /></td>
+                          <td className="del-grid__cell--num"><input className="del-grid__input" value={formatDisplayMoney(totals.subtotal, numDec.total)} readOnly /></td>
                         </tr>
                         <tr>
                           <td>Discount %</td>
@@ -5236,16 +5251,16 @@ function Delivery() {
                         <tr>
                           <td><input type="checkbox" className="" name="rounding" checked={header.rounding} onChange={handleHeaderChange} style={{ marginRight: 6 }} /><span>Rounding</span></td>
                           <td className="del-grid__cell--num">
-                            <input className="del-grid__input" value={fmtDec(totals.roundingAmount, numDec.totalPaymentDue)} readOnly />
+                            <input className="del-grid__input" value={formatDisplayMoney(totals.roundingAmount, numDec.totalPaymentDue)} readOnly />
                           </td>
                         </tr>
                         <tr>
                           <td>Tax</td>
-                          <td className="del-grid__cell--num"><input className="del-grid__input" value={fmtDec(totals.taxAmt, numDec.tax)} readOnly /></td>
+                          <td className="del-grid__cell--num"><input className="del-grid__input" value={formatDisplayMoney(totals.taxAmt, numDec.tax)} readOnly /></td>
                         </tr>
                         <tr style={{ borderTop: '2px solid #a0aab4' }}>
                           <td style={{ fontWeight: 700, color: '#003366' }}>Total</td>
-                          <td className="del-grid__cell--num" style={{ fontWeight: 700, color: '#003366' }}><input className="del-grid__input" style={{ fontWeight: 700, color: '#003366' }} value={fmtDec(totals.total, numDec.totalPaymentDue)} readOnly /></td>
+                          <td className="del-grid__cell--num" style={{ fontWeight: 700, color: '#003366' }}><input className="del-grid__input" style={{ fontWeight: 700, color: '#003366' }} value={formatDisplayMoney(totals.total, numDec.totalPaymentDue)} readOnly /></td>
                         </tr>
                       </tbody>
                     </table>
@@ -5254,7 +5269,7 @@ function Delivery() {
               </div>
             </div>
 
-            {/* ══ ACTION BUTTONS ════════════════════════════════════════════ */}
+            {/* â•â• ACTION BUTTONS â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {false && (
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '12px', marginBottom: '12px', gap: '8px' }}>
               <div style={{ display: 'flex', gap: '8px' }}>
@@ -5285,7 +5300,7 @@ function Delivery() {
                       if (!isActive) dropdown.classList.add('active');
                     }}
                   >
-                    Copy From ▼
+                    Copy From
                   </button>
                   <div className="del-dropdown-menu">
                     {[
@@ -5325,7 +5340,7 @@ function Delivery() {
                       if (!isActive) dropdown.classList.add('active');
                     }}
                   >
-                    Copy To ▼
+                    Copy To
                   </button>
                   <div className="del-dropdown-menu">
                     {[
@@ -5373,7 +5388,8 @@ function Delivery() {
             headerUdfFields={headerUdfDefinitions}
             rowUdfFields={rowUdfDefinitions}
             formSettings={formSettings}
-            onSettingChange={updateFormSetting}
+          onSettingChange={updateFormSetting}
+          onColumnOrderChange={formSettingsStatus.reorder}
             settingsLoaded={companyFormSettingsReady}
             editablePropertiesByGroup={{ matrixColumns: ['visible'], rowUdfs: ['visible'] }}
             editableSapControlledProperties={{ matrixColumns: ['visible'], headerUdfs: [], rowUdfs: ['visible'] }}
@@ -5381,6 +5397,7 @@ function Delivery() {
             hasUnsavedChanges={formSettingsStatus.hasUnsavedChanges}
             saveError={formSettingsStatus.error}
             onSave={formSettingsStatus.save}
+            onCancel={formSettingsStatus.discard}
             settingsScopeLabel={formSettingsStatus.scopeLabel}
           />
         </div>
@@ -5599,7 +5616,7 @@ function Delivery() {
         freightCharges={freightModal.freightCharges}
         taxCodes={effectiveTaxCodes}
         loading={freightModal.loading}
-        currency={header.currency || refData.local_currency || 'INR'}
+        currency={header.currency || refData.local_currency || ''}
       />
 
       <ExchangeRatesIndexesModal

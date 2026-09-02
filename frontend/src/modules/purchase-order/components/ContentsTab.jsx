@@ -2,10 +2,9 @@ import React from 'react';
 import TaxCodeLookup from '../../../components/TaxCodeLookup';
 import { useSapItemCodeTab } from '../../../utils/sapTabNavigation';
 import { getLineTotalsForDisplay } from '../../../utils/lineTotals';
+import { getOrderedVisibleMatrixColumns } from '../../../utils/formSettingsColumns';
 import {
-  BASE_MATRIX_COLUMN_KEYS,
   BASE_MATRIX_COLUMNS,
-  normalizePurchaseOrderMatrixColumns,
 } from '../../../config/purchaseOrderForm';
 
 const MATRIX_COLS = BASE_MATRIX_COLUMNS;
@@ -139,40 +138,44 @@ export default function ContentsTab({
   );
 
   const baseColumns = React.useMemo(() => {
-    const metadataByKey = new Map(
-      (Array.isArray(matrixFields) ? matrixFields : [])
-        .filter((field) => field?.key)
-        .map((field) => [field.key, field])
-    );
+    const sourceColumns = Array.isArray(matrixFields) && matrixFields.length
+      ? matrixFields
+      : MATRIX_COLS;
+    const liveColumns = sourceColumns
+      .filter((column) => column?.key)
+      .map((column, index) => {
+        const udfField = isUdfColumn(column)
+          ? (column.field || rowUdfFieldMap.get(column.key) || rowUdfFieldMap.get(normalizeUdfKey(column.key)))
+          : null;
+        return {
+          ...column,
+          field: udfField || column.field,
+          minWidth: getColumnWidth(column),
+          order: Number(column.order || column.columnOrder) || index + 1,
+        };
+      })
+      // A stale layout UDF must never render unless the current company schema
+      // supplied the corresponding row-UDF definition.
+      .filter((column) => !isUdfColumn(column) || Boolean(column.field));
 
-    return normalizePurchaseOrderMatrixColumns(MATRIX_COLS.map((baseColumn, index) => {
-      const metadata = metadataByKey.get(baseColumn.key) || {};
-      return {
-        ...baseColumn,
-        ...metadata,
-        key: baseColumn.key,
-        label: baseColumn.label,
-        minWidth: getColumnWidth({ ...baseColumn, ...metadata }),
-        order: baseColumn.order ?? index + 1,
-      };
-    }));
-  }, [matrixFields]);
+    return liveColumns
+      .sort((left, right) => Number(left.order || 0) - Number(right.order || 0));
+  }, [matrixFields, rowUdfFieldMap]);
 
   const getColumnSetting = (column = {}) => {
-    const savedSetting = (
-      formSettings.matrixColumns?.[column.key]
-      || (isUdfColumn(column) ? formSettings.rowUdfs?.[column.key] : undefined)
-      || {}
-    );
+    const udfFieldKey = column.field?.key || column.key;
+    const savedSetting = isUdfColumn(column)
+      ? (formSettings.matrixColumns?.[column.key] || formSettings.rowUdfs?.[udfFieldKey] || {})
+      : (formSettings.matrixColumns?.[column.key] || {});
 
     return {
       ...savedSetting,
-      visible: BASE_MATRIX_COLUMN_KEYS.has(column.key),
-      active: savedSetting.active !== false && column.active !== false,
+      visible: savedSetting.visible !== false && column.visible !== false,
+      active: savedSetting.active !== false && column.active !== false && column.readOnly !== true,
     };
   };
 
-  const visibleColumns = baseColumns.filter((column) => getColumnSetting(column).visible !== false);
+  const visibleColumns = getOrderedVisibleMatrixColumns(baseColumns, formSettings);
   const tableMinWidth = INDEX_COL_WIDTH + ACTION_COL_WIDTH + visibleColumns.reduce((total, col) => total + getColumnWidth(col), 0);
 
   const renderInput = (line, rowIndex, fieldName, options = {}) => (
@@ -255,7 +258,7 @@ export default function ContentsTab({
   };
 
   const renderGenericUdfCell = (column, line, rowIndex) => {
-    const field = rowUdfFieldMap.get(column.key) || column.field || column;
+    const field = column.field || rowUdfFieldMap.get(column.key) || column;
     const disabled = field.active === false || getColumnSetting(column).active === false;
     const value = line.udf?.[field.key] || '';
     const change = (nextValue) => onRowUdfChange && onRowUdfChange(rowIndex, field.key, nextValue);
@@ -294,7 +297,7 @@ export default function ContentsTab({
   const renderCell = (column, line, rowIndex, uomOpts, lineTotals) => {
     const key = column.key;
 
-    if (isUdfColumn(column) && !MATRIX_COLS.some((baseColumn) => baseColumn.key === key)) {
+    if (isUdfColumn(column)) {
       return renderGenericUdfCell(column, line, rowIndex);
     }
 
@@ -379,7 +382,7 @@ export default function ContentsTab({
       case 'uomName':
         return (
           <td key={key}>
-            <input className="so-grid__input" value={line.uomName || line.uomCode || ''} readOnly style={{ background: '#f5f8fc' }} />
+            <input className="so-grid__input" name="uomName" value={line.uomNameEdited ? (line.uomName ?? '') : (line.uomName || line.uomCode || '')} onChange={(e) => onLineChange(rowIndex, e)} />
           </td>
         );
       case 'taxCode':

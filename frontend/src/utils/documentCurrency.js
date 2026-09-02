@@ -57,3 +57,50 @@ export const inferDocumentCurrencyMode = ({
   if (normalizedCurrency === resolvedSystemCurrency) return 'SYSTEM';
   return 'CUSTOM';
 };
+
+export const resolveDisplayCurrency = ({
+  mode = 'BP',
+  documentCurrency = '',
+  localCurrency = DEFAULT_LOCAL_CURRENCY,
+  systemCurrency = '',
+} = {}) => {
+  const normalizedMode = normalizeCurrencyMode(mode);
+  const local = String(localCurrency || '').trim();
+  const system = String(systemCurrency || '').trim() || local;
+  const document = String(documentCurrency || '').trim() || local;
+  if (normalizedMode === 'LOCAL') return local;
+  if (normalizedMode === 'SYSTEM') return system;
+  return document;
+};
+
+export const convertDocumentAmountForDisplay = (value, {
+  mode = 'BP',
+  documentCurrency = '',
+  localCurrency = DEFAULT_LOCAL_CURRENCY,
+  systemCurrency = '',
+  documentRate = '',
+  systemRate = '',
+  postingMethod = 'direct',
+} = {}) => {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return value;
+  const normalizedMode = normalizeCurrencyMode(mode);
+  if (normalizedMode === 'BP' || normalizedMode === 'CUSTOM') return amount;
+
+  const document = String(documentCurrency || '').trim();
+  const local = String(localCurrency || '').trim();
+  const system = String(systemCurrency || '').trim() || local;
+  const rate = Number(documentRate);
+  const localAmount = !document || document === local
+    ? amount
+    : String(postingMethod || '').trim().toLowerCase() === 'indirect'
+      ? (Number.isFinite(rate) && rate > 0 ? amount / rate : amount)
+      : (Number.isFinite(rate) && rate > 0 ? amount * rate : amount);
+
+  if (normalizedMode === 'LOCAL' || system === local) return localAmount;
+  const systemCurrencyRate = Number(systemRate);
+  if (!Number.isFinite(systemCurrencyRate) || systemCurrencyRate <= 0) return localAmount;
+  return String(postingMethod || '').trim().toLowerCase() === 'indirect'
+    ? localAmount * systemCurrencyRate
+    : localAmount / systemCurrencyRate;
+};

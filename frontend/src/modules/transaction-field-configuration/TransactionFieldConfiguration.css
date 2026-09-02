@@ -1,0 +1,135 @@
+.transaction-field-config {
+  min-height: 100%;
+  padding: 0 0 28px;
+  background: transparent;
+  color: #172b4d;
+}
+.transaction-field-config__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 18px;
+}
+.transaction-field-config__header h1 {
+  margin: 3px 0 5px;
+  color: #12345b;
+  font-size: 25px;
+}
+.transaction-field-config__header p { margin: 0; color: #61758c; }
+.transaction-field-config__eyebrow {
+  color: #a36a00;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+.transaction-field-config__company {
+  min-width: 190px;
+  padding: 10px 14px;
+  border: 1px solid #d6e0eb;
+  border-radius: 8px;
+  background: #fff;
+  text-align: right;
+}
+.transaction-field-config__company span,
+.transaction-field-config__company small { display: block; color: #71839a; font-size: 11px; }
+.transaction-field-config__company strong { display: block; margin: 2px 0; }
+.transaction-field-config__card {
+  overflow: hidden;
+  border: 1px solid #cbd7e3;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(27, 55, 90, .07);
+}
+.transaction-field-config__toolbar,
+.transaction-field-config__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 14px 16px;
+}
+.transaction-field-config__toolbar { border-bottom: 1px solid #dce4ed; background: #f8fafc; }
+.transaction-field-config__toolbar label { color: #425b76; font-size: 12px; font-weight: 700; }
+.transaction-field-config select {
+  min-height: 32px;
+  border: 1px solid #9fb1c5;
+  border-radius: 4px;
+  background: #fff;
+  color: #203b5c;
+}
+.transaction-field-config__toolbar label select { display: block; min-width: 220px; margin-top: 5px; padding: 4px 30px 4px 9px; }
+.transaction-field-config__context { display: flex; gap: 14px; color: #63768b; font-size: 12px; }
+.transaction-field-config__context .is-dirty { color: #9a5b00; font-weight: 700; }
+.transaction-field-config__table-wrap { max-height: calc(100vh - 330px); overflow: auto; }
+.transaction-field-config__table { width: 100%; min-width: 980px; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+.transaction-field-config__table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 9px 10px;
+  border-bottom: 1px solid #b8c7d7;
+  border-right: 1px solid #d8e1ea;
+  background: #dce9f5;
+  color: #183b63;
+  text-align: left;
+}
+.transaction-field-config__table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid #e2e8ef;
+  border-right: 1px solid #e7edf3;
+  white-space: nowrap;
+}
+.transaction-field-config__table tbody tr:nth-child(even) { background: #f9fbfd; }
+.transaction-field-config__table tr.is-read-only { color: #8391a1; background: #f2f4f6; }
+.transaction-field-config__table td:last-child { min-width: 220px; }
+.transaction-field-config__table td select { width: 100%; padding: 3px 7px; }
+.transaction-field-config__table td select:disabled { background: #e9edf1; color: #84909d; }
+.transaction-field-config__footer { border-top: 1px solid #dce4ed; color: #6b7d90; font-size: 12px; }
+.transaction-field-config__footer button {
+  min-width: 150px;
+  padding: 8px 14px;
+  border: 1px solid #0b4f88;
+  border-radius: 5px;
+  background: #0b5d9b;
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+.transaction-field-config__footer button:disabled { border-color: #b5c0cb; background: #c9d1d9; cursor: default; }
+.transaction-field-config__state,
+.transaction-field-config__alert { padding: 24px; color: #61758c; }
+.transaction-field-config__alert.is-error,
+.transaction-field-config__message.is-error { color: #a92b2b; }
+.transaction-field-config__custom { padding: 16px; border-bottom: 1px solid #dce4ed; background: #fbfcfe; }
+.transaction-field-config__custom-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.transaction-field-config__custom-heading h2 { margin: 0 0 4px; color: #183b63; font-size: 16px; }
+.transaction-field-config__custom-heading p { margin: 0; color: #65788e; font-size: 12px; }
+.transaction-field-config__custom-heading select { min-width: 240px; padding: 5px 9px; }
+.transaction-field-config__custom-form { display: grid; grid-template-columns: 220px 1fr; gap: 12px; margin-top: 14px; }
+.transaction-field-config__custom-form label { color: #425b76; font-size: 12px; font-weight: 700; }
+.transaction-field-config__custom-form input,
+.transaction-field-config__custom-form textarea { box-sizing: border-box; width: 100%; margin-top: 5px; border: 1px solid #9fb1c5; border-radius: 4px; color: #203b5c; font: inherit; font-weight: 400; }
+.transaction-field-config__custom-form input { min-height: 34px; padding: 6px 8px; }
+.transaction-field-config__custom-form textarea { min-height: 112px; padding: 8px; resize: vertical; font-family: Consolas, monospace; }
+.transaction-field-config__custom-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.transaction-field-config__custom-actions span { flex: 1; color: #65788e; font-size: 12px; }
+.transaction-field-config__custom-actions span.is-error { color: #a92b2b; }
+.transaction-field-config__custom-actions button { padding: 7px 12px; border: 1px solid #8ba0b6; border-radius: 4px; background: #fff; color: #274966; cursor: pointer; }
+.transaction-field-config__custom-actions button.is-primary { border-color: #0b4f88; background: #0b5d9b; color: #fff; }
+.transaction-field-config__custom-actions button:disabled { opacity: .55; cursor: default; }
+.transaction-field-config__preview { max-height: 320px; margin-top: 12px; overflow: auto; border: 1px solid #cbd7e3; background: #fff; }
+.transaction-field-config__preview table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.transaction-field-config__preview th { position: sticky; top: 0; padding: 6px 8px; border: 1px solid #cbd7e3; background: #dce9f5; text-align: left; }
+.transaction-field-config__preview td { padding: 5px 8px; border: 1px solid #e1e7ee; white-space: nowrap; }
+@media (max-width: 760px) {
+  .transaction-field-config { padding: 16px 12px 28px; }
+  .transaction-field-config__header,
+  .transaction-field-config__toolbar,
+  .transaction-field-config__footer { align-items: stretch; flex-direction: column; }
+  .transaction-field-config__company { text-align: left; }
+  .transaction-field-config__table-wrap { max-height: calc(100vh - 390px); }
+  .transaction-field-config__custom-heading,
+  .transaction-field-config__custom-actions { align-items: stretch; flex-direction: column; }
+  .transaction-field-config__custom-form { grid-template-columns: 1fr; }
+}

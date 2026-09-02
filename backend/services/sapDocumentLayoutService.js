@@ -17,6 +17,8 @@ const arCreditMemoDbService = require('./arCreditMemoDbService');
 const purchaseOrderDbService = require('./purchaseOrderDbService');
 const purchaseQuotationDbService = require('./purchaseQuotationDbService');
 const grpoDbService = require('./grpoDbService');
+const apInvoiceDbService = require('./apInvoiceDbService');
+const apCreditMemoDbService = require('./apCreditMemoDbService');
 const serviceArInvoiceDbService = require('./serviceArInvoiceDbService');
 const serviceApInvoiceDbService = require('./serviceApInvoiceDbService');
 const serviceApCreditMemoDbService = require('./serviceApCreditMemoDbService');
@@ -166,6 +168,26 @@ const DOCUMENT_TYPES = {
     tableName: 'PDN1',
     fallbackColumns: createCommonFallbackColumns(),
     getReferenceData: () => grpoDbService.getReferenceData && grpoDbService.getReferenceData(),
+  },
+  AP_INVOICE: {
+    documentType: 'AP_INVOICE',
+    objectType: '18',
+    formType: '141',
+    matrixId: '38',
+    headerTable: 'OPCH',
+    tableName: 'PCH1',
+    fallbackColumns: createCommonFallbackColumns(),
+    getReferenceData: () => apInvoiceDbService.getReferenceData(),
+  },
+  AP_CREDIT_MEMO: {
+    documentType: 'AP_CREDIT_MEMO',
+    objectType: '19',
+    formType: '181',
+    matrixId: '38',
+    headerTable: 'ORPC',
+    tableName: 'RPC1',
+    fallbackColumns: createCommonFallbackColumns(),
+    getReferenceData: () => apCreditMemoDbService.getReferenceData(),
   },
   SERVICE_AR_INVOICE: {
     documentType: 'SERVICE_AR_INVOICE',
@@ -1222,7 +1244,10 @@ const buildGenericLiveLayoutColumnsFromCprf = async (mapping, scope) => {
 };
 
 const getLiveDerivedLayoutColumns = async (mapping, scope, { preferCprf = false } = {}) => {
-  if (preferCprf) {
+  // Service documents share SAP form IDs with item documents, but the matrix
+  // column semantics differ. CPRF plus the service-specific definitions is
+  // therefore authoritative; inherited item reference metadata is not.
+  if (preferCprf || mapping.serviceLineMode) {
     const cprfColumns = await buildGenericLiveLayoutColumnsFromCprf(mapping, scope);
     if (cprfColumns.length) return cprfColumns;
   }
@@ -1302,10 +1327,31 @@ const getDocumentLayout = async (auth, input = {}) => {
     matrixId: mapping.matrixId,
   });
 
+  const savedServiceTokens = new Set(savedLiveRows.flatMap((row) => [
+    row.fieldName,
+    row.columnUid,
+    row.columnTitle,
+  ].map(normalizeLayoutMatchToken).filter(Boolean)));
+  const savedServiceLayoutHasAccount = [
+    'ACCTCODE',
+    'ACCOUNTCODE',
+    'GLACCOUNT',
+  ].some((fieldToken) => savedServiceTokens.has(fieldToken));
+  const savedServiceLayoutIsIncompatible = Boolean(
+    mapping.serviceLineMode
+    && savedLiveRows.length
+    && (
+      savedServiceTokens.has('ITEMCODE')
+      || savedServiceTokens.has('WAREHOUSECODE')
+      || savedServiceTokens.has('WHSCODE')
+      || !savedServiceLayoutHasAccount
+    )
+  );
+
   const savedLiveRowsMissingUdfs = LIVE_MARKETING_LAYOUT_WITH_UDFS.has(mapping.documentType)
     && savedLiveRows.length;
 
-  if (!refreshLive && savedLiveRows.length && !savedLiveRowsMissingUdfs) {
+  if (!refreshLive && savedLiveRows.length && !savedLiveRowsMissingUdfs && !savedServiceLayoutIsIncompatible) {
     const sanitizedSavedLiveRows = sanitizeLayoutColumns(savedLiveRows.map(mapRowToColumn));
     if (sanitizedSavedLiveRows.length !== savedLiveRows.length) {
       await saveLayoutRows({

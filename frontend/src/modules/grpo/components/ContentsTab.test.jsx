@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import ContentsTab from './ContentsTab';
 
 const baseProps = {
@@ -85,4 +85,45 @@ test('keeps a loaded GRPO line warehouse even when it is not in filtered options
   const warehouse = screen.getByRole('combobox');
   expect(warehouse).toHaveValue('GJ-Sales');
   expect(screen.getByRole('option', { name: 'GJ-Sales' })).toBeInTheDocument();
+});
+
+test('appends and edits an arbitrary visible current-company row UDF', () => {
+  const onRowUdfChange = jest.fn();
+  render(
+    <ContentsTab
+      {...baseProps}
+      lines={[{ itemNo: 'RM-001', udf: { U_Inspection: 'Required' } }]}
+      visibleColumns={[
+        { key: 'itemNo', label: 'Item No.' },
+        {
+          key: 'U_Inspection',
+          label: 'Inspection',
+          isUdf: true,
+          field: { key: 'U_Inspection', label: 'Inspection', type: 'text' },
+        },
+      ]}
+      visibleRowUdfs={[{ key: 'U_Inspection', label: 'Inspection', type: 'text' }]}
+      formSettings={{ matrixColumns: { U_Inspection: { visible: true, active: true } }, rowUdfs: {} }}
+      onRowUdfChange={onRowUdfChange}
+    />
+  );
+
+  expect(screen.getByText('Inspection')).toBeInTheDocument();
+  fireEvent.change(screen.getByDisplayValue('Required'), { target: { value: 'Done' } });
+  expect(onRowUdfChange).toHaveBeenCalledWith(0, 'U_Inspection', 'Done');
+});
+
+test('hides a live GRPO UDF column when Form Settings clears visibility', () => {
+  const field = { key: 'U_Inspection', label: 'Inspection', type: 'text' };
+  render(
+    <ContentsTab
+      {...baseProps}
+      lines={[{ itemNo: 'RM-001', udf: { U_Inspection: 'Required' } }]}
+      visibleColumns={[{ key: 'U_Inspection', label: 'Inspection', isUdf: true, field }]}
+      visibleRowUdfs={[]}
+      formSettings={{ matrixColumns: {}, rowUdfs: { U_Inspection: { visible: false } } }}
+    />
+  );
+
+  expect(screen.queryByText('Inspection')).not.toBeInTheDocument();
 });

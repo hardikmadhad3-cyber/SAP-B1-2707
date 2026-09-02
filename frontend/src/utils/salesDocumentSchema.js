@@ -9,6 +9,16 @@ export const SALES_DOCUMENT_SCHEMA_TYPES = Object.freeze({
   DELIVERY: Object.freeze({ objectType: '15', headerTable: 'ODLN', lineTable: 'DLN1' }),
   AR_INVOICE: Object.freeze({ objectType: '13', headerTable: 'OINV', lineTable: 'INV1' }),
   AR_CREDIT_MEMO: Object.freeze({ objectType: '14', headerTable: 'ORIN', lineTable: 'RIN1' }),
+  PURCHASE_REQUEST: Object.freeze({ objectType: '1470000113', headerTable: 'OPRQ', lineTable: 'PRQ1', purchaseDocument: true }),
+  PURCHASE_QUOTATION: Object.freeze({ objectType: '540000006', headerTable: 'OPQT', lineTable: 'PQT1', purchaseDocument: true }),
+  PURCHASE_ORDER: Object.freeze({ objectType: '22', headerTable: 'OPOR', lineTable: 'POR1', purchaseDocument: true }),
+  GRPO: Object.freeze({ objectType: '20', headerTable: 'OPDN', lineTable: 'PDN1', purchaseDocument: true }),
+  AP_INVOICE: Object.freeze({ objectType: '18', headerTable: 'OPCH', lineTable: 'PCH1', purchaseDocument: true }),
+  AP_CREDIT_MEMO: Object.freeze({ objectType: '19', headerTable: 'ORPC', lineTable: 'RPC1', purchaseDocument: true }),
+  SERVICE_AR_INVOICE: Object.freeze({ objectType: '13', headerTable: 'OINV', lineTable: 'INV1', serviceLineMode: true }),
+  SERVICE_AR_CREDIT_MEMO: Object.freeze({ objectType: '14', headerTable: 'ORIN', lineTable: 'RIN1', serviceLineMode: true }),
+  SERVICE_AP_INVOICE: Object.freeze({ objectType: '18', headerTable: 'OPCH', lineTable: 'PCH1', serviceLineMode: true }),
+  SERVICE_AP_CREDIT_MEMO: Object.freeze({ objectType: '19', headerTable: 'ORPC', lineTable: 'RPC1', serviceLineMode: true }),
 });
 
 export const SALES_DOCUMENT_SCHEMA_LOOKUP_SOURCES = new Set([
@@ -29,7 +39,7 @@ export const SALES_DOCUMENT_SCHEMA_LOOKUP_SOURCES = new Set([
   'udo',
 ]);
 
-export const SALES_DOCUMENT_SCHEMA_LOOKUP_LIMIT = 50;
+export const SALES_DOCUMENT_SCHEMA_LOOKUP_LIMIT = 100;
 
 export const getSalesDocumentFieldKey = (field = {}) => String(
   field.stateKey || field.sapField || field.databaseField || field.id || '',

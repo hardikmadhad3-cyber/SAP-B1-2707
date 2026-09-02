@@ -68,7 +68,7 @@ const DELIVERY_STANDARD_FIELD_OVERRIDES = Object.freeze({
   taxCode: Object.freeze({ type: 'text', minWidth: 115 }),
   countryOfOrigin: Object.freeze({ type: 'text', minWidth: 185 }),
   uomCode: Object.freeze({ type: 'text', minWidth: 110 }),
-  uomName: Object.freeze({ type: 'text', readOnly: true, minWidth: 120 }),
+  uomName: Object.freeze({ type: 'text', readOnly: false, active: true, minWidth: 120 }),
   cogsDistRule: Object.freeze({ type: 'text', minWidth: 135 }),
   inStock: Object.freeze({ type: 'number', numeric: true, readOnly: true, minWidth: 105 }),
   qtyInWhse: Object.freeze({ type: 'number', numeric: true, readOnly: true, minWidth: 115 }),
@@ -135,7 +135,7 @@ export const normalizeDeliveryMatrixColumn = (column = {}) => {
     isUdf: false,
     isUdfBacked: false,
     field: undefined,
-    readOnly: Boolean(standardOverride.readOnly || column.readOnly),
+    readOnly: Boolean(standardOverride.readOnly ?? column.readOnly),
   };
 };
 
@@ -215,12 +215,13 @@ const reconcileLayoutColumnsWithCompanySchema = (layoutMatrixColumns = [], compa
       lookupTable: schemaColumn.lookupTable || layoutColumn.lookupTable,
       lookup: schemaColumn.lookup || layoutColumn.lookup,
       options: schemaColumn.options || layoutColumn.options,
-      readOnly: Boolean(standardOverride.readOnly || schemaColumn.readOnly || layoutColumn.readOnly),
+      readOnly: Boolean(standardOverride.readOnly ?? schemaColumn.readOnly ?? layoutColumn.readOnly),
       // SAP's CPRF EditInForm value is the Form Settings authority. Schema
       // safety is represented separately by readOnly, so it must not change
       // the Active checkbox shown for the selected SAP user/company.
       active: layoutColumn.active !== false,
       schemaDriven: Boolean(schemaColumn.schemaDriven || layoutColumn.schemaDriven),
+      lookupConfigured: Boolean(schemaColumn.lookupConfigured || layoutColumn.lookupConfigured),
       schemaFieldId: schemaColumn.schemaFieldId || layoutColumn.schemaFieldId,
       fieldId: schemaColumn.fieldId || layoutColumn.fieldId,
       serviceLayerField: schemaColumn.serviceLayerField || layoutColumn.serviceLayerField,

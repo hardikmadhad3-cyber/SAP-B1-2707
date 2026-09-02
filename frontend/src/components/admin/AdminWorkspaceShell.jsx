@@ -75,9 +75,12 @@ const AdminWorkspaceShell = ({ children }) => {
     location.pathname === entity.path || location.pathname.startsWith(`${entity.path}/`)
   );
   const isGeneralSettings = location.pathname === '/admin/general-settings';
-  const pageTitle = isGeneralSettings ? 'General Settings' : (currentEntity?.title || (location.pathname === '/admin' ? 'Overview' : 'Admin Workspace'));
+  const isFieldConfiguration = location.pathname === '/admin/transaction-field-configuration';
+  const pageTitle = isGeneralSettings ? 'General Settings' : (isFieldConfiguration ? 'Transaction Field Configuration' : (currentEntity?.title || (location.pathname === '/admin' ? 'Overview' : 'Admin Workspace')));
   const pageDescription = isGeneralSettings
     ? 'Assign company-specific defaults to application users.'
+    : isFieldConfiguration
+      ? 'Assign standard or custom query lookups to transaction line fields.'
     : (currentEntity?.description || 'Manage application setup, users, roles, and access rights.');
 
   const handleAdminLogout = () => {
@@ -104,6 +107,9 @@ const AdminWorkspaceShell = ({ children }) => {
             </NavLink>
             <NavLink to="/admin/general-settings" className={({ isActive }) => `admin-workspace__nav-link${isActive ? ' is-active' : ''}`}>
               General Settings
+            </NavLink>
+            <NavLink to="/admin/transaction-field-configuration" className={({ isActive }) => `admin-workspace__nav-link${isActive ? ' is-active' : ''}`}>
+              Transaction Fields
             </NavLink>
           </div>
 

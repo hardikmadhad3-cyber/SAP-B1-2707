@@ -12,6 +12,13 @@ const WORKSPACE_LINKS = [
     path: '/admin/general-settings',
     count: 'Open',
   },
+  {
+    key: 'transaction-field-configuration',
+    title: 'Transaction Field Configuration',
+    description: 'Assign standard or custom SQL/HANA lookup queries to transaction line fields.',
+    path: '/admin/transaction-field-configuration',
+    count: 'Open',
+  },
 ];
 
 const AdminPanelHome = () => {

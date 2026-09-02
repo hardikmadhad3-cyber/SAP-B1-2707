@@ -28,7 +28,6 @@ test('preserves edited destination values on a GRPO-based A/P Invoice line', () 
   });
 
   assert.deepEqual(documentLine, {
-    ItemCode: 'RM-001',
     ItemDescription: 'Edited invoice description',
     Quantity: 4,
     UnitPrice: 244,
@@ -89,6 +88,28 @@ test('keeps manual A/P Invoice values without adding base references', () => {
   assert.equal(documentLine.BaseLine, undefined);
 });
 
+test('serializes edited UoM Name on manual A/P Invoice lines', () => {
+  const documentLine = buildAPInvoiceDocumentLine({
+    itemNo: 'RM-005',
+    quantity: 2,
+    unitPrice: 50,
+    uomName: 'Mtr.',
+  });
+
+  assert.equal(documentLine.UoMCode, 'Mtr.');
+});
+test('does not restore UoMCode after A/P Invoice UoM Name is cleared', () => {
+  const documentLine = buildAPInvoiceDocumentLine({
+    itemNo: 'RM-006',
+    quantity: 2,
+    unitPrice: 50,
+    uomName: '',
+    uomCode: 'MTR',
+    uomNameEdited: true,
+  });
+
+  assert.equal(documentLine.UoMCode, undefined);
+});
 test('continues filtering line UDFs with the allowed SAP field set', () => {
   const documentLine = buildAPInvoiceDocumentLine(
     {

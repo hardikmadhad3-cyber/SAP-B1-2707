@@ -11,8 +11,18 @@ const {
   AR_CREDIT_MEMO_DOCUMENT,
   AR_INVOICE_DOCUMENT,
   DELIVERY_DOCUMENT,
+  AP_CREDIT_MEMO_DOCUMENT,
+  AP_INVOICE_DOCUMENT,
+  GRPO_DOCUMENT,
+  PURCHASE_ORDER_DOCUMENT,
+  PURCHASE_QUOTATION_DOCUMENT,
+  PURCHASE_REQUEST_DOCUMENT,
   SALES_ORDER_DOCUMENT,
   SALES_QUOTATION_DOCUMENT,
+  SERVICE_AP_CREDIT_MEMO_DOCUMENT,
+  SERVICE_AP_INVOICE_DOCUMENT,
+  SERVICE_AR_CREDIT_MEMO_DOCUMENT,
+  SERVICE_AR_INVOICE_DOCUMENT,
   resolveSalesDocument,
 } = require('../modules/newSalesOrder/newSalesOrderConstants');
 const companyA = require('./fixtures/newSalesOrderCompanyA');
@@ -39,6 +49,110 @@ test('resolves the five standard Sales-A/R document profiles', () => {
   }
 });
 
+test('resolves all four SAP service-document profiles', () => {
+  const profiles = [
+    [SERVICE_AR_INVOICE_DOCUMENT, '13', 'OINV', 'INV1'],
+    [SERVICE_AR_CREDIT_MEMO_DOCUMENT, '14', 'ORIN', 'RIN1'],
+    [SERVICE_AP_INVOICE_DOCUMENT, '18', 'OPCH', 'PCH1'],
+    [SERVICE_AP_CREDIT_MEMO_DOCUMENT, '19', 'ORPC', 'RPC1'],
+  ];
+
+  for (const [profile, objectType, headerTable, lineTable] of profiles) {
+    assert.equal(resolveSalesDocument(profile.documentType), profile);
+    assert.equal(profile.objectType, objectType);
+    assert.equal(profile.headerTable, headerTable);
+    assert.equal(profile.lineTable, lineTable);
+    assert.equal(profile.serviceLineMode, true);
+  }
+});
+
+test('resolves all six SAP item purchase-document profiles', () => {
+  const profiles = [
+    [PURCHASE_REQUEST_DOCUMENT, '1470000113', '1470000200', 'OPRQ', 'PRQ1'],
+    [PURCHASE_QUOTATION_DOCUMENT, '540000006', '540000988', 'OPQT', 'PQT1'],
+    [PURCHASE_ORDER_DOCUMENT, '22', '142', 'OPOR', 'POR1'],
+    [GRPO_DOCUMENT, '20', '143', 'OPDN', 'PDN1'],
+    [AP_INVOICE_DOCUMENT, '18', '141', 'OPCH', 'PCH1'],
+    [AP_CREDIT_MEMO_DOCUMENT, '19', '181', 'ORPC', 'RPC1'],
+  ];
+
+  for (const [profile, objectType, formType, headerTable, lineTable] of profiles) {
+    assert.equal(resolveSalesDocument(profile.documentType), profile);
+    assert.equal(profile.objectType, objectType);
+    assert.equal(profile.formType, formType);
+    assert.equal(profile.headerTable, headerTable);
+    assert.equal(profile.lineTable, lineTable);
+    assert.equal(profile.purchaseDocument, true);
+    assert.equal(profile.serviceLineMode, undefined);
+  }
+});
+
+test('service schemas expose service standards and only current-company UDFs', () => {
+  for (const profile of [
+    SERVICE_AR_INVOICE_DOCUMENT,
+    SERVICE_AR_CREDIT_MEMO_DOCUMENT,
+    SERVICE_AP_INVOICE_DOCUMENT,
+    SERVICE_AP_CREDIT_MEMO_DOCUMENT,
+  ]) {
+    const metadata = {
+      dialect: 'hana',
+      physical: {
+        [profile.headerTable]: [{ columnName: 'CardCode', databaseType: 'nvarchar', ordinal: 1 }],
+        [profile.lineTable]: [
+          { columnName: 'ItemCode', databaseType: 'nvarchar', ordinal: 1 },
+          { columnName: 'Dscription', databaseType: 'nvarchar', ordinal: 2 },
+          { columnName: 'AcctCode', databaseType: 'nvarchar', ordinal: 3 },
+          { columnName: 'Price', databaseType: 'decimal', ordinal: 4 },
+          { columnName: 'VatGroup', databaseType: 'nvarchar', ordinal: 5 },
+          { columnName: 'LineTotal', databaseType: 'decimal', ordinal: 6 },
+          { columnName: 'U_CurrentCompany', databaseType: 'nvarchar', ordinal: 7 },
+        ],
+      },
+      udfs: {
+        [profile.headerTable]: [],
+        [profile.lineTable]: [{
+          tableName: profile.lineTable,
+          fieldId: 1,
+          aliasId: 'CurrentCompany',
+          sapField: 'U_CurrentCompany',
+          label: 'Current Company',
+          typeId: 'A',
+          options: [],
+        }],
+      },
+      layout: [
+        {
+          tableName: profile.lineTable,
+          columnUid: 'ItemCode',
+          fieldName: 'ItemCode',
+          columnTitle: 'Item No.',
+          visible: 1,
+          editable: 1,
+          columnOrder: 1,
+        },
+        {
+          tableName: profile.lineTable,
+          columnUid: 'U_Deleted',
+          fieldName: 'U_Deleted',
+          columnTitle: 'Deleted',
+          visible: 1,
+          editable: 1,
+          isUdf: 1,
+          columnOrder: 99,
+        },
+      ],
+    };
+
+    const schema = buildDocumentSchema({ context: companyA.context, metadata, rawDocument: profile });
+    assert.equal(getField(schema, `${profile.lineTable}.Dscription`).stateKey, 'description');
+    assert.equal(getField(schema, `${profile.lineTable}.AcctCode`).stateKey, 'glAccount');
+    assert.equal(getField(schema, `${profile.lineTable}.LineTotal`).readOnly, true);
+    assert.ok(getField(schema, `${profile.lineTable}.U_CurrentCompany`));
+    assert.equal(schema.lineFields.some((field) => field.sapField === 'U_Deleted'), false);
+    assert.equal(schema.lineFields.some((field) => field.sapField === 'ItemCode'), false);
+  }
+});
+
 test('builds live standard and UDF fields against every document profile table pair', () => {
   const profiles = [
     SALES_QUOTATION_DOCUMENT,
@@ -46,6 +160,12 @@ test('builds live standard and UDF fields against every document profile table p
     DELIVERY_DOCUMENT,
     AR_INVOICE_DOCUMENT,
     AR_CREDIT_MEMO_DOCUMENT,
+    PURCHASE_REQUEST_DOCUMENT,
+    PURCHASE_QUOTATION_DOCUMENT,
+    PURCHASE_ORDER_DOCUMENT,
+    GRPO_DOCUMENT,
+    AP_INVOICE_DOCUMENT,
+    AP_CREDIT_MEMO_DOCUMENT,
   ];
 
   for (const profile of profiles) {

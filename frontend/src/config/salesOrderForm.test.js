@@ -36,7 +36,7 @@ test('keeps Sales Order metadata authoritative except for saved line visibility'
     hsnCode: {
       visible: false,
       active: true,
-      order: 14,
+      order: 1,
       minWidth: 95,
       sapControlled: true,
     },

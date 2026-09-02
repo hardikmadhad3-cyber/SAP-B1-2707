@@ -8,6 +8,13 @@ const { applyUdfValues, isBlankUdfValue, normalizeUdfValue } = require('./udfPay
 const { buildAPInvoiceDocumentLine } = require('./apInvoicePayloadUtils');
 const { applyPlaceOfSupplyUdf } = require('./placeOfSupplyUtils');
 const { buildDocumentSeriesPayload } = require('./documentSeriesPayloadUtils');
+const {
+  applySapDocumentCurrency,
+  loadCompanyCurrencyContext,
+  loadDocumentCurrencyReferenceData,
+  mergeCurrencyReferenceData,
+  normalizeCopyDocumentRate,
+} = require('./salesDocumentCurrencyService');
 
 const formatDateForSAP = (value) => {
   if (!value) return null;
@@ -248,7 +255,11 @@ const validateAPInvoicePayload = async (payload, docEntry = null) => {
 
 const getReferenceData = async () => {
   try {
-    return await apInvoiceDb.getReferenceData();
+    const [data, currencyContext] = await Promise.all([
+      apInvoiceDb.getReferenceData(),
+      loadCompanyCurrencyContext(),
+    ]);
+    return mergeCurrencyReferenceData(data, currencyContext);
   } catch (error) {
     return {
       company: '',
@@ -357,7 +368,10 @@ const getAPInvoiceList = async ({
 
 const getAPInvoice = async (docEntry) => {
   try {
-    return await apInvoiceDb.getAPInvoice(docEntry);
+    return normalizeCopyDocumentRate(
+      await apInvoiceDb.getAPInvoice(docEntry),
+      await loadDocumentCurrencyReferenceData(),
+    );
   } catch (error) {
     throw new Error(`Failed to load A/P Invoice: ${error.message}`);
   }
@@ -397,7 +411,10 @@ const getOpenGRPO = async (vendorCode = null) => {
 
 const getGRPOForCopy = async (docEntry) => {
   try {
-    return await apInvoiceDb.getGRPOForCopy(docEntry);
+    return normalizeCopyDocumentRate(
+      await apInvoiceDb.getGRPOForCopy(docEntry),
+      await loadDocumentCurrencyReferenceData(),
+    );
   } catch (error) {
     error.message = `Failed to load GRPO: ${error.message}`;
     throw error;
@@ -446,7 +463,6 @@ const submitAPInvoice = async (payload) => {
     }
 
     Object.assign(sapPayload, buildDocumentSeriesPayload(header));
-    if (header.currency) sapPayload.DocCurrency = String(header.currency).trim();
     if (header.shipToCode) sapPayload.ShipToCode = String(header.shipToCode).trim();
     if (header.payToCode) sapPayload.PayToCode = String(header.payToCode).trim();
     if (header.branch) sapPayload.BPLId = parseInt(header.branch, 10);
@@ -460,6 +476,11 @@ const submitAPInvoice = async (payload) => {
     applyPlaceOfSupplyUdf(sapPayload, headerUdfDefinitionsByKey, header.placeOfSupply);
     setKnownUdfValue(sapPayload, headerUdfDefinitionsByKey, ['TransactionType', 'TransType', 'DocumentType', 'DocType'], header.transactionType);
     setKnownUdfValue(sapPayload, headerUdfDefinitionsByKey, ['Indicator'], header.indicator);
+    applySapDocumentCurrency(
+      sapPayload,
+      header,
+      await loadDocumentCurrencyReferenceData(header),
+    );
     console.log('Constructed SAP Payload:', sapPayload);
 
     const response = await sapService.request({
@@ -504,6 +525,11 @@ const updateAPInvoice = async (docEntry, payload) => {
     applyPlaceOfSupplyUdf(sapPayload, headerUdfDefinitionsByKey, header.placeOfSupply);
     setKnownUdfValue(sapPayload, headerUdfDefinitionsByKey, ['TransactionType', 'TransType', 'DocumentType', 'DocType'], header.transactionType);
     setKnownUdfValue(sapPayload, headerUdfDefinitionsByKey, ['Indicator'], header.indicator);
+    applySapDocumentCurrency(
+      sapPayload,
+      header,
+      await loadDocumentCurrencyReferenceData(header),
+    );
 
     await sapService.request({
       method: 'PATCH',

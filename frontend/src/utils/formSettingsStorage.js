@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { fetchFormSettings, saveFormSettings } from '../api/formSettingsApi';
+import { reorderFormSettingPreferences } from './formSettingsColumns';
 
 const normalizeScopePart = (value) =>
   String(value ?? '')
@@ -325,6 +326,25 @@ export const useCompanyScopedFormSettings = (
     }
   }, [baseStorageKey, selectedCompanyId, selectedUserId, storageKey]);
 
+  const discardScopedFormSettings = useCallback(() => {
+    saveRequestRef.current += 1;
+    hasLocalChangesRef.current = false;
+    setPersistence({ saving: false, error: '' });
+    setState((previous) => {
+      if (previous.storageKey !== storageKey) return previous;
+      return {
+        ...previous,
+        settings: readSettings(storageKey),
+        saveVersion: previous.savedVersion || 0,
+      };
+    });
+    return true;
+  }, [readSettings, storageKey]);
+
+  const reorderScopedFormSettings = useCallback((orderedFields) => {
+    setScopedFormSettings((previous) => reorderFormSettingPreferences(previous, orderedFields));
+  }, [setScopedFormSettings]);
+
   const isCurrentScope = state.storageKey === storageKey;
   const formSettingsStatus = {
     loaded: isCurrentScope && state.loaded,
@@ -334,6 +354,8 @@ export const useCompanyScopedFormSettings = (
     hasUnsavedChanges: isCurrentScope && state.saveVersion > state.savedVersion,
     saveMode,
     save: saveScopedFormSettings,
+    discard: discardScopedFormSettings,
+    reorder: reorderScopedFormSettings,
     scopeLabel: [
       normalizeScopePart(user?.username || user?.Username || selectedUserId),
       normalizeScopePart(company?.dbName || company?.companyName || company?.name || selectedCompanyId),

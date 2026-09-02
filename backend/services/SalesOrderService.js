@@ -6,7 +6,10 @@ const { getActiveCompanyConfig } = require('./companyConfigService');
 const { getUdfDefinitionsOrEmpty } = require('./udfMetadataService');
 const { isBlankUdfValue, normalizeUdfValues } = require('./udfPayloadUtils');
 const { buildDocumentSeriesPayload } = require('./documentSeriesPayloadUtils');
-const { applyDocumentCurrency } = require('./documentCurrencyUtils');
+const {
+  applySapDocumentCurrency,
+  normalizeCopyDocumentRateForCompany,
+} = require('./salesDocumentCurrencyService');
 const {
   fromSapStoredRate,
   normalizeRateSettings,
@@ -14,8 +17,9 @@ const {
 } = require('./currencyRateUtils');
 
 const normalizeBranchId = (branch) => {
-  const normalized = String(branch || '').trim();
-  return normalized === '' ? -1 : Number(normalized);
+  const normalized = String(branch ?? '').trim();
+  const branchId = Number(normalized);
+  return Number.isInteger(branchId) && branchId > 0 ? branchId : undefined;
 };
 
 const getUdfDefinitionsByKey = async (tableId) => {
@@ -41,10 +45,11 @@ const validateRequiredBranchAndWarehouse = (payload = {}, options = {}) => {
   }
 };
 
-// ───────── HELPERS ─────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€ HELPERS â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object || {}, key);
 const firstPresent = (...values) => values.find((value) => value !== undefined && value !== null);
+const isTruthyFlag = (value) => (['Y', 'YES', 'TRUE', '1', 'TYES'].includes(String(value ?? '').trim().toUpperCase()));
 const hasFieldMetadata = (fieldMetadata, fieldName) => Object.keys(fieldMetadata || {}).some(
   (key) => String(key).trim().toLowerCase() === String(fieldName).trim().toLowerCase(),
 );
@@ -233,26 +238,26 @@ const buildDocumentReferencesPayload = (references = []) => {
 };
 
 const convertSalesEmployeeToCode = async (input, salesEmployees = []) => {
-  console.log('🔍 convertSalesEmployeeToCode called with input:', input, 'Type:', typeof input);
+  console.log('ðŸ” convertSalesEmployeeToCode called with input:', input, 'Type:', typeof input);
   
   // Handle empty or -1 values
   if (!input || input === '-1' || input === -1 || String(input).trim() === '') {
-    console.log('🔹 Sales Employee: Ignored (empty or -1)');
+    console.log('ðŸ”¹ Sales Employee: Ignored (empty or -1)');
     return null;
   }
 
   // If numeric (and not -1), treat as SlpCode
   if (!isNaN(input) && Number(input) !== -1) {
     const code = Number(input);
-    console.log('🔹 Sales Employee: Using existing code', code);
+    console.log('ðŸ”¹ Sales Employee: Using existing code', code);
     return code;
   }
 
   // It's a name, search in ODBC data first
   const name = String(input).trim();
   
-  console.log('🔍 Searching for Sales Employee in ODBC data:', name);
-  console.log('🔍 Available Sales Employees:', salesEmployees.map(e => e.SlpName).join(', '));
+  console.log('ðŸ” Searching for Sales Employee in ODBC data:', name);
+  console.log('ðŸ” Available Sales Employees:', salesEmployees.map(e => e.SlpName).join(', '));
   
   // Search in ODBC data (case-insensitive)
   const found = salesEmployees.find(emp => 
@@ -260,12 +265,12 @@ const convertSalesEmployeeToCode = async (input, salesEmployees = []) => {
   );
   
   if (found) {
-    console.log('✅ Sales Employee found in ODBC data:', name, '→ Code:', found.SlpCode);
+    console.log('âœ… Sales Employee found in ODBC data:', name, 'â†’ Code:', found.SlpCode);
     return found.SlpCode;
   }
 
   // Not found in ODBC data, try Service Layer API
-  console.log('⚠️ Sales Employee not found in ODBC data, trying Service Layer API...');
+  console.log('âš ï¸ Sales Employee not found in ODBC data, trying Service Layer API...');
   
   const escapedName = name.replace(/'/g, "''");
 
@@ -275,16 +280,16 @@ const convertSalesEmployeeToCode = async (input, salesEmployees = []) => {
       url: `/SalesPersons?$filter=SalesEmployeeName eq '${escapedName}'&$select=SalesEmployeeCode,SalesEmployeeName`,
     });
 
-    console.log('🔍 Service Layer search result:', JSON.stringify(searchResult.data, null, 2));
+    console.log('ðŸ” Service Layer search result:', JSON.stringify(searchResult.data, null, 2));
 
     if (searchResult.data?.value?.length > 0) {
       const slpCode = searchResult.data.value[0].SalesEmployeeCode;
-      console.log('✅ Sales Employee found via Service Layer:', name, '→ Code:', slpCode);
+      console.log('âœ… Sales Employee found via Service Layer:', name, 'â†’ Code:', slpCode);
       return slpCode;
     }
 
     // Not found, create new one
-    console.log('➕ Creating new Sales Employee:', name);
+    console.log('âž• Creating new Sales Employee:', name);
     
     const createResult = await sapService.request({
       method: 'post',
@@ -296,12 +301,12 @@ const convertSalesEmployeeToCode = async (input, salesEmployees = []) => {
     });
 
     const newSlpCode = createResult.data?.SalesEmployeeCode;
-    console.log('✅ Sales Employee created:', name, '→ Code:', newSlpCode);
+    console.log('âœ… Sales Employee created:', name, 'â†’ Code:', newSlpCode);
     
     return newSlpCode;
 
   } catch (error) {
-    console.error('❌ Failed to get/create Sales Employee:', name);
+    console.error('âŒ Failed to get/create Sales Employee:', name);
     console.error('Error:', error.response?.data || error.message);
     throw new Error(`Sales Employee '${name}' could not be created: ${error.message}`);
   }
@@ -314,18 +319,18 @@ const convertSalesEmployeeToCode = async (input, salesEmployees = []) => {
  * @returns {Promise<number|null>} empID or null if not found
  */
 const convertOwnerToCode = async (input, owners = []) => {
-  console.log('🔍 convertOwnerToCode called with input:', input, 'Type:', typeof input);
+  console.log('ðŸ” convertOwnerToCode called with input:', input, 'Type:', typeof input);
   
   // Handle empty values
   if (!input || String(input).trim() === '') {
-    console.log('🔹 Owner: Ignored (empty)');
+    console.log('ðŸ”¹ Owner: Ignored (empty)');
     return null;
   }
 
   // If numeric, treat as empID
   if (!isNaN(input)) {
     const code = Number(input);
-    console.log('🔹 Owner: Using existing empID', code);
+    console.log('ðŸ”¹ Owner: Using existing empID', code);
     return code;
   }
 
@@ -345,12 +350,12 @@ const convertOwnerToCode = async (input, owners = []) => {
   });
   
   if (found) {
-    console.log('✅ Owner found in ODBC data:', name, '→ empID:', found.empID);
+    console.log('âœ… Owner found in ODBC data:', name, 'â†’ empID:', found.empID);
     return found.empID;
   }
 
   // Not found in ODBC data, try Service Layer API
-  console.log('⚠️ Owner not found in ODBC data, trying Service Layer API...');
+  console.log('âš ï¸ Owner not found in ODBC data, trying Service Layer API...');
   
   const escapedName = name.replace(/'/g, "''");
 
@@ -360,19 +365,19 @@ const convertOwnerToCode = async (input, owners = []) => {
       url: `/EmployeesInfo?$filter=FirstName eq '${escapedName}' or LastName eq '${escapedName}'&$select=EmployeeID,FirstName,LastName`,
     });
 
-    console.log('🔍 Service Layer search result:', JSON.stringify(searchResult.data, null, 2));
+    console.log('ðŸ” Service Layer search result:', JSON.stringify(searchResult.data, null, 2));
 
     if (searchResult.data?.value?.length > 0) {
       const empID = searchResult.data.value[0].EmployeeID;
-      console.log('✅ Owner found via Service Layer:', name, '→ empID:', empID);
+      console.log('âœ… Owner found via Service Layer:', name, 'â†’ empID:', empID);
       return empID;
     }
 
-    console.log('⚠️ Owner not found:', name, '(Owner is optional, continuing without it)');
+    console.log('âš ï¸ Owner not found:', name, '(Owner is optional, continuing without it)');
     return null;
 
   } catch (error) {
-    console.warn('⚠️ Failed to search for Owner:', name);
+    console.warn('âš ï¸ Failed to search for Owner:', name);
     console.warn('Error:', error.response?.data || error.message);
     return null; // Owner is optional, don't fail the whole operation
   }
@@ -409,6 +414,14 @@ const toRequiredNumber = (value, fallback = 0) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const getHeaderDiscountPercent = (header = {}) => {
+  const rawValue = header.discount ?? header.DiscountPercent ?? header.DiscPrcnt;
+  if (rawValue === undefined || rawValue === null) return undefined;
+  const textValue = String(rawValue).replace(/,/g, '').trim();
+  if (!textValue) return 0;
+  const parsed = Number(textValue);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
 const toRequiredString = (value, fallback = '') => {
   const normalized = value == null ? '' : String(value).trim();
   return normalized || fallback;
@@ -567,7 +580,7 @@ const SALES_ORDER_LINE_UDF_MAPPINGS = [
   { sapField: 'U_DocKey', getValue: (line, context) => context.docEntry },
   { sapField: 'U_ItemCode', getValue: (line) => line.itemNo },
   { sapField: 'U_Item_Desc', getValue: (line) => line.itemDescription },
-  { sapField: 'U_UoM', getValue: (line) => line.uomName || line.uomCode },
+  { sapField: 'U_UoM', getValue: (line) => (line.uomNameEdited ? line.uomName : (line.uomName || line.uomCode)) },
 ];
 
 const normalizeSapUdfFieldName = (value) => String(value || '').trim().toUpperCase();
@@ -736,10 +749,14 @@ const buildDocumentLinePayload = async (line = {}, context = {}) => {
     documentLine.LineNum = Number(line.lineNum);
   }
 
-  const rawUomValue = line.uomEntry ?? line.UoMEntry ?? line.uomCode;
+  const uomNameEdited = isTruthyFlag(line.uomNameEdited);
+  const rawUomValue = uomNameEdited
+    ? (line.uomName ?? line.UoMName ?? line.UomName ?? line.UnitMsr ?? line.unitMsr ?? line.uomCode)
+    : (line.uomEntry ?? line.UoMEntry ?? line.uomName ?? line.UoMName ?? line.UomName ?? line.UnitMsr ?? line.unitMsr ?? line.uomCode);
   const resolvedUomEntry = await salesOrderDb.resolveSalesOrderLineUomEntry(
     documentLine.ItemCode,
     rawUomValue,
+    { allowDefaultFallback: !uomNameEdited },
   );
   if (resolvedUomEntry !== null && resolvedUomEntry !== undefined) {
     documentLine.UoMEntry = resolvedUomEntry;
@@ -748,7 +765,11 @@ const buildDocumentLinePayload = async (line = {}, context = {}) => {
       ? (line.uomName || line.unitMsr || rawUomValue)
       : rawUomValue;
     if (hasValue(uomCode)) {
-      documentLine.UoMCode = String(uomCode).trim();
+      if (uomNameEdited) {
+        documentLine.MeasureUnit = String(uomCode).trim();
+      } else {
+        documentLine.UoMCode = String(uomCode).trim();
+      }
     }
   }
 
@@ -928,7 +949,7 @@ const buildDocumentLinesPayload = async (lines = [], includeLineNum = false, ext
   );
 };
 
-// ───────── REFERENCE DATA (USING ODBC) ─────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€ REFERENCE DATA (USING ODBC) â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const getUniqueTaxCodesForLog = (payload = {}, documentLines = [], documentAdditionalExpenses = []) => {
   const codes = new Set();
@@ -1165,7 +1186,7 @@ const getReferenceData = async (companyId) => {
   }
 };
 
-// ───────── CUSTOMER DETAILS (USING ODBC) ─────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€ CUSTOMER DETAILS (USING ODBC) â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const getCustomerDetails = async (customerCode) => {
   try {
@@ -1178,7 +1199,7 @@ const getCustomerDetails = async (customerCode) => {
   }
 };
 
-// ───────── SALES ORDER LIST (USING ODBC) ─────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€ SALES ORDER LIST (USING ODBC) â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const getSalesOrderList = async ({
   query = '',
@@ -1296,7 +1317,7 @@ const getSalesOrderFilterOptions = async ({
   }
 };
 
-// ───────── GET SINGLE ORDER (USING ODBC) ─────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€ GET SINGLE ORDER (USING ODBC) â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const getReferenceDocumentLookup = async ({
   transactionType = '',
@@ -1339,7 +1360,7 @@ const getSalesOrder = async (docEntry) => {
   }
 };
 
-// ───────── CREATE ORDER (USING SERVICE LAYER) ─────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€ CREATE ORDER (USING SERVICE LAYER) â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const submitSalesOrder = async (payload) => {
   try {
@@ -1347,57 +1368,58 @@ const submitSalesOrder = async (payload) => {
     const branchesEnabled = Boolean(refData.branches_enabled ?? (refData.branches || []).length > 0);
     validateRequiredBranchAndWarehouse(payload, { branchesEnabled });
 
-    console.log("═══════════════════════════════════════════════════");
-    console.log("🔥 CREATE - RECEIVED PAYLOAD FROM FRONTEND:");
+    console.log("â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
+    console.log("ðŸ”¥ CREATE - RECEIVED PAYLOAD FROM FRONTEND:");
     console.log("  salesEmployee:", payload.header.salesEmployee);
     console.log("  purchaser:", payload.header.purchaser);
     console.log("  owner:", payload.header.owner);
-    console.log("═══════════════════════════════════════════════════");
+    console.log("â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
     
-    // ═══════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // STEP 1: Load ODBC Master Data
-    // ═══════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     const salesEmployees = refData.sales_employees || [];
     const owners = refData.owners || [];
     
-    console.log('📚 ODBC Data Loaded:');
+    console.log('ðŸ“š ODBC Data Loaded:');
     console.log('  - Sales Employees:', salesEmployees.length);
     console.log('  - Owners:', owners.length);
     if (salesEmployees.length > 0) {
       console.log('  - Available Sales Employees:', salesEmployees.map(e => `${e.SlpName} (${e.SlpCode})`).join(', '));
     }
     
-    // ═══════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // STEP 2: Determine Final Sales Employee Input (Fallback Logic)
-    // ═══════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     let salesEmployeeInput = payload.header.salesEmployee;
     
     // Apply fallback: if salesEmployee is -1 or empty, use purchaser
     if (!salesEmployeeInput || salesEmployeeInput === '-1' || salesEmployeeInput === -1) {
-      console.log('⚠️  salesEmployee is empty or -1, falling back to purchaser');
+      console.log('âš ï¸  salesEmployee is empty or -1, falling back to purchaser');
       salesEmployeeInput = payload.header.purchaser;
     }
     
-    console.log('🎯 Final Sales Employee Input:', salesEmployeeInput);
+    console.log('ðŸŽ¯ Final Sales Employee Input:', salesEmployeeInput);
     
-    // ═══════════════════════════════════════════════════════════════
-    // STEP 3: Convert Name → SlpCode using ODBC Data
-    // ═══════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // STEP 3: Convert Name â†’ SlpCode using ODBC Data
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     const SlpCode = await convertSalesEmployeeToCode(salesEmployeeInput, salesEmployees);
-    console.log('✅ Resolved SlpCode:', SlpCode);
+    console.log('âœ… Resolved SlpCode:', SlpCode);
 
-    // ═══════════════════════════════════════════════════════════════
-    // STEP 4: Convert Owner Name → empID using ODBC Data
-    // ═══════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // STEP 4: Convert Owner Name â†’ empID using ODBC Data
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     const OwnerCode = await convertOwnerToCode(payload.header.owner, owners);
-    console.log('✅ Resolved OwnerCode:', OwnerCode);
+    console.log('âœ… Resolved OwnerCode:', OwnerCode);
 
-    // ═══════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // STEP 5: Extract Remarks and Freight
-    // ═══════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     const Remarks = payload.header.otherInstruction || payload.header.remarks || '';
     const JournalRemark = payload.header.journalRemark || '';
     const Freight = payload.header.freight ? Number(payload.header.freight) : 0;
+    const DiscountPercent = getHeaderDiscountPercent(payload.header);
     const documentAdditionalExpenses = buildDocumentAdditionalExpenses(payload.freightCharges);
     const documentLines = await buildDocumentLinesPayload(payload.lines);
     const documentReferences = payload.reference_documents_changed
@@ -1410,8 +1432,8 @@ const submitSalesOrder = async (payload) => {
       documentAdditionalExpenses,
     });
 
-    console.log("═══════════════════════════════════════════════════");
-    console.log("🔥 FINAL CONVERTED VALUES:");
+    console.log("â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
+    console.log("ðŸ”¥ FINAL CONVERTED VALUES:");
     console.log({
       SalesPersonCode: SlpCode,
       DocumentsOwner: OwnerCode,
@@ -1419,7 +1441,7 @@ const submitSalesOrder = async (payload) => {
       HeaderFreightInput: Freight,
       DocumentAdditionalExpenses: documentAdditionalExpenses.length
     });
-    console.log("═══════════════════════════════════════════════════");
+    console.log("â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
     
     // Transform payload to SAP format
     const sapPayload = {
@@ -1433,13 +1455,14 @@ const submitSalesOrder = async (payload) => {
 
       ContactPersonCode: payload.header.contactPerson ? Number(payload.header.contactPerson) : undefined,
       
-      // ✅ Branch mapping - try multiple field names
+      // âœ… Branch mapping - try multiple field names
       ...(branchesEnabled && payload.header.branch ? {
         BPLId: normalizeBranchId(payload.header.branch),
         BPL_IDAssignedToInvoice: normalizeBranchId(payload.header.branch),
       } : {}),
 
       PaymentGroupCode: payload.header.paymentTerms ? Number(payload.header.paymentTerms) : undefined,
+      ...(DiscountPercent !== undefined ? { DiscountPercent } : {}),
       ...(payload.header.paymentMethod ? { PaymentMethod: payload.header.paymentMethod } : {}),
       ...(JournalRemark ? { JournalMemo: JournalRemark } : {}),
       ...(toOptionalNumber(payload.header.shippingType) !== undefined ? { TransportationCode: toOptionalNumber(payload.header.shippingType) } : {}),
@@ -1447,32 +1470,31 @@ const submitSalesOrder = async (payload) => {
       ...(hasOwn(payload.header, 'confirmed') ? { Confirmed: toSapYesNo(payload.header.confirmed) } : {}),
       Rounding: toSapYesNo(payload.header.rounding),
 
-      // ✅ Add Sales Employee if present (converted from name to code)
+      // âœ… Add Sales Employee if present (converted from name to code)
       ...(SlpCode !== null && SlpCode !== undefined ? { SalesPersonCode: SlpCode } : {}),
 
-      // ✅ Add Owner if present (converted from name to empID)
+      // âœ… Add Owner if present (converted from name to empID)
       ...(OwnerCode !== null && OwnerCode !== undefined ? { DocumentsOwner: OwnerCode } : {}),
 
-      // ✅ Add Remarks
+      // âœ… Add Remarks
       ...(Remarks ? { Comments: Remarks } : {}),
 
-      // ✅ Add Freight
+      // âœ… Add Freight
       ...(documentAdditionalExpenses.length > 0 ? { DocumentAdditionalExpenses: documentAdditionalExpenses } : {}),
       ...(payload.reference_documents_changed ? { DocumentReferences: documentReferences } : {}),
       ...buildSalesOrderAddressPayload(payload.header),
 
-      // ✅ Add NumAtCard for customer reference
+      // âœ… Add NumAtCard for customer reference
       NumAtCard: payload.header.customerRefNo || payload.header.salesContractNo || undefined,
 
       DocumentLines: documentLines
     };
-    applyDocumentCurrency(sapPayload, {
+    applySapDocumentCurrency(sapPayload, {
       ...payload.header,
       currency: resolveSalesOrderDocumentCurrency(payload.header, refData),
-      exchangeRate: toSapStoredRate(payload.header.exchangeRate, refData.exchange_rate_settings),
-    });
+    }, refData);
 
-    // ✅ Only add U_PlaceOfSupply if it has a value (optional UDF)
+    // âœ… Only add U_PlaceOfSupply if it has a value (optional UDF)
     const headerUdfDefinitionsByKey = await getUdfDefinitionsByKey('ORDR');
     const allowedHeaderUdfKeys = new Set(headerUdfDefinitionsByKey.keys());
     if (payload.header.placeOfSupply && allowedHeaderUdfKeys.has('U_PlaceOfSupply')) {
@@ -1485,10 +1507,10 @@ const submitSalesOrder = async (payload) => {
       ...buildSalesOrderTaxInfoHeaderUdfs(payload.tax_info || payload.taxInfoForm || {}, allowedHeaderUdfKeys),
     }, allowedHeaderUdfKeys, headerUdfDefinitionsByKey));
 
-    console.log("═══════════════════════════════════════════════════");
-    console.log("🔥 SAP PAYLOAD TO BE SENT:");
+    console.log("â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
+    console.log("ðŸ”¥ SAP PAYLOAD TO BE SENT:");
     console.log(JSON.stringify(sapPayload, null, 2));
-    console.log("═══════════════════════════════════════════════════");
+    console.log("â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
 
     // Use Service Layer for POST operations
     const response = await sapService.request({
@@ -1497,10 +1519,10 @@ const submitSalesOrder = async (payload) => {
       data: sapPayload,
     });
 
-    console.log("═══════════════════════════════════════════════════");
-    console.log("✅ SAP RESPONSE:");
+    console.log("â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
+    console.log("âœ… SAP RESPONSE:");
     console.log(JSON.stringify(response.data, null, 2));
-    console.log("═══════════════════════════════════════════════════");
+    console.log("â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
 
     return {
       message: 'Sales order created successfully',
@@ -1510,12 +1532,12 @@ const submitSalesOrder = async (payload) => {
       DocEntry: response.data?.DocEntry,
     };
   } catch (error) {
-    console.error('═══════════════════════════════════════════════════');
-    console.error('❌ SAP ERROR RESPONSE:');
+    console.error('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
+    console.error('âŒ SAP ERROR RESPONSE:');
     console.error('Status:', error.response?.status);
     console.error('Status Text:', error.response?.statusText);
     console.error('Error Data:', JSON.stringify(error.response?.data, null, 2));
-    console.error('═══════════════════════════════════════════════════');
+    console.error('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
     
     // Extract meaningful error message from SAP
     if (String(error.code || '').startsWith('SAP_SERVICE_LAYER_LOGIN_')) {
@@ -1540,7 +1562,7 @@ const submitSalesOrder = async (payload) => {
   }
 };
 
-// ───────── UPDATE ORDER (USING SERVICE LAYER) ─────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€ UPDATE ORDER (USING SERVICE LAYER) â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const updateSalesOrder = async (docEntry, payload) => {
   try {
@@ -1548,58 +1570,59 @@ const updateSalesOrder = async (docEntry, payload) => {
     const branchesEnabled = Boolean(refData.branches_enabled ?? (refData.branches || []).length > 0);
     validateRequiredBranchAndWarehouse(payload, { branchesEnabled });
 
-    console.log("═══════════════════════════════════════════════════");
-    console.log("🔥 UPDATE - RECEIVED PAYLOAD FROM FRONTEND:");
+    console.log("â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
+    console.log("ðŸ”¥ UPDATE - RECEIVED PAYLOAD FROM FRONTEND:");
     console.log("  DocEntry:", docEntry);
     console.log("  salesEmployee:", payload.header.salesEmployee);
     console.log("  purchaser:", payload.header.purchaser);
     console.log("  owner:", payload.header.owner);
-    console.log("═══════════════════════════════════════════════════");
+    console.log("â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
 
-    // ═══════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // STEP 1: Load ODBC Master Data
-    // ═══════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     const salesEmployees = refData.sales_employees || [];
     const owners = refData.owners || [];
     
-    console.log('📚 ODBC Data Loaded:');
+    console.log('ðŸ“š ODBC Data Loaded:');
     console.log('  - Sales Employees:', salesEmployees.length);
     console.log('  - Owners:', owners.length);
     if (salesEmployees.length > 0) {
       console.log('  - Available Sales Employees:', salesEmployees.map(e => `${e.SlpName} (${e.SlpCode})`).join(', '));
     }
     
-    // ═══════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // STEP 2: Determine Final Sales Employee Input (Fallback Logic)
-    // ═══════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     let salesInput = payload.header.salesEmployee;
     
     // Apply fallback: if salesEmployee is -1 or empty, use purchaser
     if (!salesInput || salesInput === '-1' || salesInput === -1) {
-      console.log('⚠️  salesEmployee is empty or -1, falling back to purchaser');
+      console.log('âš ï¸  salesEmployee is empty or -1, falling back to purchaser');
       salesInput = payload.header.purchaser;
     }
     
-    console.log('🎯 Final Sales Employee Input:', salesInput);
+    console.log('ðŸŽ¯ Final Sales Employee Input:', salesInput);
     
-    // ═══════════════════════════════════════════════════════════════
-    // STEP 3: Convert Name → SlpCode using ODBC Data
-    // ═══════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // STEP 3: Convert Name â†’ SlpCode using ODBC Data
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     const SlpCode = await convertSalesEmployeeToCode(salesInput, salesEmployees);
-    console.log('✅ Resolved SlpCode:', SlpCode);
+    console.log('âœ… Resolved SlpCode:', SlpCode);
 
-    // ═══════════════════════════════════════════════════════════════
-    // STEP 4: Convert Owner Name → empID using ODBC Data
-    // ═══════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // STEP 4: Convert Owner Name â†’ empID using ODBC Data
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     const OwnerCode = await convertOwnerToCode(payload.header.owner, owners);
-    console.log('✅ Resolved OwnerCode:', OwnerCode);
+    console.log('âœ… Resolved OwnerCode:', OwnerCode);
 
-    // ═══════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // STEP 5: Extract Remarks and Freight
-    // ═══════════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     const Remarks = payload.header.otherInstruction || payload.header.remarks || '';
     const JournalRemark = payload.header.journalRemark || '';
     const Freight = Number(payload.header.freight) || 0;
+    const DiscountPercent = getHeaderDiscountPercent(payload.header);
     const documentAdditionalExpenses = buildDocumentAdditionalExpenses(payload.freightCharges);
     const documentLines = await buildDocumentLinesPayload(payload.lines, true, {
       docEntry,
@@ -1615,8 +1638,8 @@ const updateSalesOrder = async (docEntry, payload) => {
       documentAdditionalExpenses,
     });
 
-    console.log("═══════════════════════════════════════════════════");
-    console.log("🔥 FINAL CONVERTED VALUES:");
+    console.log("â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
+    console.log("ðŸ”¥ FINAL CONVERTED VALUES:");
     console.log({
       SalesPersonCode: SlpCode,
       DocumentsOwner: OwnerCode,
@@ -1624,10 +1647,10 @@ const updateSalesOrder = async (docEntry, payload) => {
       HeaderFreightInput: Freight,
       DocumentAdditionalExpenses: documentAdditionalExpenses.length
     });
-    console.log("═══════════════════════════════════════════════════");
+    console.log("â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
 
     // =========================
-    // ✅ BUILD PAYLOAD
+    // âœ… BUILD PAYLOAD
     // =========================
     const sapPayload = {
       CardCode: payload.header.vendor?.trim(),
@@ -1640,13 +1663,14 @@ const updateSalesOrder = async (docEntry, payload) => {
         ? Number(payload.header.contactPerson)
         : undefined,
 
-      ...(branchesEnabled && payload.header.branch
-        ? { BPL_IDAssignedToInvoice: Number(payload.header.branch) }
+      ...(branchesEnabled && normalizeBranchId(payload.header.branch) !== undefined
+        ? { BPL_IDAssignedToInvoice: normalizeBranchId(payload.header.branch) }
         : {}),
 
       PaymentGroupCode: payload.header.paymentTerms
         ? Number(payload.header.paymentTerms)
         : undefined,
+      ...(DiscountPercent !== undefined ? { DiscountPercent } : {}),
       ...(payload.header.paymentMethod ? { PaymentMethod: payload.header.paymentMethod } : {}),
       ...(JournalRemark ? { JournalMemo: JournalRemark } : {}),
       ...(toOptionalNumber(payload.header.shippingType) !== undefined ? { TransportationCode: toOptionalNumber(payload.header.shippingType) } : {}),
@@ -1664,14 +1688,13 @@ const updateSalesOrder = async (docEntry, payload) => {
 
       DocumentLines: documentLines
     };
-    applyDocumentCurrency(sapPayload, {
+    applySapDocumentCurrency(sapPayload, {
       ...payload.header,
       currency: resolveSalesOrderDocumentCurrency(payload.header, refData),
-      exchangeRate: toSapStoredRate(payload.header.exchangeRate, refData.exchange_rate_settings),
-    });
+    }, refData);
 
     // =========================
-    // ✅ OPTIONAL UDF
+    // âœ… OPTIONAL UDF
     // =========================
     const headerUdfDefinitionsByKey = await getUdfDefinitionsByKey('ORDR');
     const allowedHeaderUdfKeys = new Set(headerUdfDefinitionsByKey.keys());
@@ -1685,10 +1708,10 @@ const updateSalesOrder = async (docEntry, payload) => {
       ...buildSalesOrderTaxInfoHeaderUdfs(payload.tax_info || payload.taxInfoForm || {}, allowedHeaderUdfKeys),
     }, allowedHeaderUdfKeys, headerUdfDefinitionsByKey));
 
-    console.log("🔥 FINAL SAP PAYLOAD:", JSON.stringify(sapPayload, null, 2));
+    console.log("ðŸ”¥ FINAL SAP PAYLOAD:", JSON.stringify(sapPayload, null, 2));
 
     // =========================
-    // ✅ PATCH CALL
+    // âœ… PATCH CALL
     // =========================
     const response = await sapService.request({
       method: 'patch',
@@ -1696,10 +1719,10 @@ const updateSalesOrder = async (docEntry, payload) => {
       data: sapPayload,
     });
 
-    console.log("═══════════════════════════════════════════════════");
-    console.log("✅ SAP UPDATE RESPONSE:");
+    console.log("â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
+    console.log("âœ… SAP UPDATE RESPONSE:");
     console.log(JSON.stringify(response.data, null, 2));
-    console.log("═══════════════════════════════════════════════════");
+    console.log("â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
 
     return {
       message: 'Sales order updated successfully',
@@ -1707,12 +1730,12 @@ const updateSalesOrder = async (docEntry, payload) => {
     };
 
   } catch (error) {
-    console.error("❌ UPDATE ERROR:", error.response?.data || error.message);
+    console.error("âŒ UPDATE ERROR:", error.response?.data || error.message);
     throw error;
   }
 };
 
-// ───────── DOCUMENT SERIES ─────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€ DOCUMENT SERIES â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const getDocumentSeries = async (targetDate = null, { branch = '' } = {}) => {
   try {
@@ -1993,7 +2016,7 @@ module.exports = {
   _resolveSalesOrderDocumentCurrency: resolveSalesOrderDocumentCurrency,
   _buildDocumentLinePayload: buildDocumentLinePayload,
   getOpenSalesOrders:          async (customerCode = '') => { try { return { documents: await salesOrderDb.getOpenSalesOrders(customerCode) }; } catch(e) { return { documents: [] }; } },
-  getSalesOrderForCopy:        async (d) => salesOrderDb.getSalesOrderForCopy(d),
+  getSalesOrderForCopy:        async (d) => normalizeCopyDocumentRateForCompany(await salesOrderDb.getSalesOrderForCopy(d)),
   getOpenSalesQuotations:      async (customerCode = '') => { try { const sq = require('./salesQuotationDbService'); return { documents: await sq.getOpenSalesQuotations(customerCode) }; } catch(e) { return { documents: [] }; } },
-  getSalesQuotationForCopy:    async (d) => { const sq = require('./salesQuotationDbService'); return sq.getSalesQuotationForCopy(d); },
+  getSalesQuotationForCopy:    async (d) => { const sq = require('./salesQuotationDbService'); return normalizeCopyDocumentRateForCompany(await sq.getSalesQuotationForCopy(d)); },
 };

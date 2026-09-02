@@ -92,7 +92,7 @@ import {
   readSavedFormSettings,
 } from '../../config/dcDeliveryForm';
 
-// ─── helpers ─────────────────────────────────────────────────────────────────
+// â”€â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const getErrMsg = (e, fb) => {
   const d = e?.response?.data?.detail;
   if (typeof d === 'string' && d.trim()) return d;
@@ -500,8 +500,8 @@ const isBatchManaged = (item) => {
   );
   const isManaged = isInventoryManaged(item) && isSapYes(batchManagedValue);
   
-  console.log('🔍 [isBatchManaged] Item:', item?.ItemCode, 'BatchManaged field:', batchManagedValue, 'Is managed:', isManaged);
-  console.log('🔍 [isBatchManaged] Full item data:', item);
+  console.log('ðŸ” [isBatchManaged] Item:', item?.ItemCode, 'BatchManaged field:', batchManagedValue, 'Is managed:', isManaged);
+  console.log('ðŸ” [isBatchManaged] Full item data:', item);
   
   return isManaged;
 };
@@ -510,26 +510,26 @@ const checkBatchAvailability = async (itemCode, whsCode) => {
   if (!itemCode || !whsCode) return false;
   
   try {
-    console.log('🔍 [checkBatchAvailability] Checking batches for:', { itemCode, whsCode });
+    console.log('ðŸ” [checkBatchAvailability] Checking batches for:', { itemCode, whsCode });
     const response = await fetchBatchesByItem(itemCode, whsCode);
-    console.log('🔍 [checkBatchAvailability] API Response:', response);
+    console.log('ðŸ” [checkBatchAvailability] API Response:', response);
     
     const batches = response.data?.batches || [];
     const hasBatches = batches.length > 0;
     
-    console.log('🔍 [checkBatchAvailability] Found batches:', batches.length, 'Has batches:', hasBatches);
-    console.log('🔍 [checkBatchAvailability] Batch details:', batches);
+    console.log('ðŸ” [checkBatchAvailability] Found batches:', batches.length, 'Has batches:', hasBatches);
+    console.log('ðŸ” [checkBatchAvailability] Batch details:', batches);
     
     return hasBatches;
   } catch (error) {
-    console.error('❌ [checkBatchAvailability] Error:', error);
+    console.error('âŒ [checkBatchAvailability] Error:', error);
     // If there's an error, assume batches are available for batch-managed items
     // This prevents the button from being hidden due to API errors
     return true;
   }
 };
 
-// ─── static fallbacks ────────────────────────────────────────────────────────
+// â”€â”€â”€ static fallbacks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const FALLBACK_PAYMENT_TERMS = [
   { value: '0', label: 'Immediate' },
   { value: '1', label: 'Net 30' },
@@ -542,7 +542,7 @@ const FALLBACK_SHIPPING = [
   { value: '3', label: 'Road' },
   { value: '4', label: 'Courier' },
 ];
-// ─── constants ────────────────────────────────────────────────────────────────
+// â”€â”€â”€ constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const DEC = { QtyDec: 2, PriceDec: 2, SumDec: 2, RateDec: 2, PercentDec: 2 };
 const TAB_NAMES = ['Contents', 'Logistics', 'Accounting', 'Tax', 'Electronic Documents', 'Attachments'];
 const DEFAULT_WAREHOUSE = '01';
@@ -600,7 +600,7 @@ const INIT_ATTACH = Array.from({ length: 9 }, (_, i) => ({
   freeText: '', copyToTargetDocument: '', documentType: '', atchDocDate: '', alert: '',
 }));
 
-// ─── Main Component ───────────────────────────────────────────────────────────
+// â”€â”€â”€ Main Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function DCDelivery() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -629,9 +629,11 @@ function DCDelivery() {
   const [attachments] = useState(INIT_ATTACH);
   const [activeTab, setActiveTab] = useState('Contents');
   const [headerUdfs, setHeaderUdfs] = useState(() => normalizeUdfState(HEADER_UDF_DEFINITIONS));
-  const [formSettings, setFormSettings] = useCompanyScopedFormSettings(
+  const [formSettings, setFormSettings, , , formSettingsStatus] = useCompanyScopedFormSettings(
     FORM_SETTINGS_STORAGE_KEY,
     readSavedFormSettings,
+    [],
+    { saveMode: 'explicit' },
   );
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
@@ -768,7 +770,7 @@ function DCDelivery() {
       ? updateActionLabel
       : 'Add';
   const secondaryActionLabel = pageState.posting
-    ? 'Saving…'
+    ? 'Savingâ€¦'
     : currentDocEntry
       ? updateActionLabel
       : 'Add & New';
@@ -887,7 +889,7 @@ function DCDelivery() {
 
   // Continue in next part...
 
-  // ── load reference data ───────────────────────────────────────────────────
+  // â”€â”€ load reference data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     let ignore = false;
     const load = async () => {
@@ -1002,7 +1004,7 @@ function DCDelivery() {
     return () => { ignore = true; };
   }, [currentDocEntry, requestedEditDocEntry, header.branch, header.postingDate]);
 
-  // ── load existing order ───────────────────────────────────────────────────
+  // â”€â”€ load existing order â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     if (staleRequestedEditDocEntry) {
       setPageState(p => ({ ...p, loading: false, error: '', success: '' }));
@@ -1042,9 +1044,9 @@ function DCDelivery() {
               ''
             )
           : '';
-        console.log('📦 [DC Delivery] Loaded delivery data:', so);
-        console.log('📦 [DC Delivery] Header:', so.header);
-        console.log('📦 [DC Delivery] Lines:', so.lines);
+        console.log('ðŸ“¦ [DC Delivery] Loaded delivery data:', so);
+        console.log('ðŸ“¦ [DC Delivery] Header:', so.header);
+        console.log('ðŸ“¦ [DC Delivery] Lines:', so.lines);
         
         if (ignore || !so) return;
         setCurrentDocEntry(so.doc_entry || Number(docEntry));
@@ -1098,7 +1100,7 @@ function DCDelivery() {
             : [createLine(rowUdfDefinitions)]
         );
         
-        console.log('📦 [DC Delivery] Lines after mapping:', lines);
+        console.log('ðŸ“¦ [DC Delivery] Lines after mapping:', lines);
         
         setHeaderUdfs(normalizeUdfState(headerUdfDefinitions, so.header_udfs || {}));
         setSnapshotPending(true);
@@ -1171,7 +1173,7 @@ function DCDelivery() {
     setLines(prevLines => prevLines.map(line => hydrateLoadedLine(line)));
   }, [currentDocEntry, hydrateLoadedLine, refData.items.length]);
 
-  // ── Copy To: populate form from Sales Order / other source ────────────────
+  // â”€â”€ Copy To: populate form from Sales Order / other source â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     const routedCopyFrom = location.state?.copyFrom;
     if (routedCopyFrom && !isRouteStateForActiveCompany(location.state)) {
@@ -1306,7 +1308,7 @@ function DCDelivery() {
     replaceRouteStatePreservingWindow(navigate, location.pathname, location.state || persistedCopyState);
   }, [location.pathname, location.state?.copyFrom, navigate]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── derived / computed ────────────────────────────────────────────────────
+  // â”€â”€ derived / computed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const vendorContacts = refData.contacts.filter(c => String(c.CardCode || '') === String(header.vendor || ''));
   const contactOptions = header.contactPerson && !vendorContacts.some(c => String(c.CntctCode || '') === String(header.contactPerson || ''))
     ? [{ CardCode: header.vendor, CntctCode: header.contactPerson, Name: header.contactPerson }, ...vendorContacts]
@@ -1497,7 +1499,7 @@ function DCDelivery() {
     return branch ? branch.BPLName : branchId;
   };
 
-  // ── calculations ──────────────────────────────────────────────────────────
+  // â”€â”€ calculations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const getLineDiscountAmount = (line) => {
     const explicitDiscount = String(line.discountAmount ?? '').trim();
     if (explicitDiscount) return parseNum(explicitDiscount);
@@ -1594,7 +1596,7 @@ function DCDelivery() {
 
   // Continue in next part...
 
-  // ── address sync ──────────────────────────────────────────────────────────
+  // â”€â”€ address sync â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     setHeader(prev => {
       if (prev.shipToCode) return prev;
@@ -1679,7 +1681,7 @@ function DCDelivery() {
     vendorEffectiveBillToAddresses,
   ]);
 
-  // ── vendor details ────────────────────────────────────────────────────────
+  // â”€â”€ vendor details â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const loadVendorDetails = async (code, options = {}) => {
     const { preserveExisting = false } = options;
     if (!code) {
@@ -1724,7 +1726,7 @@ function DCDelivery() {
           }
 
           if (defaultShipToAddress.State && (!preserveExisting || !prev.placeOfSupply)) {
-            console.log('🌍 Auto-setting Place of Supply from customer address:', defaultShipToAddress.State);
+            console.log('ðŸŒ Auto-setting Place of Supply from customer address:', defaultShipToAddress.State);
             const stateMatch = refData.states.find(st =>
               st.Name === defaultShipToAddress.State || st.Code === defaultShipToAddress.State
             );
@@ -1759,7 +1761,7 @@ function DCDelivery() {
     };
   };
 
-  // ── handlers ──────────────────────────────────────────────────────────────
+  // â”€â”€ handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const buildSalesEmployeeSetupRows = () => {
     const rows = effectiveSalesEmployees.map(employee => {
       const row = {
@@ -1853,7 +1855,7 @@ function DCDelivery() {
     setValErrors(p => ({ ...p, header: { ...p.header, [name]: '' }, form: '' }));
     setPageState(p => ({ ...p, error: '', success: '' }));
     
-    console.log('🔧 [DC Delivery] handleHeaderChange called:', { name, value, type });
+    console.log('ðŸ”§ [DC Delivery] handleHeaderChange called:', { name, value, type });
     
     if (name === 'series') {
       handleSeriesChange(value);
@@ -1920,7 +1922,7 @@ function DCDelivery() {
     }
     
     if (name === 'branch') {
-      console.log('🏢 [DC Delivery] Branch changing to:', value);
+      console.log('ðŸ¢ [DC Delivery] Branch changing to:', value);
       const nextWarehouseOptions = value
         ? filterWarehousesByBranch(effectiveWarehouses, value)
         : effectiveWarehouses;
@@ -2011,7 +2013,7 @@ function DCDelivery() {
           const hsnResponse = await fetchHSNCodeFromItem(value);
           const hsnData = hsnResponse.data;
           
-          console.log('🔍 Item Selected - HSN Data:', {
+          console.log('ðŸ” Item Selected - HSN Data:', {
             itemCode: value,
             hsnCode: hsnData.hsnCode,
             hsnDescription: hsnData.hsnDescription,
@@ -2046,7 +2048,7 @@ function DCDelivery() {
             // Step 3: Get Base Tax Code from Item Master
             const baseTaxCode = item.TaxCodeAR || item.SalTaxCode || '';
             
-            console.log('🔍 Item Selected:', {
+            console.log('ðŸ” Item Selected:', {
               itemCode: item.ItemCode,
               itemName: item.ItemName,
               hsnCode: next.hsnCode,
@@ -2060,7 +2062,7 @@ function DCDelivery() {
             
             // Step 5: Validate States
             if (!gstState || !companyState) {
-              console.warn('⚠️ Missing state information for tax determination');
+              console.warn('âš ï¸ Missing state information for tax determination');
               next.taxCode = '';
               next.total = fmtDec(calcLineTotal(next), numDec.total);
               return next;
@@ -2078,9 +2080,9 @@ function DCDelivery() {
             
             if (determinedTaxCode) {
               next.taxCode = determinedTaxCode;
-              console.log(`✅ Auto-assigned tax code: ${determinedTaxCode} (${getGSTTypeLabel(companyState, gstState)})`);
+              console.log(`âœ… Auto-assigned tax code: ${determinedTaxCode} (${getGSTTypeLabel(companyState, gstState)})`);
             } else {
-              console.warn('⚠️ Could not determine tax code automatically');
+              console.warn('âš ï¸ Could not determine tax code automatically');
               next.taxCode = '';
             }
             
@@ -2089,7 +2091,7 @@ function DCDelivery() {
           }));
         }
       } catch (error) {
-        console.error('❌ Error fetching HSN code:', error);
+        console.error('âŒ Error fetching HSN code:', error);
         // Fallback to basic item selection without HSN
         setLines(prev => prev.map((line, idx) => {
           if (idx !== i) return line;
@@ -2124,6 +2126,8 @@ function DCDelivery() {
     setLines(prev => prev.map((line, idx) => {
       if (idx !== i) return line;
       const next = { ...line, [name]: numDec[name] !== undefined ? sanitize(value, numDec[name]) : value };
+                if (name === 'uomName') next.uomNameEdited = true;
+                if (name === 'uomCode') { next.uomName = value; next.uomNameEdited = false; }
       if (TAX_SENSITIVE_LINE_FIELDS.has(name)) {
         next.taxAmount = '';
       }
@@ -2163,7 +2167,7 @@ function DCDelivery() {
         fetchUomConversionFactor(next.itemNo, value)
           .then(response => {
             const { factor, inventoryUOM: invUoM } = response.data;
-            console.log('🔄 UoM Conversion:', {
+            console.log('ðŸ”„ UoM Conversion:', {
               itemCode: next.itemNo,
               documentUoM: value,
               inventoryUOM: invUoM,
@@ -2181,7 +2185,7 @@ function DCDelivery() {
             ));
           })
           .catch(error => {
-            console.error('❌ Failed to fetch UoM conversion factor:', error);
+            console.error('âŒ Failed to fetch UoM conversion factor:', error);
             // Default to factor 1 if fetch fails
             setLines(prevLines => prevLines.map((l, lIdx) => 
               lIdx === i ? { ...l, uomFactor: 1 } : l
@@ -2286,7 +2290,7 @@ function DCDelivery() {
     setPageState(p => ({ ...p, error: '' }));
     markDirty();
     
-    console.log('➕ [DC Delivery] Adding new line with header values:', {
+    console.log('âž• [DC Delivery] Adding new line with header values:', {
       branch: header.branch,
       loc: header.branch,
       whse: header.warehouse
@@ -2344,7 +2348,7 @@ function DCDelivery() {
     setFormSettingsOpen(p => !p);
   };
 
-  // ── Address Modal handlers ────────────────────────────────────────────────
+  // â”€â”€ Address Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openAddressModal = (type) => {
     const shipAddress = resolveDeliveryAddress(
       header.shipToCode,
@@ -2447,7 +2451,7 @@ function DCDelivery() {
     setAddressForm(p => ({ ...p, [name]: value }));
   };
 
-  // ── Tax Info Modal handlers ───────────────────────────────────────────────
+  // â”€â”€ Tax Info Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openTaxInfoModal = () => {
     setTaxInfoModal(true);
   };
@@ -2460,7 +2464,7 @@ function DCDelivery() {
     closeTaxInfoModal();
   };
 
-  // ── BP Modal handlers ─────────────────────────────────────────────────────
+  // â”€â”€ BP Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openBpModal = () => {
     setBpModal(true);
   };
@@ -2470,7 +2474,7 @@ function DCDelivery() {
   };
 
   
-  // ── State Modal handlers ──────────────────────────────────────────────────
+  // â”€â”€ State Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openStateModal = () => {
     setStateModal(true);
   };
@@ -2483,7 +2487,7 @@ function DCDelivery() {
     setHeader(p => ({ ...p, placeOfSupply: getStateCodeValue(state, refData.states) }));
   };
 
-  // ── BP Modal handlers ─────────────────────────────────────────────────────
+  // â”€â”€ BP Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleBpSelect = (bp) => {
     const code = bp.CardCode;
     setHeader(prev => {
@@ -2506,7 +2510,7 @@ function DCDelivery() {
     setTaxInfoForm(p => ({ ...p, [name]: value }));
   };
 
-  // ── Browse Attachment handler ─────────────────────────────────────────────
+  // â”€â”€ Browse Attachment handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleBrowseAttachment = () => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -2600,7 +2604,7 @@ function DCDelivery() {
     closeBatchModal();
   };
 
-  // ── HSN Modal handlers ────────────────────────────────────────────────────
+  // â”€â”€ HSN Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openHSNModal = (lineIndex) => {
     setHsnModal({ open: true, lineIndex });
   };
@@ -2620,7 +2624,7 @@ function DCDelivery() {
     closeHSNModal();
   };
 
-  // ── Item Selection Modal handlers ─────────────────────────────────────────
+  // â”€â”€ Item Selection Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const getPaymentTermsLookupOptions = () => {
     const sourceTerms = refData.payment_terms.length
       ? refData.payment_terms.map((term) => ({
@@ -2766,15 +2770,15 @@ function DCDelivery() {
   };
 
   const openItemModal = async (lineIndex) => {
-    console.log('🔍 Opening item modal for line:', lineIndex);
+    console.log('ðŸ” Opening item modal for line:', lineIndex);
     setItemModal({ open: true, lineIndex, items: [], loading: true });
     
     try {
-      console.log('📡 Fetching items from API...');
+      console.log('ðŸ“¡ Fetching items from API...');
       const selectedWarehouse = lines[lineIndex]?.whse || header.warehouse || '';
       const response = await fetchItemsForModal(selectedWarehouse);
-      console.log('✅ Items received:', response.data);
-      console.log('📊 Items count:', response.data.items?.length || 0);
+      console.log('âœ… Items received:', response.data);
+      console.log('ðŸ“Š Items count:', response.data.items?.length || 0);
       
       setItemModal(prev => ({
         ...prev,
@@ -2782,7 +2786,7 @@ function DCDelivery() {
         loading: false,
       }));
     } catch (error) {
-      console.error('❌ Failed to load items:', error);
+      console.error('âŒ Failed to load items:', error);
       console.error('Error details:', error.response?.data || error.message);
       setItemModal(prev => ({
         ...prev,
@@ -2802,7 +2806,7 @@ function DCDelivery() {
     const lineIndex = itemModal.lineIndex;
     const mergedItem = mergeItemMaster(item, refData.items);
     
-    console.log('🎯 [handleItemSelect] Item selected:', {
+    console.log('ðŸŽ¯ [handleItemSelect] Item selected:', {
       ItemCode: item.ItemCode,
       ItemName: item.ItemName,
       BatchManaged: item.BatchManaged,
@@ -2828,7 +2832,7 @@ function DCDelivery() {
       const selectedUoM = mergedItem.SalesUnit || mergedItem.InventoryUOM || '';
       const displayUoM = selectedUoM;
       
-      console.log('🔍 [handleItemSelect] Selected UoM:', {
+      console.log('ðŸ” [handleItemSelect] Selected UoM:', {
         SalesUnit: item.SalesUnit,
         InventoryUOM: item.InventoryUOM,
         selectedUoM,
@@ -2840,13 +2844,13 @@ function DCDelivery() {
       if (item.UoMGroupEntry && refData.uom_groups) {
         const uomGroup = refData.uom_groups.find(g => g.AbsEntry === item.UoMGroupEntry);
         if (uomGroup) {
-          console.log('📦 [handleItemSelect] UoM Group Info:', {
+          console.log('ðŸ“¦ [handleItemSelect] UoM Group Info:', {
             groupName: uomGroup.Name,
             availableUoMs: uomGroup.uomCodes,
             conversions: uomGroup.conversions
           });
         } else {
-          console.warn('⚠️ [handleItemSelect] UoM Group not found:', item.UoMGroupEntry);
+          console.warn('âš ï¸ [handleItemSelect] UoM Group not found:', item.UoMGroupEntry);
         }
       }
       
@@ -2856,7 +2860,7 @@ function DCDelivery() {
       
       if (selectedUoM && mergedItem.ItemCode) {
         try {
-          console.log('🔍 [handleItemSelect] Fetching UoM conversion for:', {
+          console.log('ðŸ” [handleItemSelect] Fetching UoM conversion for:', {
             itemCode: item.ItemCode,
             selectedUoM,
             itemInventoryUOM: item.InventoryUOM
@@ -2864,32 +2868,32 @@ function DCDelivery() {
           
           const uomRes = await fetchUomConversionFactor(mergedItem.ItemCode, selectedUoM);
           
-          console.log('📦 [handleItemSelect] UoM API Response:', uomRes.data);
+          console.log('ðŸ“¦ [handleItemSelect] UoM API Response:', uomRes.data);
           
           uomFactor = uomRes.data.factor || 1;
           inventoryUOM = uomRes.data.inventoryUOM || mergedItem.InventoryUOM || '';
           
           const docQty = parseNum(currentLine.quantity);
           
-          console.log('🔄 [handleItemSelect] UoM Conversion Applied:', {
+          console.log('ðŸ”„ [handleItemSelect] UoM Conversion Applied:', {
             itemCode: item.ItemCode,
             documentUoM: selectedUoM,
             inventoryUOM,
             factor: uomFactor,
             documentQty: docQty,
             baseQty: docQty * uomFactor,
-            calculation: `${docQty} ${selectedUoM} × ${uomFactor} = ${docQty * uomFactor} ${inventoryUOM}`
+            calculation: `${docQty} ${selectedUoM} Ã— ${uomFactor} = ${docQty * uomFactor} ${inventoryUOM}`
           });
         } catch (uomError) {
-          console.error('❌ [handleItemSelect] Failed to fetch UoM conversion:', uomError);
-          console.error('❌ [handleItemSelect] Error details:', {
+          console.error('âŒ [handleItemSelect] Failed to fetch UoM conversion:', uomError);
+          console.error('âŒ [handleItemSelect] Error details:', {
             message: uomError.message,
             response: uomError.response?.data,
             status: uomError.response?.status
           });
         }
       } else {
-        console.warn('⚠️ [handleItemSelect] Skipping UoM conversion - missing data:', {
+        console.warn('âš ï¸ [handleItemSelect] Skipping UoM conversion - missing data:', {
           hasSelectedUoM: !!selectedUoM,
           hasItemCode: !!item.ItemCode
         });
@@ -2898,12 +2902,12 @@ function DCDelivery() {
       // Check batch availability BEFORE updating state if item is batch-managed
       let hasBatchesAvailable = false;
       if (itemIsBatchManaged && currentLine.whse) {
-        console.log('🔍 [handleItemSelect] Checking batch availability for:', {
+        console.log('ðŸ” [handleItemSelect] Checking batch availability for:', {
           itemCode: item.ItemCode,
           warehouse: currentLine.whse
         });
         hasBatchesAvailable = await checkBatchAvailability(mergedItem.ItemCode, currentLine.whse);
-        console.log('✅ [handleItemSelect] Batch availability result:', hasBatchesAvailable);
+        console.log('âœ… [handleItemSelect] Batch availability result:', hasBatchesAvailable);
       }
       
       setLines(prev => prev.map((line, idx) => {
@@ -2926,7 +2930,7 @@ function DCDelivery() {
             taxAmount: '',
           };
           
-          console.log('📝 [handleItemSelect] Updated line:', {
+          console.log('ðŸ“ [handleItemSelect] Updated line:', {
             itemNo: updatedLine.itemNo,
             inventoryManaged: updatedLine.inventoryManaged,
             batchManaged: updatedLine.batchManaged,
@@ -2964,7 +2968,7 @@ function DCDelivery() {
       
       closeItemModal();
     } catch (error) {
-      console.error('❌ [handleItemSelect] Error selecting item:', error);
+      console.error('âŒ [handleItemSelect] Error selecting item:', error);
       // Still set basic item info even if HSN fetch fails
       const currentLine = lines[lineIndex];
       const itemIsInventoryManaged = isInventoryManaged(mergedItem);
@@ -2981,7 +2985,7 @@ function DCDelivery() {
           uomFactor = uomRes.data.factor || 1;
           inventoryUOM = uomRes.data.inventoryUOM || mergedItem.InventoryUOM || '';
         } catch (uomError) {
-          console.error('❌ [handleItemSelect] Failed to fetch UoM conversion in error handler:', uomError);
+          console.error('âŒ [handleItemSelect] Failed to fetch UoM conversion in error handler:', uomError);
         }
       }
       
@@ -2991,7 +2995,7 @@ function DCDelivery() {
         try {
           hasBatchesAvailable = await checkBatchAvailability(mergedItem.ItemCode, currentLine.whse);
         } catch (batchError) {
-          console.error('❌ [handleItemSelect] Error checking batch availability:', batchError);
+          console.error('âŒ [handleItemSelect] Error checking batch availability:', batchError);
         }
       }
       
@@ -3024,9 +3028,9 @@ function DCDelivery() {
     }
   };
 
-  // ── Freight Selection Modal handlers ──────────────────────────────────────
+  // â”€â”€ Freight Selection Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openFreightModal = async () => {
-    console.log('🚚 Opening freight modal, docEntry:', currentDocEntry);
+    console.log('ðŸšš Opening freight modal, docEntry:', currentDocEntry);
     if (freightModal.freightCharges.length > 0) {
       setFreightModal(prev => ({ ...prev, open: true, loading: false }));
       return;
@@ -3034,10 +3038,10 @@ function DCDelivery() {
     setFreightModal(prev => ({ ...prev, open: true, loading: true }));
     
     try {
-      console.log('📡 Fetching freight charges from API...');
+      console.log('ðŸ“¡ Fetching freight charges from API...');
       const response = await fetchFreightCharges(currentDocEntry);
-      console.log('✅ Freight charges received:', response.data);
-      console.log('📊 Freight charges count:', response.data.freightCharges?.length || 0);
+      console.log('âœ… Freight charges received:', response.data);
+      console.log('ðŸ“Š Freight charges count:', response.data.freightCharges?.length || 0);
       
       setFreightModal({
         open: true,
@@ -3045,7 +3049,7 @@ function DCDelivery() {
         loading: false
       });
     } catch (error) {
-      console.error('❌ Failed to load freight charges:', error);
+      console.error('âŒ Failed to load freight charges:', error);
       console.error('Error details:', error.response?.data || error.message);
       setFreightModal({
         open: true,
@@ -3060,7 +3064,7 @@ function DCDelivery() {
   };
 
   const handleFreightApply = (summary) => {
-    console.log('🚚 Applied freight charges:', summary);
+    console.log('ðŸšš Applied freight charges:', summary);
     setFreightModal(prev => ({
       ...prev,
       open: false,
@@ -3073,29 +3077,29 @@ function DCDelivery() {
     }));
   };
 
-  // ── Sync warehouse and branch from header to lines ────────────────────────
+  // â”€â”€ Sync warehouse and branch from header to lines â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Sync branch to all lines when header branch changes
   useEffect(() => {
     if (isHydratingDocumentRef.current) return;
-    console.log('🔄 [DC Delivery] Branch sync useEffect triggered');
-    console.log('🔄 [DC Delivery] header.branch value:', header.branch);
-    console.log('🔄 [DC Delivery] header.branch type:', typeof header.branch);
-    console.log('🔄 [DC Delivery] Current lines count:', lines.length);
+    console.log('ðŸ”„ [DC Delivery] Branch sync useEffect triggered');
+    console.log('ðŸ”„ [DC Delivery] header.branch value:', header.branch);
+    console.log('ðŸ”„ [DC Delivery] header.branch type:', typeof header.branch);
+    console.log('ðŸ”„ [DC Delivery] Current lines count:', lines.length);
     
     if (header.branch) {
-      console.log('🔄 [DC Delivery] Syncing branch to all lines:', header.branch);
+      console.log('ðŸ”„ [DC Delivery] Syncing branch to all lines:', header.branch);
       setLines(prev => {
-        console.log('🔄 [DC Delivery] Previous lines:', prev.map(l => ({ itemNo: l.itemNo, branch: l.branch, loc: l.loc })));
+        console.log('ðŸ”„ [DC Delivery] Previous lines:', prev.map(l => ({ itemNo: l.itemNo, branch: l.branch, loc: l.loc })));
         const updated = prev.map(l => ({ 
           ...l, 
           branch: String(header.branch), 
           loc: String(header.branch)
         }));
-        console.log('✅ [DC Delivery] Updated lines:', updated.map(l => ({ itemNo: l.itemNo, branch: l.branch, loc: l.loc })));
+        console.log('âœ… [DC Delivery] Updated lines:', updated.map(l => ({ itemNo: l.itemNo, branch: l.branch, loc: l.loc })));
         return updated;
       });
     } else {
-      console.log('⚠️ [DC Delivery] Branch is empty, skipping sync');
+      console.log('âš ï¸ [DC Delivery] Branch is empty, skipping sync');
     }
   }, [header.branch]);
   
@@ -3105,7 +3109,7 @@ function DCDelivery() {
     if (header.branch && lines.length > 0) {
       const needsSync = lines.some(l => !l.branch || l.branch !== String(header.branch));
       if (needsSync) {
-        console.log('🔄 [DC Delivery] Initial branch sync needed');
+        console.log('ðŸ”„ [DC Delivery] Initial branch sync needed');
         setLines(prev => prev.map(l => ({ 
           ...l, 
           branch: String(header.branch), 
@@ -3117,12 +3121,12 @@ function DCDelivery() {
 
   // Debug: Log when lines change
   useEffect(() => {
-    console.log('📝 [DC Delivery] Lines state changed:', lines.map(l => ({ itemNo: l.itemNo, branch: l.branch, loc: l.loc, whse: l.whse })));
+    console.log('ðŸ“ [DC Delivery] Lines state changed:', lines.map(l => ({ itemNo: l.itemNo, branch: l.branch, loc: l.loc, whse: l.whse })));
   }, [lines]);
   
   // Debug: Log header.branch value
   useEffect(() => {
-    console.log('🏢 [DC Delivery] Header branch value:', header.branch);
+    console.log('ðŸ¢ [DC Delivery] Header branch value:', header.branch);
   }, [header.branch]);
 
   useEffect(() => {
@@ -3169,7 +3173,7 @@ function DCDelivery() {
     }));
   }, [header.warehouse]);
 
-  // ── Recalculate Tax Codes on State/Address Changes ────────────────────────
+  // â”€â”€ Recalculate Tax Codes on State/Address Changes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     if (currentDocEntry) return;
     if (!header.vendor || !header.placeOfSupply) return;
@@ -3177,11 +3181,11 @@ function DCDelivery() {
     const companyState = refData.company_address?.State || selectedBranch?.State || '';
     
     if (!companyState) {
-      console.warn('⚠️ Company state not available for tax recalculation');
+      console.warn('âš ï¸ Company state not available for tax recalculation');
       return;
     }
 
-    console.log('🔄 Recalculating Tax Codes for All Lines:', {
+    console.log('ðŸ”„ Recalculating Tax Codes for All Lines:', {
       placeOfSupply: header.placeOfSupply,
       companyState,
       gstType: getGSTTypeLabel(companyState, header.placeOfSupply),
@@ -3203,7 +3207,7 @@ function DCDelivery() {
 
   // Continue in next part...
 
-  // ── validation ────────────────────────────────────────────────────────────
+  // â”€â”€ validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const validate = async () => {
     const isUpdate = !!currentDocEntry;
     const e = { header: {}, lines: {}, form: '' };
@@ -3472,7 +3476,7 @@ function DCDelivery() {
     return e;
   };
 
-  // ── Copy From handler ─────────────────────────────────────────────────────
+  // â”€â”€ Copy From handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleCopyFrom = (data, sourceType) => {
     const sourceDocument = data || {};
     const unwrappedDocument =
@@ -3589,13 +3593,13 @@ function DCDelivery() {
     setPageState(p => ({ ...p, success: `Copied from ${labels[sourceType] || sourceType}` }));
   };
 
-  // ── Copy From Modal Handlers ───────────────────────────────────────────────
+  // â”€â”€ Copy From Modal Handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openCopyFromModal = (docType) => {
     if (currentDocEntry) return;
 
-    console.log('🟢 Copy From Clicked');
+    console.log('ðŸŸ¢ Copy From Clicked');
 
-    // ✅ ONLY BUYER VALIDATION
+    // âœ… ONLY BUYER VALIDATION
     if (!header.vendor) {
       setValErrors({
         header: { vendor: 'Select Customer first' },
@@ -3605,7 +3609,7 @@ function DCDelivery() {
       return;
     }
 
-    // ✅ CLEAR ALL ERRORS
+    // âœ… CLEAR ALL ERRORS
     setValErrors({ header: {}, lines: {}, form: '' });
     setPageState(p => ({ ...p, error: '', success: '' }));
 
@@ -3613,7 +3617,7 @@ function DCDelivery() {
     setCopyFromModal(true);
   };
 
-  // ── Copy From fetch handlers ───────────────────────────────────────────────
+  // â”€â”€ Copy From fetch handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const fetchCopyFromDocuments = async (docType) => {
     try {
       const bpCode = String(header.vendor || '').trim();
@@ -3679,7 +3683,7 @@ function DCDelivery() {
     }
   };
 
-  // ── Copy To handler ───────────────────────────────────────────────────────
+  // â”€â”€ Copy To handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleCopyTo = async (targetType) => {
     await copyToDocument({
       sourceDocType: 'dcDelivery',
@@ -3725,7 +3729,7 @@ function DCDelivery() {
     }
   };
 
-  // ── submit ────────────────────────────────────────────────────────────────
+  // â”€â”€ submit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleSubmit = async (ev) => {
     ev.preventDefault();
     if (!isDocumentEditable) {
@@ -3864,13 +3868,13 @@ function DCDelivery() {
 
   // Continue in next part with render...
 
-  // ── render ────────────────────────────────────────────────────────────────
+  // â”€â”€ render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   return (
     <form ref={formRef} className={`del-page sap-document-page${isRightSidebarOpen ? ' del-page--sidebar-open' : ''}`} onSubmit={handleSubmit} onChangeCapture={markDirty}>
 
       {/* toolbar */}
       <div className="del-toolbar sap-document-toolbar">
-        <span className="del-toolbar__title">DC Delivery{currentDocEntry ? ` — #${header.docNo || currentDocEntry}` : ''}</span>
+        <span className="del-toolbar__title">DC Delivery{currentDocEntry ? ` â€” #${header.docNo || currentDocEntry}` : ''}</span>
         <button type="submit" className="del-btn del-btn--primary sap-document-toolbar__primary" disabled={pageState.posting || !isDocumentEditable} title={primaryActionLabel}>
           {primaryActionLabel}
         </button>
@@ -3923,7 +3927,7 @@ function DCDelivery() {
               if (!isActive) dropdown.classList.add('active');
             }}
           >
-            Copy From ▼
+            Copy From â–¼
           </button>
           <div className="del-dropdown-menu">
             {[
@@ -3963,7 +3967,7 @@ function DCDelivery() {
               if (!isActive) dropdown.classList.add('active');
             }}
           >
-            Copy To ▼
+            Copy To â–¼
           </button>
           <div className="del-dropdown-menu">
             {[
@@ -3994,7 +3998,7 @@ function DCDelivery() {
       </div>
 
       {/* alerts */}
-      {pageState.loading && <div className="del-alert del-alert--success" style={{ marginTop: 0 }}>Loading…</div>}
+      {pageState.loading && <div className="del-alert del-alert--success" style={{ marginTop: 0 }}>Loadingâ€¦</div>}
       {pageState.error && <div className="del-alert del-alert--error">{pageState.error}</div>}
       {pageState.success && <div className="del-alert del-alert--success">{pageState.success}</div>}
       {refData.warnings?.length > 0 && (
@@ -4002,7 +4006,7 @@ function DCDelivery() {
           <strong>SAP warnings:</strong>
           {refData.warnings.map((w, i) => <div key={i}>{w}</div>)}
           <div style={{ marginTop: 4, color: '#555' }}>Dropdowns are showing fallback values. Connect to SAP to load live data.</div>
-          <div style={{ marginTop: 4, color: '#d00', fontWeight: 600 }}>⚠️ Tax codes shown are examples only. Use actual SAP tax codes to avoid submission errors.</div>
+          <div style={{ marginTop: 4, color: '#d00', fontWeight: 600 }}>âš ï¸ Tax codes shown are examples only. Use actual SAP tax codes to avoid submission errors.</div>
         </div>
       )}
 
@@ -4011,7 +4015,7 @@ function DCDelivery() {
 
           <div className="del-layout__main" style={{ minWidth: 0, overflow: 'visible' }}>
 
-            {/* ══ HEADER CARD ══════════════════════════════════════════════ */}
+            {/* â•â• HEADER CARD â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             <div className="del-header-card">
               <div className="row g-2">
                 {/* LEFT COLUMN */}
@@ -4239,7 +4243,7 @@ function DCDelivery() {
               </div>
             </div>
 
-            {/* ══ TABS ══════════════════════════════════════════════════════ */}
+            {/* â•â• TABS â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             <fieldset disabled={!hasBuyerCode} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
             <div className="del-tabs">
               {TAB_NAMES.map(t => (
@@ -4254,7 +4258,7 @@ function DCDelivery() {
               ))}
             </div>
 
-            {/* ══ TAB CONTENT ═══════════════════════════════════════════════ */}
+            {/* â•â• TAB CONTENT â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {activeTab === 'Contents' && (
               <ContentsTab
                 lines={lines}
@@ -4317,7 +4321,7 @@ function DCDelivery() {
 
             {/* Continue in next part... */}
 
-            {/* ══ TOTALS FOOTER ═════════════════════════════════════════════ */}
+            {/* â•â• TOTALS FOOTER â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             <div className="del-header-card">
               <div className="del-field-grid" style={{ gridTemplateColumns: '1fr 1fr' }}>
                 <div>
@@ -4417,7 +4421,7 @@ function DCDelivery() {
               </div>
             </div>
 
-            {/* ══ ACTION BUTTONS ════════════════════════════════════════════ */}
+            {/* â•â• ACTION BUTTONS â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {false && (
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '12px', marginBottom: '12px', gap: '8px' }}>
               <div style={{ display: 'flex', gap: '8px' }}>
@@ -4448,7 +4452,7 @@ function DCDelivery() {
                       if (!isActive) dropdown.classList.add('active');
                     }}
                   >
-                    Copy From ▼
+                    Copy From â–¼
                   </button>
                   <div className="del-dropdown-menu">
                     {[
@@ -4489,7 +4493,7 @@ function DCDelivery() {
                       if (!isActive) dropdown.classList.add('active');
                     }}
                   >
-                    Copy To ▼
+                    Copy To â–¼
                   </button>
                   <div className="del-dropdown-menu">
                     {[
@@ -4541,7 +4545,15 @@ function DCDelivery() {
             headerUdfFields={headerUdfDefinitions}
             rowUdfFields={filteredRowUdfDefinitions}
             formSettings={dcDeliveryFormSettings}
-            onSettingChange={updateFormSetting}
+          onSettingChange={updateFormSetting}
+          onColumnOrderChange={formSettingsStatus.reorder}
+          settingsLoaded={formSettingsStatus.loaded}
+          isSaving={formSettingsStatus.saving}
+          hasUnsavedChanges={formSettingsStatus.hasUnsavedChanges}
+          saveError={formSettingsStatus.error}
+          onSave={formSettingsStatus.save}
+          onCancel={formSettingsStatus.discard}
+          settingsScopeLabel={formSettingsStatus.scopeLabel}
           />
         </div>
       </fieldset>
