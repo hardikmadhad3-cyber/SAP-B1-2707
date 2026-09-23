@@ -1,3 +1,5 @@
+import useConfirmationOnlyUpdate from '../../utils/useConfirmationOnlyUpdate';
+import useDocumentSeries from '../../hooks/useDocumentSeries';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import TaxCodeLookup from '../../components/TaxCodeLookup';
@@ -16,9 +18,11 @@ import { createActiveCompanyScopedRouteState, isRouteStateForCompany } from '../
 import useServiceDocumentFormSettings from '../../utils/useServiceDocumentFormSettings';
 import { updateFormSettingPreference } from '../../utils/formSettingsPreferences';
 import { getOrderedVisibleMatrixColumns } from '../../utils/formSettingsColumns';
+import { getReadableDocumentLineColumnWidth } from '../../utils/documentLineColumnWidth';
 import { buildVisibleEnteredRowUdfPayload } from '../../utils/rowUdfPayload';
-import { getSapVisibleDocumentSeries } from '../../utils/seriesDefaults';
+import { getSapVisibleDocumentSeries, normalizeDocumentSeriesList, getDefaultSeriesForCurrentYear, canUseManualSeries } from '../../utils/seriesDefaults';
 import { calculateServiceInvoiceLine } from '../../utils/serviceInvoiceLineCalculations';
+import { calculateDocumentRounding, getDocumentRoundingPolicy, formatDocumentRoundingAmount } from '../../utils/documentRounding';
 import { resolveLocationDisplayName } from '../../utils/locationLookup';
 import { getDocumentLayout } from '../../api/sapLayoutApi';
 import { fetchSalesDocumentLookup, fetchSalesDocumentSchema } from '../../api/salesDocumentSchemaApi';
@@ -59,7 +63,6 @@ import {
   fetchOpenServiceSalesQuotationsForARInvoice,
   fetchServiceARInvoiceByDocEntry,
   fetchServiceARInvoiceCustomerDetails,
-  fetchServiceARInvoiceNextNumber,
   fetchServiceARInvoiceReferenceData,
   fetchServiceARInvoiceSeries,
   fetchServiceDeliveryForARInvoiceCopy,
@@ -124,7 +127,7 @@ const INIT_HEADER = {
   billToCode: '',
   billToAddress: '',
   shippingType: '',
-  confirmed: false,
+  confirmed: undefined,
   useBillToForTax: false,
   journalRemark: '',
   paymentMethod: '',
@@ -222,6 +225,7 @@ const normalizeFieldName = (value) =>
     .toLowerCase();
 
 const FIXED_SERVICE_MATRIX_FIELD_NAMES = new Set([
+  'taxcode',
   'saudanoderef',
   'brokperqty',
   'unitprice',
@@ -258,7 +262,8 @@ const fieldNameMatches = (field = {}, names = new Set()) =>
   names.has(normalizeFieldName(field.aliasId));
 
 const isFixedServiceMatrixField = (field = {}) =>
-  fieldNameMatches(field, FIXED_SERVICE_MATRIX_FIELD_NAMES);
+  !/^U_/i.test(String(field.key || field.sapField || ''))
+  && fieldNameMatches(field, FIXED_SERVICE_MATRIX_FIELD_NAMES);
 
 const applyServiceRowUdfDefaults = (definitions = []) =>
   definitions.map((field) => ({ ...field, visible: field.visible === true }));
@@ -269,102 +274,16 @@ const DEFAULT_TRANSACTION_TYPES = [
   { value: 'GST Debit Memo', label: 'GST Debit Memo' },
 ];
 
-const normalizeSeriesText = (value) =>
-  String(value || '')
-    .replace(/^U_/i, '')
-    .replace(/[^a-z0-9]+/gi, '')
-    .toLowerCase();
 
-const getSeriesFamilyKey = (series = {}) => {
-  const label = String(
-    series.SeriesName ||
-    series.DisplayName ||
-    series.RawSeriesName ||
-    series.BeginStr ||
-    series.Indicator ||
-    ''
-  );
-  return normalizeSeriesText(label)
-    .replace(/(?:fy)?\d{2}\d{2}$/i, '')
-    .replace(/\d{4,}$/i, '')
-    .replace(/\d{2}$/i, '');
-};
 
 const getTransactionTypeOptions = () => {
   return DEFAULT_TRANSACTION_TYPES;
 };
 
-const filterSeriesByTransactionType = (series = [], transactionType = '') => {
-  const normalizedType = normalizeSeriesText(transactionType);
-  if (!normalizedType) return series;
+const filterSeriesByTransactionType = (series = []) => normalizeDocumentSeriesList(series);
 
-  const matches = series.filter((item) => {
-    const candidates = [
-      item.TransactionType,
-      item.transactionType,
-      item.DocType,
-      item.DocumentType,
-      item.Indicator,
-      item.SeriesName,
-    ];
+const pickFirstSeries = (series = []) => getDefaultSeriesForCurrentYear(series);
 
-    return candidates.some((candidate) => {
-      const normalizedCandidate = normalizeSeriesText(candidate);
-      return normalizedCandidate && (
-        normalizedCandidate.includes(normalizedType) ||
-        normalizedType.includes(normalizedCandidate)
-      );
-    });
-  });
-
-  return matches.length ? matches : series;
-};
-
-const pickFirstSeries = (series = [], transactionType = '') => filterSeriesByTransactionType(series, transactionType)[0];
-
-const pickSeriesForNewDocument = (series = [], transactionType = '', preferredSeries = '', sourceSeries = []) => {
-  const visible = filterSeriesByTransactionType(series, transactionType);
-  if (!visible.length) return null;
-
-  const preferred = String(preferredSeries || '').trim();
-  const currentMatch = preferred
-    ? visible.find((item) => String(item.Series || '') === preferred)
-    : null;
-  if (currentMatch) return currentMatch;
-
-  const oldSeries = preferred
-    ? (sourceSeries || []).find((item) => String(item.Series || '') === preferred)
-    : null;
-  const familyKey = getSeriesFamilyKey(oldSeries);
-  const familyMatch = familyKey
-    ? visible.find((item) => getSeriesFamilyKey(item) === familyKey)
-    : null;
-  if (familyMatch) return familyMatch;
-
-  const normalizedType = normalizeSeriesText(transactionType);
-  if (normalizedType) {
-    const transactionTokens = normalizedType.includes('gsttaxinvoice')
-      ? ['gsttaxinvoice', 'gst', 'taxinvoice', 'retail', 'ret']
-      : normalizedType.includes('billofsupply')
-        ? ['billofsupply', 'bos', 'supply']
-        : normalizedType.includes('debit')
-          ? ['debitmemo', 'debit', 'dbn']
-          : [normalizedType];
-
-    const scored = visible
-      .map((item, index) => {
-        const identity = normalizeSeriesText(`${item.SeriesName || ''} ${item.Indicator || ''}`);
-        const score = transactionTokens.reduce((sum, token) => sum + (identity.includes(token) ? token.length : 0), 0);
-        return { item, index, score };
-      })
-      .filter((entry) => entry.score > 0)
-      .sort((left, right) => right.score - left.score || left.index - right.index);
-
-    if (scored[0]?.item) return scored[0].item;
-  }
-
-  return visible.find((item) => item.IsDefault || item.isDefault) || visible[0];
-};
 
 const includeSelectedSeries = (series = [], selectedSeries = '', selectedSeriesName = '') => {
   const selected = String(selectedSeries || '').trim();
@@ -498,6 +417,8 @@ const normalizeCopyLine = (line, idx, docEntry, baseType, accounts) => {
 };
 
 function ServiceARInvoicePage() {
+  const [seriesRevision, setSeriesRevision] = useState(0);
+
   const location = useLocation();
   const navigate = useNavigate();
   const { removeTask, upsertTask } = useSapWindowTaskbarActions();
@@ -522,6 +443,7 @@ function ServiceARInvoicePage() {
     formSettings,
     setFormSettings,
     formSettingsStatus,
+    formSettingsStorageKey,
     formSettingsReady: companyFormSettingsReady,
     hydrateFormSettings,
     clearMetadataScope: clearFormSettingsMetadataScope,
@@ -635,6 +557,7 @@ function ServiceARInvoicePage() {
     searchPlaceholder: 'Search values',
     emptyMessage: 'No values found',
     allowCreate: false,
+    isUdf: false,
     columns: null,
   });
 
@@ -697,7 +620,7 @@ function ServiceARInvoicePage() {
         ? includeSelectedSeries(filteredSeries, header.series, header.seriesName)
         : filteredSeries;
       return getSapVisibleDocumentSeries(availableSeries, {
-        selectedSeries: header.series,
+        selectedSeries: header.series, includeHistorical: Boolean(currentDocEntry),
         postingDate: header.postingDate || header.documentDate,
       });
     },
@@ -875,6 +798,8 @@ function ServiceARInvoicePage() {
     },
   }), [freightProviderLookupOptions, itemLookupOptions, locationLookupOptions, paymentTermLookupOptions, refData.price_options, refData.quality_options, serviceSacLookupOptions]);
 
+  const sumDecimals = Number(refData.decimal_settings?.sum);
+  const numDec = Number.isInteger(sumDecimals) && sumDecimals >= 0 && sumDecimals <= 6 ? sumDecimals : 2;
   const totals = useMemo(() => {
     if (currentDocEntry) {
       const total = parseNum(header.totalPaymentDue);
@@ -895,7 +820,8 @@ function ServiceARInvoicePage() {
         total + wtaxAmount + discountAmount + downPayment - freight - tax - explicitRounding
       );
       const derivedRounding = total + wtaxAmount + discountAmount + downPayment - subtotal - freight - tax;
-      const roundingAmount = explicitRounding || (Math.abs(derivedRounding) <= 1 ? derivedRounding : 0);
+      const roundingAmount = header.roundingAmount !== '' && header.roundingAmount != null
+        ? explicitRounding : derivedRounding;
       return {
         subtotal,
         tax,
@@ -915,12 +841,12 @@ function ServiceARInvoicePage() {
     const discountAmount = subtotal * parseNum(header.discount) / 100;
     const freight = parseNum(header.freight);
     const downPayment = parseNum(header.totalDownPayment);
-    const roundingAmount = parseNum(header.roundingAmount);
-    const total = Math.max(0, subtotal - discountAmount - downPayment) + freight + tax + roundingAmount;
+    const totalBeforeRounding = Math.max(0, subtotal - discountAmount - downPayment) + freight + tax;
+    const { roundingAmount, total } = calculateDocumentRounding(totalBeforeRounding, header.rounding, numDec, currentDocEntry ? header : null, getDocumentRoundingPolicy(refData, header));
     const appliedAmount = parseNum(header.appliedAmount);
     const balanceDue = Math.max(0, total - appliedAmount);
     return { subtotal, tax, discountAmount, freight, downPayment, roundingAmount, total, appliedAmount, balanceDue, wtaxAmount: 0 };
-  }, [currentDocEntry, header.appliedAmount, header.balanceDue, header.discount, header.discountAmount, header.freight, header.roundingAmount, header.tax, header.totalBeforeDiscount, header.totalDownPayment, header.totalPaymentDue, header.wtaxAmount, lines]);
+  }, [refData, numDec, currentDocEntry, header.appliedAmount, header.balanceDue, header.discount, header.discountAmount, header.freight, header.rounding, header.roundingAmount, header.tax, header.totalBeforeDiscount, header.totalDownPayment, header.totalPaymentDue, header.wtaxAmount, lines]);
 
   const wtaxDecimals = { total: 2, tax: 2, totalPaymentDue: 2 };
   const hasSavedWTaxAmount = Boolean(currentDocEntry && Math.abs(parseNum(header.wtaxAmount)) > 0);
@@ -1331,6 +1257,7 @@ function ServiceARInvoicePage() {
       searchPlaceholder: override.searchPlaceholder || config.searchPlaceholder || 'Search values',
       emptyMessage: override.emptyMessage || config.emptyMessage || 'No values found',
       allowCreate: Boolean(override.allowCreate ?? config.allowCreate ?? false),
+      isUdf: Boolean(override.isUdf),
       columns: override.columns || config.columns || null,
     });
   };
@@ -1345,7 +1272,7 @@ function ServiceARInvoicePage() {
     setLines((prev) => prev.map((line, lineIndex) => {
       if (lineIndex !== lineLookupModal.lineIndex) return line;
       // Schema UDF columns store values in line.udf
-      const isSchemaUdf = String(lineLookupModal.field || '').startsWith('U_');
+      const isSchemaUdf = Boolean(lineLookupModal.isUdf) || String(lineLookupModal.field || '').startsWith('U_');
       const next = isSchemaUdf
         ? { ...line, udf: { ...(line.udf || {}), [lineLookupModal.field]: selectedValue } }
         : { ...line, [lineLookupModal.field]: selectedValue };
@@ -1397,102 +1324,16 @@ function ServiceARInvoicePage() {
       return;
     }
 
-    if (name === 'transactionType') {
-      const selectedOption = transactionTypeOptions.find((option) => String(option.value) === String(value));
-      setHeader((prev) => ({
-        ...prev,
-        transactionType: value,
-        indicator: selectedOption?.indicator || prev.indicator,
-        series: '',
-        nextNumber: '',
-      }));
-      setPageState((prev) => ({ ...prev, seriesLoading: true }));
-      try {
-        const res = await fetchServiceARInvoiceSeries(header.postingDate, value, header.branch);
-        const nextSeries = res.data?.series || [];
-        const firstSeries = pickFirstSeries(nextSeries, value);
-        setRefData((prev) => ({ ...prev, series: nextSeries }));
-        setHeader((prev) => ({
-          ...prev,
-          transactionType: value,
-          indicator: selectedOption?.indicator || prev.indicator,
-          branch: prev.branch || String(firstSeries?.BPLId || ''),
-          series: firstSeries ? String(firstSeries.Series || '') : '',
-          nextNumber: firstSeries ? String(firstSeries.NextNumber || '') : '',
-        }));
-      } catch (_error) {
-        const firstSeries = pickFirstSeries(refData.series || [], value);
-        setHeader((prev) => ({
-          ...prev,
-          transactionType: value,
-          indicator: selectedOption?.indicator || prev.indicator,
-          branch: prev.branch || String(firstSeries?.BPLId || ''),
-          series: firstSeries ? String(firstSeries.Series || '') : '',
-          nextNumber: firstSeries ? String(firstSeries.NextNumber || '') : '',
-        }));
-      } finally {
-        setPageState((prev) => ({ ...prev, seriesLoading: false }));
-      }
-      return;
-    }
+    if (name === 'transactionType') { setHeader(prev => ({ ...prev, [name]: value, exchangeRate: '', series: '', nextNumber: '', docNo: '' })); return; }
 
-    if (name === 'postingDate') {
-      setHeader((prev) => ({ ...prev, postingDate: value, exchangeRate: '' }));
-      setPageState((prev) => ({ ...prev, seriesLoading: true }));
-      try {
-        const res = await fetchServiceARInvoiceSeries(value, header.transactionType, header.branch);
-        const nextSeries = res.data?.series || [];
-        setRefData((prev) => ({ ...prev, series: nextSeries }));
-        setHeader((prev) => {
-          if (prev.series === 'manual') {
-            return { ...prev, postingDate: value, exchangeRate: '' };
-          }
-
-          const selectedSeries =
-            filterSeriesByTransactionType(nextSeries, prev.transactionType).find((series) => String(series.Series || '') === String(prev.series || '')) ||
-            pickFirstSeries(nextSeries, prev.transactionType);
-
-          return {
-            ...prev,
-            postingDate: value,
-            exchangeRate: '',
-            branch: prev.branch || String(selectedSeries?.BPLId || ''),
-            series: selectedSeries ? String(selectedSeries.Series || '') : '',
-            nextNumber: selectedSeries ? String(selectedSeries.NextNumber || '') : '',
-          };
-        });
-      } catch (_error) {
-        setHeader((prev) => ({ ...prev, postingDate: value, exchangeRate: '' }));
-      } finally {
-        setPageState((prev) => ({ ...prev, seriesLoading: false }));
-      }
-      return;
-    }
+    if (name === 'postingDate') { setHeader(prev => ({ ...prev, [name]: value, exchangeRate: '', series: '', nextNumber: '', docNo: '' })); return; }
 
     if (name === 'series') {
-      if (value === 'manual') {
-        setHeader((prev) => ({ ...prev, series: value, nextNumber: '', docNo: '' }));
-        return;
-      }
-
-      const selectedSeries = visibleSeries.find((series) => String(series.Series || '') === String(value || ''));
-      setHeader((prev) => ({
-        ...prev,
-        branch: prev.branch || String(selectedSeries?.BPLId || ''),
-        series: value,
-        nextNumber: selectedSeries ? String(selectedSeries.NextNumber || '') : '...',
-      }));
-      setPageState((prev) => ({ ...prev, seriesLoading: true }));
-      try {
-        const res = await fetchServiceARInvoiceNextNumber(value);
-        setHeader((prev) => ({ ...prev, nextNumber: String(res.data?.nextNumber || '') }));
-      } catch (_error) {
-        setHeader((prev) => ({ ...prev, nextNumber: '' }));
-      } finally {
-        setPageState((prev) => ({ ...prev, seriesLoading: false }));
-      }
-      return;
-    }
+ const manual = ['-1','manual'].includes(String(value));
+ if(manual && !canUseManualSeries(refData)) return;
+ const selected = (refData.series || []).find(row => String(row.Series) === String(value));
+ setHeader(prev => ({ ...prev, series: manual ? 'manual' : selected ? String(selected.Series) : '', nextNumber: manual ? '' : String(selected?.NextNumber ?? ''), docNo: '' })); return;
+}
 
     if (name === 'shipToCode') {
       const selected = vendorEffectiveShipToAddresses.find((address) => String(address.Address || '') === String(value));
@@ -1709,6 +1550,7 @@ function ServiceARInvoicePage() {
   const buildPayload = () => ({
     header: {
       ...header,
+      roundingAmount: totals.roundingAmount,
       wtaxAmount,
       totalPaymentDue: totalPaymentDueAfterWTax,
     },
@@ -1773,6 +1615,11 @@ function ServiceARInvoicePage() {
     }
   };
 
+  const narrowConfirmationUpdate = useConfirmationOnlyUpdate({
+    docEntry: currentDocEntry, isDirty,
+    state: { header, lines, headerUdfs, withholdingTax, companyDb: activeCompanyDb , company_id: activeCompanyId, companyKey: formSettingsStorageKey },
+  });
+
   const handleSubmit = async (event) => {
     event.preventDefault();
     if (!companyFormSettingsReady) {
@@ -1799,7 +1646,7 @@ function ServiceARInvoicePage() {
     setPageState((prev) => ({ ...prev, posting: true, error: '', success: '' }));
     try {
       const res = currentDocEntry
-        ? await updateServiceARInvoice(currentDocEntry, buildPayload())
+        ? await updateServiceARInvoice(currentDocEntry, narrowConfirmationUpdate(buildPayload()))
         : await submitServiceARInvoice(buildPayload());
       const docEntry = res.data?.doc_entry || res.data?.DocEntry || currentDocEntry;
       const docNum = res.data?.doc_num || res.data?.DocNum || header.docNo;
@@ -1814,6 +1661,8 @@ function ServiceARInvoicePage() {
   };
 
   const resetForm = () => {
+    setSeriesRevision(value => value + 1);
+
     const defaultTransactionType = transactionTypeOptions[0]?.value || '';
     const firstSeries = pickFirstSeries(refData.series || [], defaultTransactionType);
     setIsDirty(false);
@@ -1877,56 +1726,11 @@ function ServiceARInvoicePage() {
     return null;
   };
 
-  const refreshSeriesForNewDocument = async ({
-    postingDate = header.postingDate,
-    transactionType = header.transactionType,
-    branch = header.branch,
-    preferredSeries = header.series,
-  } = {}) => {
-    if (String(preferredSeries || '') === 'manual') {
-      setHeader((prev) => ({ ...prev, series: 'manual', nextNumber: '', docNo: '' }));
-      return;
-    }
-
-    setPageState((prev) => ({ ...prev, seriesLoading: true }));
-    try {
-      const res = await fetchServiceARInvoiceSeries(postingDate, transactionType, branch);
-      const nextSeries = res.data?.series || [];
-      const selectedSeries = pickSeriesForNewDocument(nextSeries, transactionType, preferredSeries, refData.series || []);
-      setRefData((prev) => ({ ...prev, series: nextSeries }));
-      if (selectedSeries) {
-        const numberRes = await fetchServiceARInvoiceNextNumber(selectedSeries.Series);
-        setHeader((prev) => ({
-          ...prev,
-          postingDate,
-          documentDate: postingDate,
-          deliveryDate: postingDate,
-          branch: branch || prev.branch || String(selectedSeries.BPLId || ''),
-          series: String(selectedSeries.Series || ''),
-          nextNumber: String(numberRes.data?.nextNumber || selectedSeries.NextNumber || ''),
-          docNo: '',
-        }));
-      }
-    } catch (_error) {
-      const selectedSeries = pickSeriesForNewDocument(refData.series || [], transactionType, preferredSeries, refData.series || []);
-      if (selectedSeries) {
-        setHeader((prev) => ({
-          ...prev,
-          postingDate,
-          documentDate: postingDate,
-          deliveryDate: postingDate,
-          branch: branch || prev.branch || String(selectedSeries.BPLId || ''),
-          series: String(selectedSeries.Series || ''),
-          nextNumber: String(selectedSeries.NextNumber || ''),
-          docNo: '',
-        }));
-      }
-    } finally {
-      setPageState((prev) => ({ ...prev, seriesLoading: false }));
-    }
-  };
+  const refreshSeriesForNewDocument = async ({ postingDate = header.postingDate, transactionType = header.transactionType, branch = header.branch } = {}) => { setHeader(prev => ({ ...prev, postingDate, transactionType, branch, series: '', nextNumber: '', docNo: '' })); };
 
   const handleCopyFrom = async (data, sourceType) => {
+    setSeriesRevision(value => value + 1);
+
     const copySource = unwrapCopyFromDocument(data);
     const copyKey = `${sourceType}-${copySource.docEntry}-${copySource.lines.length}`;
     if (handledCopyFromRef.current === copyKey) return;
@@ -1996,6 +1800,8 @@ function ServiceARInvoicePage() {
   };
 
   const handleDuplicate = async () => {
+    setSeriesRevision(value => value + 1);
+
     const duplicateDate = today();
     const duplicateTransactionType = header.transactionType || transactionTypeOptions[0]?.value || 'GST Tax Invoice';
     const duplicateBranch = header.branch || '';
@@ -2041,6 +1847,9 @@ function ServiceARInvoicePage() {
   };
 
   const renderLineCell = (line, index, column) => {
+    const numericValue = column.key === 'priceAfterDisc'
+      ? Number(line.unitPrice || 0) * (1 - Number(line.discountPercent || 0) / 100)
+      : line[column.key];
     const error = valErrors.lines[index]?.[column.key];
     if (column.isUdf) {
       const disabled =
@@ -2049,11 +1858,42 @@ function ServiceARInvoicePage() {
         formSettings.rowUdfs?.[column.udfKey]?.active === false;
       const value = line.udf?.[column.udfKey] || '';
 
+      if (column.lookupSource) {
+        return (
+          <div className="service-ar-lookup-cell">
+            <input
+              className="del-grid__input"
+              value={value}
+              disabled={disabled}
+              onChange={(event) => handleRowUdfChange(index, column.udfKey, event.target.value)}
+              title={`Select ${column.label}`}
+            />
+            <button
+              type="button"
+              className="del-btn service-ar-lookup-btn"
+              disabled={disabled}
+              title={`Select ${column.label}`}
+              onClick={async () => {
+                try {
+                  const options = await loadDynamicLineLookupOptions(column.lookupSource, column, line);
+                  openLineLookup(column.udfKey, index, { title: `Select ${column.label}`, options, isUdf: true });
+                } catch (_error) {
+                  openLineLookup(column.udfKey, index, { title: `Select ${column.label}`, options: column.options || [], isUdf: true });
+                }
+              }}
+            >
+              ...
+            </button>
+          </div>
+        );
+      }
+
       if (column.type === 'checkbox') {
         const checked = ['Y', 'YES', 'TRUE', '1', 'TYES'].includes(String(value || '').trim().toUpperCase());
         return (
-          <input
-            type="checkbox"
+        <input
+          type="checkbox"
+          data-sap-native-tab="true"
             className="form-check-input service-ar-udf-checkbox"
             checked={checked}
             disabled={disabled}
@@ -2203,35 +2043,13 @@ function ServiceARInvoicePage() {
       });
     }
 
-    // Schema-driven UDF lookups: if the column has a lookupSource from the
-    // live schema, show a lookup button that loads options dynamically.
-    if (column.lookupSource && column.isUdf) {
-      return renderLookupInput({
-        title: `Select ${column.label}`,
-        onOpen: async () => {
-          try {
-            const options = await loadDynamicLineLookupOptions(column.lookupSource, column.field || column, line);
-            openLineLookup(column.key, index, {
-              title: `Select ${column.label}`,
-              options: Array.isArray(options) ? options : [],
-            });
-          } catch (_error) {
-            openLineLookup(column.key, index, {
-              title: `Select ${column.label}`,
-              options: Array.isArray(column.options) ? column.options : [],
-            });
-          }
-        },
-      });
-    }
-
     return (
       <input
         className={`del-grid__input${error ? ' del-field__input--error' : ''}`}
         type={column.type === 'date' ? 'date' : 'text'}
         name={column.key}
         value={column.readOnly && column.numeric
-          ? String(displayAmount(line[column.key] || 0))
+          ? String(displayAmount(numericValue ?? 0))
           : column.key === 'taxCodeRepeat'
           ? (line.taxCodeRepeat || line.taxCode || '')
           : (line[column.key] || (column.isUdf ? (line.udf?.[column.key] || '') : ''))}
@@ -2268,9 +2086,18 @@ function ServiceARInvoicePage() {
       readOnly: field.readOnly,
       isUdf: true,
       options: field.options || [],
+      lookupSource: field.lookupSource,
+      lookupTable: field.lookupTable,
+      fieldId: field.fieldId,
+      schemaFieldId: field.schemaFieldId,
     })),
-  ], formSettings);
+  ], formSettings).map((column) => {
+    const width = getReadableDocumentLineColumnWidth(column);
+    return { ...column, width, minWidth: width };
+  });
   const tableMinWidth = 42 + 48 + visibleLineColumns.reduce((sum, column) => sum + column.width, 0);
+
+  useDocumentSeries({ endpoint: '/services/ar-invoice', companyKey: formSettingsStorageKey, currentDocEntry, header: header, setHeader, setRefData, setPageState, ready: !pageState.loading && !pageState.posting , refreshKey: seriesRevision});
 
   return (
     <form className={`ar-invoice-page del-page sap-document-page service-ar-invoice-page${isRightSidebarOpen ? ' del-page--sidebar-open' : ''}`} onSubmit={handleSubmit} onChangeCapture={markDirty}>
@@ -2406,13 +2233,6 @@ function ServiceARInvoicePage() {
                   ))}
                 </select>
               </div>
-              <div className="del-field">
-                <label className="del-field__label">Place of Supply</label>
-                <div className="service-ar-header-lookup">
-                  <input className="del-field__input" name="placeOfSupply" value={header.placeOfSupply} onChange={handleHeaderChange} disabled={!isDocumentEditable} />
-                  <button type="button" className="del-btn service-ar-lookup-btn" onClick={() => setStateModalOpen(true)} disabled={!isDocumentEditable} title="List of States">...</button>
-                </div>
-              </div>
             </div>
 
             <div>
@@ -2420,7 +2240,8 @@ function ServiceARInvoicePage() {
                 <label className="del-field__label">No.</label>
                 <div className="service-ar-docnum">
                   <select className="del-field__select" name="series" value={header.series} onChange={handleHeaderChange} disabled={!isDocumentEditable || currentDocEntry || pageState.seriesLoading}>
-                    <option value="manual">Manual</option>
+                    <option value="">{pageState.seriesLoading ? 'Loading series...' : pageState.seriesError ? 'Series unavailable' : 'Select Series'}</option>
+                    {(canUseManualSeries(refData) || (currentDocEntry && ['-1','manual','__sap_manual__'].includes(String(header.series)))) && (<option value="manual">Manual</option>)}
                     {visibleSeries.map((series) => (
                       <option key={series.Series} value={series.Series}>{series.SeriesName}</option>
                     ))}
@@ -2428,7 +2249,7 @@ function ServiceARInvoicePage() {
                   <input
                     className={`del-field__input${valErrors.header.docNo ? ' del-field__input--error' : ''}`}
                     name="docNo"
-                    value={pageState.seriesLoading ? '...' : (header.docNo || header.nextNumber || '')}
+                    value={currentDocEntry ? (header.docNo || header.nextNumber || '') : pageState.seriesLoading ? '...' : (header.docNo || header.nextNumber || '')}
                     onChange={handleHeaderChange}
                     readOnly={header.series !== 'manual'}
                     disabled={!isDocumentEditable || currentDocEntry || pageState.seriesLoading}
@@ -2451,6 +2272,13 @@ function ServiceARInvoicePage() {
                 <label className="del-field__label">Document Date</label>
                 <input type="date" className={`del-field__input${valErrors.header.documentDate ? ' del-field__input--error' : ''}`} name="documentDate" value={header.documentDate} onChange={handleHeaderChange} disabled={!isDocumentEditable} />
               </div>
+              <div className="del-field">
+                <label className="del-field__label">Place of Supply</label>
+                <div className="service-ar-header-lookup">
+                  <input className="del-field__input" name="placeOfSupply" value={header.placeOfSupply} onChange={handleHeaderChange} disabled={!isDocumentEditable} />
+                  <button type="button" className="del-btn service-ar-lookup-btn" onClick={() => setStateModalOpen(true)} disabled={!isDocumentEditable} title="List of States">...</button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -2470,7 +2298,7 @@ function ServiceARInvoicePage() {
 
         {activeTab === 'Contents' && (
           <div className="del-tab-panel" style={{ overflow: 'visible', minWidth: 0 }}>
-            <div className="service-ar-content-toolbar">
+            <div className="service-ar-content-toolbar" style={{ justifyContent: 'flex-end' }}>
               <button type="button" className="del-btn del-btn--primary" onClick={addLine} disabled={!isDocumentEditable}>+ Add Line</button>
             </div>
 
@@ -2575,7 +2403,7 @@ function ServiceARInvoicePage() {
                   <tr><td>Discount %</td><td><input className="del-grid__input" name="discount" value={header.discount} onChange={handleHeaderChange} disabled={!isDocumentEditable} /></td></tr>
                   <tr><td>Total Down Payment</td><td><input className="del-grid__input" name="totalDownPayment" value={header.totalDownPayment} onChange={handleHeaderChange} disabled={!isDocumentEditable} /></td></tr>
                   <tr><td>Freight</td><td><input className="del-grid__input" name="freight" value={header.freight} onChange={handleHeaderChange} disabled={!isDocumentEditable} /></td></tr>
-                  <tr><td><label className="service-ar-checkbox"><input type="checkbox" name="rounding" checked={header.rounding || parseNum(header.roundingAmount) !== 0} onChange={handleHeaderChange} disabled={!isDocumentEditable} /> Rounding</label></td><td><input className="del-grid__input" value={`${displayCurrency} ${fmt(displayAmount(totals.roundingAmount))}`.trim()} readOnly /></td></tr>
+                  <tr><td><label className="service-ar-checkbox"><input type="checkbox" name="rounding" checked={header.rounding || parseNum(header.roundingAmount) !== 0} onChange={handleHeaderChange} disabled={!isDocumentEditable} /> Rounding</label></td><td><input className="del-grid__input" value={`${displayCurrency} ${formatDocumentRoundingAmount(displayAmount(totals.roundingAmount), numDec)}`.trim()} readOnly /></td></tr>
                   <tr><td>Tax</td><td><input className="del-grid__input" value={fmt(displayAmount(totals.tax))} readOnly /></td></tr>
                   {hasWTaxLiableLines && (
                     <tr>

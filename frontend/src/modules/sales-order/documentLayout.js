@@ -63,6 +63,7 @@ const mapLayoutDataTypeToInputType = (dataType = '') => {
 const SAP_FIELD_TO_INTERNAL_KEY = {
   LINENUM: SALES_ORDER_LINE_NUMBER_KEY,
   ITEMCODE: 'itemNo',
+  LINEVENDOR: 'vendor',
   DSCRIPTION: 'itemDescription',
   DESCRIPTION: 'itemDescription',
   QUANTITY: 'quantity',
@@ -89,6 +90,7 @@ const SAP_FIELD_TO_INTERNAL_KEY = {
   PRICE: 'unitPrice',
   PRICEBEFDI: 'unitPrice',
   UNITPRICE: 'unitPrice',
+  INFOPRICE: 'unitPrice',
   U_PRICE: 'price',
   U_TAXCODE: 'taxCodeRepeat',
   U_UNITPRICE: 'unitPriceUdf',
@@ -232,6 +234,8 @@ const SAP_FIELD_TO_INTERNAL_KEY = {
 const LABEL_TO_INTERNAL_KEY = {
   '#': SALES_ORDER_LINE_NUMBER_KEY,
   ITEMNO: 'itemNo',
+  VENDOR: 'vendor',
+  PREFERREDVENDOR: 'vendor',
   ITEMDESCRIPTION: 'itemDescription',
   DESCRIPTION: 'itemDescription',
   QUANTITY: 'quantity',
@@ -344,6 +348,7 @@ LABEL_TO_INTERNAL_KEY['TAX CODE'] = 'taxCode';
 const STANDARD_RENDERER_KEYS = new Set([
   SALES_ORDER_LINE_NUMBER_KEY,
   'itemNo',
+  'vendor',
   'itemDescription',
   'quantity',
   'requiredQty',
@@ -429,10 +434,12 @@ const STANDARD_RENDERER_KEYS = new Set([
 
 const STANDARD_FIELD_OVERRIDES = {
   itemNo: { type: 'text', minWidth: 150 },
+  vendor: { type: 'text', minWidth: 120 },
   itemDescription: { type: 'text', minWidth: 220 },
   quantity: { type: 'number', minWidth: 100, numeric: true },
   requiredQty: { type: 'number', minWidth: 110, numeric: true },
   requiredDate: { type: 'date', minWidth: 125 },
+  noOfPackages: { type: 'number', minWidth: 120, numeric: true },
   lineDeliveryDate: { type: 'date', minWidth: 125 },
   uomName: { type: 'text', minWidth: 120, readOnly: false, active: true },
   uomCode: { type: 'text', minWidth: 105 },
@@ -490,6 +497,7 @@ export const SALES_ORDER_WRITABLE_STANDARD_LINE_FIELDS = Object.freeze({
   lineShippingType: Object.freeze({ serviceLayerField: 'ShippingMethod', payloadKey: 'lineShippingType' }),
   lineDeliveryDate: Object.freeze({ serviceLayerField: 'ShipDate', payloadKey: 'lineDeliveryDate' }),
   requiredDate: Object.freeze({ serviceLayerField: 'RequiredDate', payloadKey: 'requiredDate' }),
+  noOfPackages: Object.freeze({ serviceLayerField: 'PackageQuantity', payloadKey: 'noOfPackages' }),
   taxLiable: Object.freeze({ serviceLayerField: 'TaxOnly', payloadKey: 'taxLiable' }),
   whse: Object.freeze({ serviceLayerField: 'WarehouseCode', payloadKey: 'whse' }),
   distRule: Object.freeze({ serviceLayerField: 'CostingCode', payloadKey: 'distRule' }),
@@ -573,6 +581,10 @@ const findInternalKey = (layoutColumn, liveFieldMap) => {
 
   if (labelToken === 'TAXCODE' && rawTitle && !/\s/.test(rawTitle)) {
     return 'taxCodeRepeat';
+  }
+
+  if (labelToken === 'PRICE' && rawTitle.toUpperCase() === 'PRICE' && rawFieldNameUpper === 'PRICE') {
+    return 'unitPrice';
   }
 
   if (labelToken === 'PRICE' && rawTitle.toUpperCase() === 'PRICE' && rawFieldNameUpper.startsWith('U_')) {
@@ -808,6 +820,20 @@ export const buildSalesOrderMatrixColumnsFromSchema = ({
           source: 'schema',
           preferPhysicalField: true,
         };
+
+        // Item No. always uses SAP's standard line identity and lookup, including
+        // schema-only company layouts that incorrectly flag this column as a UDF.
+        if (findInternalKey(layoutColumn, liveFieldMap) === 'itemNo') {
+          const liveItemField = liveMatrixColumns.find((candidate) => candidate.key === 'itemNo');
+          return {
+            ...buildStandardLayoutColumn(layoutColumn, liveItemField, 'itemNo', index),
+            type: 'text',
+            lookupSource: 'items',
+            id: field.id,
+            schemaFieldId: field.id,
+            schemaDriven: true,
+          };
+        }
 
         if (isUdf) {
           const udfField = rowUdfMap.get(normalizeUdfKey(sapField))
@@ -1048,15 +1074,40 @@ const getColumnDisplayIdentity = (column = {}) => {
   return tokens[0] || '';
 };
 
+const isPreferredStandardMatrixColumn = (column = {}) => (
+  !column.isUdf
+  && [column.key, column.valueKey, column.rendererKey].some((key) => STANDARD_RENDERER_KEYS.has(key))
+);
+
 const dedupeVisibleMatrixColumns = (columns = []) => {
-  const seen = new Set();
-  return (columns || []).filter((column) => {
+  const indexesByIdentity = new Map();
+  const deduped = [];
+
+  (columns || []).forEach((column) => {
     const identity = getColumnDisplayIdentity(column);
-    if (!identity) return true;
-    if (seen.has(identity)) return false;
-    seen.add(identity);
-    return true;
+    if (!identity) {
+      deduped.push(column);
+      return;
+    }
+
+    const existingIndex = indexesByIdentity.get(identity);
+    if (existingIndex === undefined) {
+      indexesByIdentity.set(identity, deduped.length);
+      deduped.push(column);
+      return;
+    }
+
+    if (isPreferredStandardMatrixColumn(column) && !isPreferredStandardMatrixColumn(deduped[existingIndex])) {
+      deduped[existingIndex] = column;
+    }
   });
+
+  return deduped;
+};
+
+const applyLineNumberMode = (columns = [], includeLineNumber = true) => {
+  if (includeLineNumber) return ensureLineNumberColumn(columns);
+  return (columns || []).filter((column) => !isLineNumberColumn(column));
 };
 
 export const buildSalesOrderMatrixColumnsFromLayout = ({
@@ -1069,9 +1120,11 @@ export const buildSalesOrderMatrixColumnsFromLayout = ({
   if (!Array.isArray(layoutColumns) || !layoutColumns.length) {
     return Array.isArray(liveMatrixColumns) && liveMatrixColumns.length
       ? withUniqueLayoutKeys(dedupeVisibleMatrixColumns(pinLineNumberColumnFirst(
-          includeLineNumber ? ensureLineNumberColumn(liveMatrixColumns) : liveMatrixColumns,
+          applyLineNumberMode(liveMatrixColumns, includeLineNumber),
         )))
-      : getSapStandardSalesMatrixColumns();
+      : withUniqueLayoutKeys(dedupeVisibleMatrixColumns(pinLineNumberColumnFirst(
+          applyLineNumberMode(getSapStandardSalesMatrixColumns(), includeLineNumber),
+        )));
   }
 
   const liveFieldMap = buildLiveFieldMap(liveMatrixColumns);
@@ -1203,6 +1256,6 @@ export const buildSalesOrderMatrixColumnsFromLayout = ({
     : filtered;
 
   return withUniqueLayoutKeys(
-    includeLineNumber ? ensureLineNumberColumn(mergedColumns) : mergedColumns,
+    dedupeVisibleMatrixColumns(applyLineNumberMode(mergedColumns, includeLineNumber)),
   );
 };

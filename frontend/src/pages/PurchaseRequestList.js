@@ -10,7 +10,7 @@ function PurchaseRequestListPage() {
     <DocumentFindPage
       title="Purchase Requests"
       backPath="/purchase-request"
-      partnerLabel="Vendor"
+      partnerLabel="Requester"
       partnerParamPrefix="vendor"
       resultKey="requests"
       emptyLabel="purchase requests"
@@ -19,8 +19,8 @@ function PurchaseRequestListPage() {
       fetchPartnerOptions={fetchPurchaseRequestVendorOptions}
       editPath="/purchase-request"
       editStateKey="purchaseRequestDocEntry"
-      codeField="vendor_code"
-      nameField="vendor_name"
+      codeField="requester_code"
+      nameField="requester_name"
     />
   );
 }

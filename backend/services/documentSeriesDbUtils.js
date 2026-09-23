@@ -1,282 +1,122 @@
-const {
-  createTableFieldMetadataReader,
-  normalizeRecordset,
-} = require('./salesDocumentDbCompatibility');
+'use strict';
+const { createTableFieldMetadataReader, normalizeRecordset, rowValue, resolveDatabaseScope } = require('./salesDocumentDbCompatibility');
+const { text, isTrue, dateOnly, dedupeSeriesRows, selectSapEligibleSeries, chooseDefaultSeries, normalizeDocumentSubType, gstSeriesSubType } = require('./documentSeriesPolicy');
+const readers = new WeakMap();
+// Numbering-series permissions and user defaults apply to inventory and
+// production documents as well as marketing documents.
+const seriesPermissionObjects = new Set([
+  '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', '23',
+  '59', '60', '202', '1470000113', '540000006',
+]);
+const seriesError = (message, statusCode = 422) => Object.assign(new Error(message), { statusCode, code: 'SAP_DOCUMENT_SERIES' });
 
-const metadataReaders = new WeakMap();
-
-const normalizeDateText = (value) => {
-  if (!value) return new Date().toISOString().split('T')[0];
-  if (value instanceof Date) return value.toISOString().split('T')[0];
-  return String(value).split('T')[0];
-};
-
-const normalizeText = (value) => String(value || '').trim().toUpperCase();
-
-const getTableFieldMetadata = async (db, tableName) => {
-  if (!metadataReaders.has(db)) {
-    metadataReaders.set(db, createTableFieldMetadataReader({ database: db }));
-  }
-  return metadataReaders.get(db)(tableName);
-};
-
-const getTableFieldName = (metadata, columnName) => {
-  const normalizedColumnName = String(columnName || '').trim().toLowerCase();
-  if (!metadata || !normalizedColumnName) return '';
-  return Object.keys(metadata).find((fieldName) => fieldName.toLowerCase() === normalizedColumnName) || '';
-};
-
-const hasTableField = (metadata, columnName) => Boolean(getTableFieldName(metadata, columnName));
-
-const sqlAlias = (alias) => `[${String(alias || '').replace(/]/g, ']]')}]`;
-
-const sqlColumnRef = (metadata, tableAlias, columnName) => {
-  const physicalName = getTableFieldName(metadata, columnName);
-  return physicalName ? `${tableAlias}.${sqlAlias(physicalName)}` : '';
-};
-
-const optionalColumn = (metadata, tableAlias, columnName, alias, fallback = 'NULL') => (
-  sqlColumnRef(metadata, tableAlias, columnName)
-    ? `${sqlColumnRef(metadata, tableAlias, columnName)} AS ${sqlAlias(alias)}`
-    : `${fallback} AS ${sqlAlias(alias)}`
-);
-
-const buildYearTokens = (dateText) => {
-  const date = new Date(`${normalizeDateText(dateText)}T00:00:00`);
-  const year = Number.isFinite(date.getFullYear()) ? date.getFullYear() : new Date().getFullYear();
-  const candidates = [year - 1, year, year + 1];
-  const tokens = [];
-
-  candidates.forEach((candidateYear) => {
-    const nextYear = candidateYear + 1;
-    tokens.push(
-      String(candidateYear),
-      `${candidateYear}-${nextYear}`,
-      `${candidateYear}/${nextYear}`,
-      `${String(candidateYear).slice(-2)}-${String(nextYear).slice(-2)}`,
-      `${String(candidateYear).slice(-2)}/${String(nextYear).slice(-2)}`,
-      `FY${candidateYear}`,
-      `FY${String(candidateYear).slice(-2)}`,
-    );
-  });
-
-  return tokens.map(normalizeText);
-};
-
-const getSeriesDateScore = (row, targetDate) => {
-  const tokens = buildYearTokens(targetDate);
-  const haystack = normalizeText([
-    row.SeriesName,
-    row.DisplayName,
-    row.RawSeriesName,
-    row.BeginStr,
-    row.EndStr,
-    row.Indicator,
-    row.FinancialYear,
-  ].filter(Boolean).join(' '));
-
-  let score = 0;
-  tokens.forEach((token) => {
-    if (token && haystack.includes(token)) score += 1;
-  });
-  return score;
-};
-
-const dedupeSeriesRows = (rows = []) => {
-  const bySeries = new Map();
-  rows.forEach((row) => {
-    const key = String(row?.Series ?? '').trim();
-    if (!key || bySeries.has(key)) return;
-    bySeries.set(key, row);
-  });
-  return Array.from(bySeries.values());
-};
-
-const keepSapVisibleSeries = (rows = [], targetDate) => {
-  const candidates = dedupeSeriesRows(rows);
-  if (candidates.length <= 1) return candidates;
-
-  const currentPeriodRows = candidates.filter((row) => row.IsCurrentPeriod || row.isCurrentPeriod);
-  if (currentPeriodRows.length) return currentPeriodRows;
-
-  const defaultRows = candidates.filter((row) => row.IsDefault || row.isDefault);
-  if (defaultRows.length) {
-    const defaultIndicators = new Set(defaultRows
-      .map((row) => normalizeText(row.Indicator || row.FinancialYear))
-      .filter(Boolean));
-
-    if (defaultIndicators.size) {
-      return candidates.filter((row) => defaultIndicators.has(
-        normalizeText(row.Indicator || row.FinancialYear),
-      ));
+const createSeriesReader = async (db) => {
+  const scope = await resolveDatabaseScope(db);
+  if (!readers.has(db)) readers.set(db, createTableFieldMetadataReader({ database: db }));
+  const metadata = readers.get(db);
+  const quote = (name) => scope.dialect === 'hana'
+    ? '"' + String(name).replace(/"/g, '""') + '"' : '[' + String(name).replace(/]/g, ']]') + ']';
+  const read = async (table, columns, where = {}, { optional = false } = {}) => {
+    const fields = await metadata(table);
+    const physical = (name) => Object.keys(fields).find((field) => field.toLowerCase() === name.toLowerCase());
+    if (!Object.keys(fields).length && optional) return [];
+    const required = [...columns.filter((column) => typeof column === 'string'), ...Object.keys(where)];
+    for (const name of required) {
+      if (!physical(name)) throw seriesError('Cannot read SAP numbering configuration: ' + table + '.' + name + ' is unavailable.');
     }
-
-    return defaultRows;
-  }
-
-  const ranked = [...candidates].sort((left, right) => {
-    const leftScore = getSeriesDateScore(left, targetDate);
-    const rightScore = getSeriesDateScore(right, targetDate);
-    if (rightScore !== leftScore) return rightScore - leftScore;
-    return String(left.SeriesName || left.Series || '').localeCompare(String(right.SeriesName || right.Series || ''));
-  });
-
-  if (!ranked.length) return [];
-
-  const bestScore = getSeriesDateScore(ranked[0], targetDate);
-  if (bestScore <= 0) return [ranked[0]];
-
-  const bestIndicator = normalizeText(ranked[0].Indicator || ranked[0].FinancialYear);
-  return bestIndicator
-    ? candidates.filter((row) => normalizeText(row.Indicator || row.FinancialYear) === bestIndicator)
-    : ranked.filter((row) => getSeriesDateScore(row, targetDate) === bestScore);
+    const select = columns.map((column) => {
+      const [name, fallback = 'NULL'] = Array.isArray(column) ? column : [column, 'NULL'];
+      return (physical(name) ? quote(physical(name)) : fallback) + ' AS ' + quote(name);
+    });
+    const params = {};
+    const conditions = Object.entries(where).map(([name, value], index) => {
+      params['p' + index] = value;
+      return quote(physical(name)) + ' = @p' + index;
+    });
+    const result = await db.query('SELECT ' + select.join(', ') + ' FROM ' + quote(table) + (conditions.length ? ' WHERE ' + conditions.join(' AND ') : ''), params);
+    return normalizeRecordset(result).map((row) => Object.fromEntries(columns.map((column) => {
+      const name = Array.isArray(column) ? column[0] : column;
+      return [name, rowValue(row, name)];
+    })));
+  };
+  return { read, scope };
 };
 
-const getMarketingDocumentSeries = async ({
-  db,
-  objectCode,
-  targetDate = null,
-  branch = '',
-  docSubType = '',
-  collapseToSapVisible = true,
-} = {}) => {
-  const normalizedObjectCode = String(objectCode || '').trim();
-  if (!db || !normalizedObjectCode) return [];
-
-  const effectiveTargetDate = normalizeDateText(targetDate);
-  const [seriesMetadata, numberingMetadata] = await Promise.all([
-    getTableFieldMetadata(db, 'NNM1'),
-    getTableFieldMetadata(db, 'ONNM'),
+const resolveMarketingDocumentSeries = async ({ db, objectCode, targetDate, branch = '', docSubType, transactionType, accessLoader, purpose = 'display' } = {}) => {
+  if (!db || !text(objectCode)) throw seriesError('A company database and document object are required.');
+  const date = dateOnly(targetDate || new Date());
+  const branchId = text(branch) === '' ? null : Number(branch);
+  if (branchId !== null && (!Number.isSafeInteger(branchId) || branchId < 0)) throw seriesError('Select a valid branch.', 400);
+  const { read, scope } = await createSeriesReader(db);
+  const code = text(objectCode);
+  const strictUser = seriesPermissionObjects.has(code);
+  const access = strictUser
+    ? await (accessLoader || require('./documentSeriesAccess').loadDocumentSeriesAccess)({ read, scope })
+    : { superuser: true, userId: null, manualAllowed: true, canUseGroup: async () => true };
+  const [rows, periods, numbering, userDefaults, admin] = await Promise.all([
+    read('NNM1', ['Series', 'SeriesName', 'ObjectCode', 'Indicator', 'NextNumber', 'Locked',
+      ['InitialNum'], ['LastNum'], ['BeginStr', "''"], ['EndStr', "''"], ['BPLId'],
+      ['DocSubType', "'--'"], ['GroupCode'], ['IsForCncl', "'N'"], ['SeriesType', "'D'"], ['IsManual', "'N'"]], { ObjectCode: code }),
+    read('OFPR', ['Indicator', 'F_RefDate', 'T_RefDate', ['Name', "''"]]),
+    read('ONNM', ['ObjectCode', ['DocSubType', "'--'"], ['DfltSeries'], ['DfltSerie']], { ObjectCode: code }),
+    strictUser ? read('NNM2', ['ObjectCode', 'UserSign', 'Series', ['DocSubType', "'--'"]], { ObjectCode: code, UserSign: access.userId }, { optional: true }) : [],
+    read('OADM', [['MltpBrnchs', "'N'"], ['Country', "''"]]),
   ]);
-
-  const defaultSeriesColumn = hasTableField(numberingMetadata, 'DfltSeries')
-    ? getTableFieldName(numberingMetadata, 'DfltSeries')
-    : hasTableField(numberingMetadata, 'DfltSerie')
-      ? getTableFieldName(numberingMetadata, 'DfltSerie')
-      : '';
-  const defaultSeriesJoin = defaultSeriesColumn
-    ? `LEFT JOIN ONNM T2 ON T2.ObjectCode = T0.ObjectCode AND T2.${sqlAlias(defaultSeriesColumn)} = T0.Series`
-    : '';
-  const defaultSeriesSelect = defaultSeriesColumn
-    ? `CASE WHEN T2.${sqlAlias(defaultSeriesColumn)} IS NOT NULL THEN 1 ELSE 0 END`
-    : '0';
-
-  const beginStrRef = sqlColumnRef(seriesMetadata, 'T0', 'BeginStr');
-  const lastNumRef = sqlColumnRef(seriesMetadata, 'T0', 'LastNum');
-  const seriesLabelSelect = beginStrRef
-    ? `COALESCE(NULLIF(LTRIM(RTRIM(CAST(${beginStrRef} AS NVARCHAR(50)))), ''), T0.SeriesName) AS SeriesLabel`
-    : 'T0.SeriesName AS SeriesLabel';
-  const numberRangeFilter = lastNumRef
-    ? `AND (${lastNumRef} IS NULL OR ${lastNumRef} = 0 OR T0.NextNumber <= ${lastNumRef})`
-    : '';
-
-  const branchId = Number(branch);
-  const hasBranchFilter = hasTableField(seriesMetadata, 'BPLId')
-    && Number.isFinite(branchId)
-    && String(branch || '').trim() !== '';
-  const branchSeriesFilter = hasBranchFilter ? 'AND T0.BPLId = @branchId' : '';
-  const globalSeriesFilter = hasBranchFilter ? 'AND (T0.BPLId IS NULL OR T0.BPLId IN (-1, 0))' : '';
-
-  const requestedDocSubType = String(docSubType || '').trim();
-  const docSubTypeRef = sqlColumnRef(seriesMetadata, 'T0', 'DocSubType');
-  const docSubTypeFilter = requestedDocSubType && docSubTypeRef
-    ? `AND COALESCE(NULLIF(${docSubTypeRef}, ''), '--') = @docSubType`
-    : '';
-  const docSubTypeSelect = optionalColumn(seriesMetadata, 'T0', 'DocSubType', 'DocSubType', "''");
-
-  const runSeriesQuery = (withPeriod, branchFilterSql, params) => db.query(`
-    SELECT
-      T0.Series,
-      T0.SeriesName,
-      ${seriesLabelSelect},
-      ${optionalColumn(seriesMetadata, 'T0', 'BeginStr', 'BeginStr', "''")},
-      ${optionalColumn(seriesMetadata, 'T0', 'EndStr', 'EndStr', "''")},
-      T0.Indicator,
-      T0.NextNumber,
-      ${docSubTypeSelect},
-      ${optionalColumn(seriesMetadata, 'T0', 'BPLId', 'BPLId', 'NULL')},
-      ${defaultSeriesSelect} AS IsDefault,
-      ${withPeriod ? '1' : '0'} AS IsCurrentPeriod,
-      ${withPeriod ? 'T1.Name' : 'NULL'} AS FinancialYear,
-      ${withPeriod ? 'T1.F_RefDate' : 'NULL'} AS FromDate,
-      ${withPeriod ? 'T1.T_RefDate' : 'NULL'} AS ToDate
-    FROM NNM1 T0
-    ${withPeriod ? 'INNER JOIN OFPR T1 ON T0.Indicator = T1.Indicator' : ''}
-    ${defaultSeriesJoin}
-    WHERE T0.ObjectCode = @objectCode
-      AND T0.Locked = 'N'
-      ${branchFilterSql}
-      ${numberRangeFilter}
-      ${docSubTypeFilter}
-      ${withPeriod ? 'AND CAST(@targetDate AS date) BETWEEN T1.F_RefDate AND T1.T_RefDate' : ''}
-    ORDER BY IsDefault DESC, T0.SeriesName, T0.Series
-  `, params).then(normalizeRecordset);
-
-  const datedParams = {
-    objectCode: normalizedObjectCode,
-    targetDate: effectiveTargetDate,
-    ...(hasBranchFilter ? { branchId } : {}),
-    ...(docSubTypeFilter ? { docSubType: requestedDocSubType } : {}),
-  };
-  const fallbackParams = {
-    objectCode: normalizedObjectCode,
-    ...(hasBranchFilter ? { branchId } : {}),
-    ...(docSubTypeFilter ? { docSubType: requestedDocSubType } : {}),
-  };
-
-  let result = hasBranchFilter
-    ? await runSeriesQuery(true, branchSeriesFilter, datedParams)
-    : await runSeriesQuery(true, '', datedParams);
-
-  if (!result.length && hasBranchFilter) {
-    result = await runSeriesQuery(true, globalSeriesFilter, datedParams);
-  }
-
-  if (!result.length) {
-    result = hasBranchFilter
-      ? await runSeriesQuery(false, branchSeriesFilter, fallbackParams)
-      : await runSeriesQuery(false, '', fallbackParams);
-  }
-
-  if (!result.length && hasBranchFilter) {
-    result = await runSeriesQuery(false, globalSeriesFilter, fallbackParams);
-  }
-
-  const mapped = dedupeSeriesRows(result.map((row) => {
-    const isDefault = Number(row.IsDefault || 0) === 1;
-    const isCurrentPeriod = Number(row.IsCurrentPeriod || 0) === 1;
-    const displayName = row.SeriesName || row.SeriesLabel || row.BeginStr || row.Series;
-
-    return {
-      Series: row.Series,
-      SeriesName: displayName,
-      DisplayName: displayName,
-      RawSeriesName: row.SeriesName || '',
-      BeginStr: row.BeginStr || '',
-      EndStr: row.EndStr || '',
-      NextNumber: row.NextNumber,
-      Indicator: row.Indicator || '',
-      DocSubType: row.DocSubType || '',
-      BPLId: row.BPLId != null ? String(row.BPLId) : '',
-      IsDefault: isDefault,
-      isDefault,
-      IsCurrentPeriod: isCurrentPeriod,
-      isCurrentPeriod,
-      FinancialYear: row.FinancialYear || '',
-      FromDate: row.FromDate || null,
-      ToDate: row.ToDate || null,
-    };
-  }));
-
-  return collapseToSapVisible ? keepSapVisibleSeries(mapped, effectiveTargetDate) : mapped;
+  const subtype = text(docSubType) ? normalizeDocumentSubType(docSubType) : text(admin[0]?.Country).toUpperCase() === 'IN' && ['13','14','18','19'].includes(code) ? gstSeriesSubType(transactionType) : '--';
+  const currentPeriods = periods.filter((period) => date >= dateOnly(period.F_RefDate) && date <= dateOnly(period.T_RefDate));
+  // SAP can retain the last configured period's choices on a new document
+  // after the configured calendar ends. Display availability is not posting
+  // eligibility. Never use this display context for creation or calendar gaps.
+  const lastPeriodEnd = periods.reduce((last, period) => {
+    const end = dateOnly(period.T_RefDate);
+    return end > last ? end : last;
+  }, '');
+  const displayPeriods = !currentPeriods.length && purpose === 'display' && lastPeriodEnd && date > lastPeriodEnd
+    ? periods.filter(period => dateOnly(period.T_RefDate) === lastPeriodEnd)
+    : currentPeriods;
+  const multipleBranches = isTrue(admin[0]?.MltpBrnchs);
+  const needsBranch = multipleBranches && !(branchId > 0);
+  let candidates = needsBranch ? [] : rows.filter((row) => {
+    if (Number(row.Series) <= 0 || isTrue(row.IsManual) || isTrue(row.Locked) || isTrue(row.IsForCncl) || text(row.SeriesType) !== 'D') return false;
+    if (normalizeDocumentSubType(row.DocSubType) !== subtype) return false;
+    if (!displayPeriods.some((period) => text(period.Indicator) === text(row.Indicator))) return false;
+    if (multipleBranches && Number(row.BPLId) !== branchId) return false;
+    const next = Number(row.NextNumber);
+    return Number.isSafeInteger(next) && next > 0
+      && (!(Number(row.LastNum) > 0) || next <= Number(row.LastNum))
+      && (!(Number(row.InitialNum) > 0) || next >= Number(row.InitialNum));
+  });
+  const groups = [...new Set(candidates.map((row) => text(row.GroupCode)))];
+  const allowed = new Set();
+  for (const group of groups) if (await access.canUseGroup(group)) allowed.add(group);
+  candidates = dedupeSeriesRows(candidates.filter((row) => allowed.has(text(row.GroupCode))));
+  const matchesSubtype = (row) => normalizeDocumentSubType(row.DocSubType) === subtype;
+  const defaultSeries = chooseDefaultSeries(candidates,
+    userDefaults.filter(matchesSubtype).map((row) => row.Series),
+    numbering.filter(matchesSubtype).map((row) => row.DfltSeries ?? row.DfltSerie));
+  const manualAllowed = access.manualAllowed && displayPeriods.length > 0 && !needsBranch;
+  const series = candidates.map((row) => {
+    const period = displayPeriods.find((item) => text(item.Indicator) === text(row.Indicator));
+    return { ...row, DisplayName: row.SeriesName, RawSeriesName: row.SeriesName,
+      BPLId: row.BPLId == null ? '' : text(row.BPLId), IsManual: false,
+      IsDefault: text(row.Series) === text(defaultSeries), isDefault: text(row.Series) === text(defaultSeries),
+      IsCurrentPeriod: currentPeriods.length > 0, isCurrentPeriod: currentPeriods.length > 0, Eligible: true, PostingEligible: currentPeriods.length > 0,
+      FinancialYear: period.Name, FromDate: dateOnly(period.F_RefDate), ToDate: dateOnly(period.T_RefDate),
+      ManualAllowed: manualAllowed, DefaultSeries: defaultSeries };
+  }).sort((a, b) => Number(b.IsDefault) - Number(a.IsDefault) || Number(a.Series) - Number(b.Series));
+  return { series, defaultSeries, manualAllowed, postingDate: date, docSubType: subtype, country: text(admin[0]?.Country).toUpperCase(),
+    postingPeriodValid: currentPeriods.length > 0,
+    periodContextSource: currentPeriods.length ? 'posting-date' : displayPeriods.length ? 'last-configured-period' : 'none',
+    reason: needsBranch ? 'Select a branch to load document series.' : !displayPeriods.length ? 'No posting period covers this posting date.' : !series.length ? 'No eligible automatic series for this posting date, branch and SAP user.' : '' };
 };
-
-module.exports = {
-  getMarketingDocumentSeries,
-  selectSapEligibleSeries: keepSapVisibleSeries,
-  _private: {
-    keepSapVisibleSeries,
-    dedupeSeriesRows,
-    getSeriesDateScore,
-  },
+const getMarketingDocumentSeries = async (options) => {
+  const result = await resolveMarketingDocumentSeries(options);
+  Object.defineProperty(result.series, 'seriesContext', { value: result, enumerable: false });
+  return result.series;
 };
+const withSeriesContext = (series) => {
+  const context = series?.seriesContext;
+  return context ? { ...context, series } : { series };
+};
+module.exports = { getMarketingDocumentSeries, resolveMarketingDocumentSeries, withSeriesContext, createSeriesReader,
+  selectSapEligibleSeries, _private: { dedupeSeriesRows, keepSapVisibleSeries: selectSapEligibleSeries } };

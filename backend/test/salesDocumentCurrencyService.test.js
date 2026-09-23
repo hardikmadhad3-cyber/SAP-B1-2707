@@ -6,6 +6,8 @@ const {
   normalizeCopyDocumentRate,
   resolveDocumentCurrency,
   validateDocumentCurrency,
+  mergeCurrencyReferenceData,
+  normalizeCurrencyRows,
 } = require('../services/salesDocumentCurrencyService');
 
 const referenceData = {
@@ -30,6 +32,19 @@ const referenceData = {
   ],
   exchange_rate_settings: { postingMethod: 'direct', decimalPlaces: 4 },
 };
+
+test('shared reference merge replaces hard-coded document decimals with company setup and retains currency policy', () => {
+  const currencies = normalizeCurrencyRows([{ CurrCode: 'INR', CurrName: 'Indian Rupee', RoundSys: 0, Decimals: 5 }], 'INR', 'INR');
+  assert.equal(currencies[0].RoundSys, 0);
+  assert.equal(currencies[0].Decimals, 5);
+  const merged = mergeCurrencyReferenceData({ decimal_settings: { SumDec: 2, QtyDec: 2 } }, {
+    localCurrency: 'INR', currencies, decimalSettings: { SumDec: 4, QtyDec: 0 }, roundingMethod: 'Y',
+  });
+  assert.equal(merged.decimal_settings.SumDec, 4);
+  assert.equal(merged.decimal_settings.QtyDec, 0);
+  assert.equal(merged.rounding_settings.currencies[0].RoundSys, 0);
+  assert.equal(merged.rounding_settings.method, 'Y');
+});
 
 test('uses the fixed SAP business-partner currency when the document omits it', () => {
   assert.equal(resolveDocumentCurrency({ vendor: 'C-INR' }, referenceData), 'INR');

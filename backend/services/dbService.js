@@ -122,6 +122,9 @@ const query = async (queryStr, params = {}, options = {}) => {
 
     const pool = await getPool(connectionConfig);
     const req = pool.request();
+    if (Number.isFinite(Number(options.requestTimeout)) && Number(options.requestTimeout) > 0) {
+      req.timeout = Number(options.requestTimeout);
+    }
 
     for (const [key, value] of Object.entries(params)) {
       req.input(key, value);

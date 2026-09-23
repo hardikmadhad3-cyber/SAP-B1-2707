@@ -243,6 +243,8 @@ export default function OpportunitiesStatisticsReportPage({
   const criteriaWindow = useFloatingWindow({
     isOpen: true,
     defaultTop: 22,
+    bounds: 'parent',
+    allowPersistedMinimized: false,
     taskId: `${taskIdPrefix}-criteria`,
     taskTitle: criteriaTitle,
     taskPath,
@@ -250,6 +252,7 @@ export default function OpportunitiesStatisticsReportPage({
   const reportWindow = useFloatingWindow({
     isOpen: hasReport,
     defaultTop: 12,
+    bounds: 'parent',
     taskId: `${taskIdPrefix}-report`,
     taskTitle: reportTitle,
     taskPath,
@@ -473,7 +476,8 @@ export default function OpportunitiesStatisticsReportPage({
               onChange={handleCriteriaChange}
               onOpenExternalLookup={handleOpenExternalLookup}
               onSubmit={handleSubmit}
-              onCancel={handleCancel}
+              onClear={handleCancel}
+              onClose={handleCloseCriteriaWindow}
               loading={loading}
               filterRows={filterRows}
               groupByOptions={GROUP_BY_OPTIONS}

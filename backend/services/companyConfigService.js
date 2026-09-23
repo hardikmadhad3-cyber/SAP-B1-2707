@@ -170,6 +170,7 @@ const buildCompanyConfig = (company = {}) => {
     },
     userMapping: {
       sapUserCode: firstText(company.AssignedSapUserCode),
+      companySapUserCode: firstText(company.SapUsername),
     },
   };
 };

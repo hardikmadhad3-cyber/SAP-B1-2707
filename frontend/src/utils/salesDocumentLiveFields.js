@@ -138,25 +138,29 @@ export const buildSalesDocumentLiveFields = ({
   const safeFallbackColumns = Array.isArray(safeFallbackMatrixColumns) && safeFallbackMatrixColumns.length
     ? safeFallbackMatrixColumns
     : sapStandardColumns;
+  // The physical schema belongs to the selected company and is authoritative.
+  // A page-specific safe list is only an outage fallback; it must never mask a
+  // successfully loaded company schema just because no SAP layout was saved.
   const matrixColumns = effectiveLayoutColumns.length
-    ? buildSalesOrderMatrixColumnsFromLayout({
+      ? buildSalesOrderMatrixColumnsFromLayout({
         layoutColumns: effectiveLayoutColumns,
         liveMatrixColumns: verifiedColumns,
         rowUdfFields,
         includeLineNumber,
+        appendMissingLiveColumns: true,
       })
-    : useSafeFallbackWithoutLayout
-      ? buildSalesOrderMatrixColumnsFromLayout({
-          layoutColumns: [],
-          liveMatrixColumns: safeFallbackColumns,
-          rowUdfFields: [],
-          includeLineNumber,
-        })
     : schemaMatrixColumns.length
       ? buildSalesOrderMatrixColumnsFromLayout({
           layoutColumns: [],
           liveMatrixColumns: schemaMatrixColumns,
           rowUdfFields,
+          includeLineNumber,
+        })
+    : useSafeFallbackWithoutLayout
+      ? buildSalesOrderMatrixColumnsFromLayout({
+          layoutColumns: [],
+          liveMatrixColumns: safeFallbackColumns,
+          rowUdfFields: [],
           includeLineNumber,
         })
       : buildSalesOrderMatrixColumnsFromLayout({
@@ -178,7 +182,11 @@ export const buildSalesDocumentLiveFields = ({
     importedLayout: layout,
     liveAvailable: Boolean(normalizedSchema && schemaLineFields.length),
     usedSapLayout: Boolean(effectiveLayoutColumns.length),
-    usedSafeFallback: Boolean(useSafeFallbackWithoutLayout && !effectiveLayoutColumns.length),
+    usedSafeFallback: Boolean(
+      useSafeFallbackWithoutLayout
+      && !effectiveLayoutColumns.length
+      && !schemaMatrixColumns.length
+    ),
   };
 };
 

@@ -1,9 +1,11 @@
+const { buildDocumentConfirmationPayload, updateDocumentConfirmationOnly } = require('./documentConfirmationUtils');
 const sapService = require('./sapService');
 const deliveryDb = require('./deliveryDbService');
 const salesOrderDb = require('./salesOrderDbService');
 const hsnCodeDbService = require('./hsnCodeDbService');
 const { buildDocumentAdditionalExpenses } = require('./freightPayloadUtils');
 const { buildMarketingDocumentAddressPayload } = require('./documentAddressPayloadUtils');
+const { buildDocumentRoundingPayload } = require('./documentRoundingPayloadUtils');
 const {
   applySapDocumentCurrency,
   fromStoredDocumentRate,
@@ -38,8 +40,13 @@ const isTruthyFlag = (value) => (
   value === true || value === 1 || ['Y', 'YES', 'TRUE', '1'].includes(String(value ?? '').trim().toUpperCase())
 );
 
+const hasManualUomEntry = (line = {}) => {
+  const entry = Number(line.uomEntry ?? line.UoMEntry);
+  return Number.isInteger(entry) && entry < 0;
+};
+
 const getDeliveryLineRawUomValue = (line = {}) => {
-  if (isTruthyFlag(line.uomNameEdited)) {
+  if (isTruthyFlag(line.uomNameEdited) || hasManualUomEntry(line)) {
     return line.uomName ?? line.UoMName ?? line.UomName ?? line.UnitMsr ?? line.unitMsr ?? line.uomCode;
   }
   return hasValue(line.uomEntry)
@@ -665,17 +672,18 @@ const buildDocumentLinePayload = async (line = {}, fieldMetadata = {}, includeLi
 
   if (!isBaseDocumentLine) {
     const uomNameEdited = isTruthyFlag(line.uomNameEdited);
+    const usesManualUom = uomNameEdited || hasManualUomEntry(line);
     const rawUomValue = getDeliveryLineRawUomValue(line);
     const uomValue = getDeliveryLineUomValue(line);
     const resolvedUomEntry = await deliveryDb.resolveDeliveryLineUomEntry(
       line.itemNo,
       rawUomValue,
-      { allowDefaultFallback: !uomNameEdited },
+      { allowDefaultFallback: !usesManualUom },
     );
     if (resolvedUomEntry !== null && resolvedUomEntry !== undefined) {
       documentLine.UoMEntry = resolvedUomEntry;
     } else if (hasValue(uomValue)) {
-      if (uomNameEdited) {
+      if (usesManualUom) {
         documentLine.MeasureUnit = String(uomValue).trim();
       } else {
         documentLine.UoMCode = String(uomValue).trim();
@@ -683,8 +691,9 @@ const buildDocumentLinePayload = async (line = {}, fieldMetadata = {}, includeLi
     }
   }
 
-  if (hasValue(line.taxCode)) {
-    documentLine.TaxCode = String(line.taxCode).trim();
+  const taxCode = firstPresent(line.taxCode, line.TaxCode, line.VatGroup);
+  if (hasValue(taxCode)) {
+    documentLine.TaxCode = String(taxCode).trim();
   }
 
   if (hasValue(line.distRule)) {
@@ -719,6 +728,22 @@ const buildDocumentLinePayload = async (line = {}, fieldMetadata = {}, includeLi
   const lineDeliveryDate = firstPresent(line.lineDeliveryDate, line.deliveryDate, line.ShipDate);
   if (lineDeliveryDate && hasDeliveryLineColumn(fieldMetadata, 'ShipDate')) {
     documentLine.ShipDate = formatDateForSAP(lineDeliveryDate);
+  }
+
+  const requiredDate = firstPresent(line.requiredDate, line.RequiredDate, line.ReqDate);
+  if (requiredDate && hasDeliveryLineColumn(fieldMetadata, 'ReqDate', 'RequiredDate')) {
+    documentLine.RequiredDate = formatDateForSAP(requiredDate);
+  }
+
+  const packageQuantity = toOptionalNumber(firstPresent(
+    line.noOfPackages,
+    line.NoOfPackages,
+    line.packageQuantity,
+    line.PackageQuantity,
+    line.PackQty,
+  ));
+  if (packageQuantity !== undefined && hasDeliveryLineColumn(fieldMetadata, 'PackQty', 'PackageQuantity')) {
+    documentLine.PackageQuantity = packageQuantity;
   }
 
   const lineShippingType = toOptionalNumber(firstPresent(
@@ -1350,11 +1375,11 @@ console.log("SAP Payload:", sapPayload);
     if (contactPersonCode !== undefined) sapPayload.ContactPersonCode = contactPersonCode;
     if (shippingMethod !== undefined) sapPayload.ShippingMethod = shippingMethod;
     if (documentsOwner !== undefined) sapPayload.DocumentsOwner = documentsOwner;
-    sapPayload.Confirmed = toBoolean(header.confirmed) ? 'tYES' : 'tNO';
+    Object.assign(sapPayload, buildDocumentConfirmationPayload(header));
     if (header.paymentTerms) sapPayload.PaymentGroupCode = parseInt(header.paymentTerms);
     if (header.paymentMethod) sapPayload.PaymentMethod = header.paymentMethod;
     if (header.freight) sapPayload.TotalExpenses = parseFloat(header.freight);
-    sapPayload.Rounding = toBoolean(header.rounding) ? 'tYES' : 'tNO';
+    Object.assign(sapPayload, buildDocumentRoundingPayload(header));
     if (salesPersonCode !== undefined) sapPayload.SalesPersonCode = salesPersonCode;
     assignElectronicDocumentPayload(sapPayload, header);
     const eWayBillDetails = await buildEWayBillDetailsPayload(payload.eway_bill_details);
@@ -1435,6 +1460,8 @@ console.log("SAP Payload:", sapPayload);
 // ───────── UPDATE DELIVERY (USING SERVICE LAYER) ─────────
 
 const updateDelivery = async (docEntry, payload) => {
+  const confirmationResult = await updateDocumentConfirmationOnly(docEntry, payload, 'DeliveryNotes', sapService);
+  if (confirmationResult) return confirmationResult;
   try {
     const includeDocumentLines = payload.include_document_lines === true;
     const validationResult = await validateDeliveryDocument({
@@ -1480,12 +1507,13 @@ const updateDelivery = async (docEntry, payload) => {
       ...(hasDocumentReferences ? { DocumentReferences: documentReferences } : {}),
     };
     if (includeDocumentLines) sapPayload.DocumentLines = documentLines;
+    Object.assign(sapPayload, buildDocumentConfirmationPayload(header));
     const currencyReferenceData = await loadDocumentCurrencyReferenceData(header);
     applySapDocumentCurrency(sapPayload, header, currencyReferenceData);
 
     if (header.paymentMethod) sapPayload.PaymentMethod = header.paymentMethod;
     if (header.freight) sapPayload.TotalExpenses = parseFloat(header.freight);
-    sapPayload.Rounding = toBoolean(header.rounding) ? 'tYES' : 'tNO';
+    Object.assign(sapPayload, buildDocumentRoundingPayload(header));
     if (salesPersonCode !== undefined) sapPayload.SalesPersonCode = salesPersonCode;
     assignElectronicDocumentPayload(sapPayload, header);
     const eWayBillDetails = await buildEWayBillDetailsPayload(payload.eway_bill_details);

@@ -215,10 +215,10 @@ function Field({ label, children, wide = false }) {
   );
 }
 
-function CheckboxField({ label, checked, onChange }) {
+function CheckboxField({ label, checked, onChange, disabled = false }) {
   return (
     <label className="po-checkbox-label je-checkbox">
-      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} disabled={disabled} />
       <span>{label}</span>
     </label>
   );
@@ -246,6 +246,8 @@ export default function JournalEntryPage() {
     { saveMode: 'explicit' },
   );
   const [formSettingsOpen, setFormSettingsOpen] = useState(false);
+  const hasLoadedEntry = Boolean(requestedTransId || currentTransId);
+  const isViewMode = hasLoadedEntry;
 
   useEffect(() => {
     let ignore = false;
@@ -319,8 +321,7 @@ export default function JournalEntryPage() {
           reference2: journal.reference2 || "",
           reference3: journal.reference3 || "",
         }));
-        setLines([
-          ...(journal.lines || []).map((line, index) => ({
+        setLines((journal.lines || []).map((line, index) => ({
             ...makeLine(index + 1),
             accountCode: line.account || "",
             accountName: line.name || "",
@@ -331,9 +332,7 @@ export default function JournalEntryPage() {
             taxCode: line.taxCode || "",
             distRule: line.profitCenter || "",
             location: line.location || "",
-          })),
-          makeLine((journal.lines || []).length + 1),
-        ]);
+          })));
         setCurrentTransId(requestedTransId);
         setMessage({ type: "success", text: `Journal Entry ${requestedTransId} loaded in view mode.` });
       })
@@ -498,11 +497,13 @@ export default function JournalEntryPage() {
         header,
         lines: filledLines,
       });
+      const postedTransId = result?.data?.TransId || result?.data?.JdtNum || 0;
       setHeader((prev) => ({
         ...prev,
-        transNo: result?.data?.TransId || result?.data?.JdtNum || prev.transNo,
+        transNo: postedTransId || prev.transNo,
         number: result?.data?.Number || prev.number,
       }));
+      if (postedTransId) setCurrentTransId(Number(postedTransId));
       setMessage({ type: "success", text: result?.message || "Journal Entry added successfully." });
     } catch (error) {
       setMessage({
@@ -528,6 +529,15 @@ export default function JournalEntryPage() {
     setCurrentTransId(0);
     setActiveTab("contents");
     setMessage(null);
+    navigate("/journal-entry", { replace: true, state: null });
+  };
+
+  const handlePrimaryAction = () => {
+    if (isViewMode) {
+      handleCancel();
+      return;
+    }
+    handleAdd();
   };
 
   const currentSeriesKnown = referenceData.series.some((row) => String(row.series) === String(header.series));
@@ -566,7 +576,7 @@ export default function JournalEntryPage() {
             <span className="je-account-picker">
               <input
                 value={row.accountCode}
-                disabled={!active}
+                disabled={!active || isViewMode}
                 onChange={(event) => updateLine(rowIndex, "accountCode", event.target.value)}
                 onBlur={(event) => resolveAccount(rowIndex, event.target.value, "code")}
                 onDoubleClick={() => openAccountLookup(rowIndex, row.accountCode)}
@@ -576,7 +586,7 @@ export default function JournalEntryPage() {
                   if (event.key === "Enter") resolveAccount(rowIndex, event.currentTarget.value, "code");
                 }}
               />
-              <button type="button" onClick={() => openAccountLookup(rowIndex, row.accountCode)} disabled={!active}>...</button>
+              <button type="button" onClick={() => openAccountLookup(rowIndex, row.accountCode)} disabled={!active || isViewMode}>...</button>
             </span>
           </td>
         );
@@ -586,7 +596,7 @@ export default function JournalEntryPage() {
             <span className="je-account-picker">
               <input
                 value={row.accountName}
-                disabled={!active}
+                disabled={!active || isViewMode}
                 onChange={(event) => updateLine(rowIndex, "accountName", event.target.value)}
                 onBlur={(event) => resolveAccount(rowIndex, event.target.value, "name")}
                 onDoubleClick={() => openAccountLookup(rowIndex, row.accountName)}
@@ -595,7 +605,7 @@ export default function JournalEntryPage() {
                   if (event.key === "Enter") resolveAccount(rowIndex, event.currentTarget.value, "name");
                 }}
               />
-              <button type="button" onClick={() => openAccountLookup(rowIndex, row.accountName)} disabled={!active}>...</button>
+              <button type="button" onClick={() => openAccountLookup(rowIndex, row.accountName)} disabled={!active || isViewMode}>...</button>
             </span>
           </td>
         );
@@ -608,7 +618,7 @@ export default function JournalEntryPage() {
             <input
               className="je-amount"
               value={row[column.key]}
-              disabled={!active}
+              disabled={!active || isViewMode}
               onChange={(event) => updateLine(rowIndex, column.key, event.target.value)}
             />
           </td>
@@ -619,7 +629,7 @@ export default function JournalEntryPage() {
             <span className="je-account-picker je-remark-picker">
               <input
                 value={row.remarks}
-                disabled={!active}
+                disabled={!active || isViewMode}
                 onChange={(event) => updateLine(rowIndex, "remarks", event.target.value)}
                 onDoubleClick={() => setRemarkLookup({ open: true, rowIndex })}
                 onKeyDown={(event) => {
@@ -631,7 +641,7 @@ export default function JournalEntryPage() {
                 aria-label="Choose remark template"
                 title="List of Remark Template"
                 onClick={() => setRemarkLookup({ open: true, rowIndex })}
-                disabled={!active}
+                disabled={!active || isViewMode}
               >...</button>
             </span>
           </td>
@@ -641,7 +651,7 @@ export default function JournalEntryPage() {
           <td style={journalCellStyle(column)}>
             <input
               value={row[column.key]}
-              disabled={!active}
+              disabled={!active || isViewMode}
               onChange={(event) => updateLine(rowIndex, column.key, event.target.value)}
             />
           </td>
@@ -658,14 +668,14 @@ export default function JournalEntryPage() {
         <button
           type="button"
           className="po-btn po-btn--primary sap-document-toolbar__primary"
-          onClick={handleAdd}
-          disabled={saving || Boolean(currentTransId)}
+          onClick={handlePrimaryAction}
+          disabled={saving && !hasLoadedEntry}
         >
-          {saving ? "Loading..." : currentTransId ? "OK" : "Add"}
+          {saving && !hasLoadedEntry ? "Loading..." : hasLoadedEntry ? "OK" : "Add"}
         </button>
-        <button type="button" className="po-btn sap-document-toolbar__cancel" onClick={handleCancel} disabled={saving}>Cancel</button>
-        <button type="button" className="po-btn sap-document-toolbar__find" onClick={() => navigate("/journal-entry/find")} disabled={saving}>Find</button>
-        <button type="button" className="po-btn sap-document-toolbar__new" onClick={handleCancel} disabled={saving}>New</button>
+        <button type="button" className="po-btn sap-document-toolbar__cancel" onClick={handleCancel}>Cancel</button>
+        <button type="button" className="po-btn sap-document-toolbar__find" onClick={() => navigate("/journal-entry/find")}>Find</button>
+        <button type="button" className="po-btn sap-document-toolbar__new" onClick={handleCancel}>New</button>
         <button type="button" className="po-btn sap-document-toolbar__settings" onClick={toggleFormSettings}>Form Settings</button>
       </div>
 
@@ -687,16 +697,16 @@ export default function JournalEntryPage() {
             </select>
           </Field>
           <Field label="Number"><input value={header.number} onChange={(event) => setHeaderValue("number", event.target.value)} readOnly={header.series !== "-1" || Boolean(currentTransId)} /></Field>
-          <Field label="Posting Date"><input type="date" value={header.postingDate} onChange={(event) => setHeaderValue("postingDate", event.target.value)} /></Field>
-          <Field label="Due Date"><input type="date" value={header.dueDate} onChange={(event) => setHeaderValue("dueDate", event.target.value)} /></Field>
-          <Field label="Doc. Date"><input type="date" value={header.documentDate} onChange={(event) => setHeaderValue("documentDate", event.target.value)} /></Field>
-          <Field label="Remarks" wide><input value={header.remarks} onChange={(event) => setHeaderValue("remarks", event.target.value)} /></Field>
+          <Field label="Posting Date"><input type="date" value={header.postingDate} onChange={(event) => setHeaderValue("postingDate", event.target.value)} disabled={isViewMode} /></Field>
+          <Field label="Due Date"><input type="date" value={header.dueDate} onChange={(event) => setHeaderValue("dueDate", event.target.value)} disabled={isViewMode} /></Field>
+          <Field label="Doc. Date"><input type="date" value={header.documentDate} onChange={(event) => setHeaderValue("documentDate", event.target.value)} disabled={isViewMode} /></Field>
+          <Field label="Remarks" wide><input value={header.remarks} onChange={(event) => setHeaderValue("remarks", event.target.value)} readOnly={isViewMode} /></Field>
 
           <Field label="Origin"><input value={header.origin} onChange={(event) => setHeaderValue("origin", event.target.value)} readOnly /></Field>
           <Field label="Origin No."><input value={header.originNo} onChange={(event) => setHeaderValue("originNo", event.target.value)} readOnly /></Field>
           <Field label="Trans. No."><input value={header.transNo} onChange={(event) => setHeaderValue("transNo", event.target.value)} readOnly /></Field>
           <Field label="Template Type">
-            <select value={header.templateType} onChange={(event) => setHeaderValue("templateType", event.target.value)}>
+            <select value={header.templateType} onChange={(event) => setHeaderValue("templateType", event.target.value)} disabled={isViewMode}>
               <option value=""></option>
               <option value="Percentage">Percentage</option>
               <option value="Recurring Posting">Recurring Posting</option>
@@ -704,7 +714,7 @@ export default function JournalEntryPage() {
           </Field>
           <Field label="Template"><input value={header.template} onChange={(event) => setHeaderValue("template", event.target.value)} readOnly /></Field>
           <Field label="Indicator">
-            <select value={header.indicator} onChange={(event) => setHeaderValue("indicator", event.target.value)}>
+            <select value={header.indicator} onChange={(event) => setHeaderValue("indicator", event.target.value)} disabled={isViewMode}>
               <option value=""></option>
               <option value="EM">EM - EXPELLER MAIZE (CRUDE) OIL</option>
               <option value="JV">JV - Journal Entry</option>
@@ -714,34 +724,34 @@ export default function JournalEntryPage() {
               <option value="RS">RS - REFINED SOYA OIL</option>
             </select>
           </Field>
-          <Field label="Project"><input value={header.project} onChange={(event) => setHeaderValue("project", event.target.value)} /></Field>
+          <Field label="Project"><input value={header.project} onChange={(event) => setHeaderValue("project", event.target.value)} readOnly={isViewMode} /></Field>
 
           <Field label="Trans. Code">
-            <select value={header.transCode} onChange={(event) => setHeaderValue("transCode", event.target.value)}>
+            <select value={header.transCode} onChange={(event) => setHeaderValue("transCode", event.target.value)} disabled={isViewMode}>
               <option value=""></option>
               <option value="*">*</option>
               <option value="Maze">Maze</option>
             </select>
           </Field>
-          <Field label="Ref. 1"><input value={header.reference1} onChange={(event) => setHeaderValue("reference1", event.target.value)} /></Field>
-          <Field label="Ref. 2"><input value={header.reference2} onChange={(event) => setHeaderValue("reference2", event.target.value)} /></Field>
-          <Field label="Ref. 3"><input value={header.reference3} onChange={(event) => setHeaderValue("reference3", event.target.value)} /></Field>
+          <Field label="Ref. 1"><input value={header.reference1} onChange={(event) => setHeaderValue("reference1", event.target.value)} readOnly={isViewMode} /></Field>
+          <Field label="Ref. 2"><input value={header.reference2} onChange={(event) => setHeaderValue("reference2", event.target.value)} readOnly={isViewMode} /></Field>
+          <Field label="Ref. 3"><input value={header.reference3} onChange={(event) => setHeaderValue("reference3", event.target.value)} readOnly={isViewMode} /></Field>
           <Field label="Loc.">
-            <select value={header.location} onChange={(event) => setHeaderValue("location", event.target.value)}>
+            <select value={header.location} onChange={(event) => setHeaderValue("location", event.target.value)} disabled={isViewMode}>
               <option value=""></option>
             </select>
           </Field>
         </div>
 
         <div className="je-header-checks">
-          <CheckboxField label="Revaluation Reporting Exch. Rate" checked={header.revaluationRate} onChange={(value) => setHeaderValue("revaluationRate", value)} />
-          <CheckboxField label="Reverse" checked={header.reverse} onChange={(value) => setHeaderValue("reverse", value)} />
-          <CheckboxField label="Adj. Trans. (Period 13)" checked={header.period13} onChange={(value) => setHeaderValue("period13", value)} />
-          <CheckboxField label="Automatic Tax" checked={header.automaticTax} onChange={(value) => setHeaderValue("automaticTax", value)} />
+          <CheckboxField label="Revaluation Reporting Exch. Rate" checked={header.revaluationRate} onChange={(value) => setHeaderValue("revaluationRate", value)} disabled={isViewMode} />
+          <CheckboxField label="Reverse" checked={header.reverse} onChange={(value) => setHeaderValue("reverse", value)} disabled={isViewMode} />
+          <CheckboxField label="Adj. Trans. (Period 13)" checked={header.period13} onChange={(value) => setHeaderValue("period13", value)} disabled={isViewMode} />
+          <CheckboxField label="Automatic Tax" checked={header.automaticTax} onChange={(value) => setHeaderValue("automaticTax", value)} disabled={isViewMode} />
         </div>
 
         <div className="je-header-bottom">
-          <CheckboxField label="Generate Excise Reg. No." checked={header.exciseRegNo} onChange={(value) => setHeaderValue("exciseRegNo", value)} />
+          <CheckboxField label="Generate Excise Reg. No." checked={header.exciseRegNo} onChange={(value) => setHeaderValue("exciseRegNo", value)} disabled={isViewMode} />
           <Field label="Blanket Agreement"><input value={header.blanketAgreement} onChange={(event) => setHeaderValue("blanketAgreement", event.target.value)} readOnly /></Field>
         </div>
       </div>
@@ -754,7 +764,7 @@ export default function JournalEntryPage() {
       <div className="po-tab-panel je-tab-panel">
         {activeTab === "contents" ? (
           <>
-            <button type="button" className="je-expand">Expand Editing Mode</button>
+            <button type="button" className="je-expand" disabled={isViewMode}>Expand Editing Mode</button>
             <div className="po-grid-wrap je-table-wrap">
               <table className="po-grid je-lines-table" style={{ minWidth: `${journalTableMinWidth}px` }}>
                 <thead>
@@ -816,7 +826,7 @@ export default function JournalEntryPage() {
             </table>
             </div>
             <div className="je-attach-actions">
-              <button type="button" className="po-btn">Browse</button>
+              <button type="button" className="po-btn" disabled={isViewMode}>Browse</button>
               <button type="button" className="po-btn" disabled>Display</button>
               <button type="button" className="po-btn" disabled>Delete</button>
             </div>
@@ -825,10 +835,10 @@ export default function JournalEntryPage() {
       </div>
 
       <div className="je-footer">
-        <CheckboxField label="Display in FC" checked={header.displayInFc} onChange={(value) => setHeaderValue("displayInFc", value)} />
-        <CheckboxField label="Display in SC" checked={header.displayInSc} onChange={(value) => setHeaderValue("displayInSc", value)} />
+        <CheckboxField label="Display in FC" checked={header.displayInFc} onChange={(value) => setHeaderValue("displayInFc", value)} disabled={isViewMode} />
+        <CheckboxField label="Display in SC" checked={header.displayInSc} onChange={(value) => setHeaderValue("displayInSc", value)} disabled={isViewMode} />
         <div className="je-footer-right">
-          <button type="button" className="po-btn">Import From Excel</button>
+          <button type="button" className="po-btn" disabled={isViewMode}>Import From Excel</button>
           <button type="button" className="po-btn" disabled>Cancel Template</button>
         </div>
       </div>

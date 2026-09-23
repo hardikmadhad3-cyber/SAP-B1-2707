@@ -5,7 +5,7 @@ const getPositiveWidth = (value) => {
 
 const getColumnTypeMinimumWidth = (field = {}) => {
   if (field.type === 'textarea') return 180;
-  if (field.lookupSource || field.lookup?.source) return 125;
+  if (field.lookupSource || field.lookup?.source || field.lookup) return 125;
   if (field.type === 'date') return 125;
   if (field.type === 'checkbox') return 95;
   if (field.type === 'number' || field.numeric) return 95;
@@ -44,4 +44,3 @@ export const getReadableDocumentLineColumnWidth = (
     getHeaderMinimumWidth(field, maximumHeaderWidth),
   );
 };
-

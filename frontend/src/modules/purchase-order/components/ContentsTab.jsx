@@ -3,22 +3,18 @@ import TaxCodeLookup from '../../../components/TaxCodeLookup';
 import { useSapItemCodeTab } from '../../../utils/sapTabNavigation';
 import { getLineTotalsForDisplay } from '../../../utils/lineTotals';
 import { getOrderedVisibleMatrixColumns } from '../../../utils/formSettingsColumns';
+import { getReadableDocumentLineColumnWidth } from '../../../utils/documentLineColumnWidth';
+import { isBaseDocumentLine } from '../../../utils/documentUom';
+import useDocumentTableClipboard from '../../../components/sales-document/useDocumentTableClipboard';
 import {
   BASE_MATRIX_COLUMNS,
 } from '../../../config/purchaseOrderForm';
 
 const MATRIX_COLS = BASE_MATRIX_COLUMNS;
+const BASE_MATRIX_COLUMN_BY_KEY = new Map(MATRIX_COLS.map((column) => [column.key, column]));
 
 const INDEX_COL_WIDTH = 42;
 const ACTION_COL_WIDTH = 48;
-const COLUMN_MIN_WIDTHS = {
-  itemNo: 180,
-  itemDescription: 260,
-  hsnCode: 145,
-  uomName: 130,
-  uomCode: 120,
-  taxCode: 135,
-};
 
 const pickerButtonStyle = {
   padding: '0 6px',
@@ -30,8 +26,13 @@ const pickerButtonStyle = {
   cursor: 'pointer',
   borderRadius: '2px',
 };
-const getColumnWidth = (column = {}) =>
-  Math.max(Number(column.minWidth || column.width || 125), COLUMN_MIN_WIDTHS[column.key] || 0);
+const getColumnWidth = (column = {}) => getReadableDocumentLineColumnWidth(
+  column,
+  {
+    ...(BASE_MATRIX_COLUMN_BY_KEY.get(column.rendererKey || column.valueKey || column.key) || {}),
+    ...(column.field || {}),
+  },
+);
 
 const NUMERIC_FIELDS = new Set([
   'quantity',
@@ -54,6 +55,8 @@ const NUMERIC_FIELDS = new Set([
 
 const LINE_FIELD_TO_UDF_KEY = {
   packingType: ['U_PackingType', 'U_PACKINGTYPE', 'U_Packing_Type', 'U_PackingStatus', 'U_PACKINGSTATUS'],
+  containerType: ['U_ContainerType', 'U_CONTAINERTYPE', 'U_Container_Type'],
+  costSheet: ['U_Cost_Sheet', 'U_COST_SHEET', 'U_CostSheet'],
   grossWt: ['U_GrossWt', 'U_GROSSWT', 'U_Gross_Wt', 'U_GrossWeight', 'U_GROSSWEIGHT'],
   totalPackage: ['U_TotalPackage', 'U_TOTALPACKAGE', 'U_Total_Package', 'U_TotalPackge'],
   forRate: ['U_ForRate', 'U_FORRATE', 'U_ForPrice', 'U_FORPRICE', 'U_FOR_PRICE', 'U_FORPrice', 'U_FOR_Price'],
@@ -105,7 +108,7 @@ const getMappedUdfField = (rowUdfFieldMap, mappedUdfKey) => {
   return null;
 };
 
-export default function ContentsTab({
+function EditableContentsTab({
   lines,
   onLineChange,
   onNumBlur,
@@ -122,6 +125,10 @@ export default function ContentsTab({
   formSettings = {},
   rowUdfFields = [],
   onRowUdfChange,
+  getBranchName,
+  canPasteTable = false,
+  onPasteTable,
+  onClipboardFeedback,
 }) {
   const sapItemTab = useSapItemCodeTab({ lineItemOptions, onLineChange, onOpenItemModal });
 
@@ -176,6 +183,23 @@ export default function ContentsTab({
   };
 
   const visibleColumns = getOrderedVisibleMatrixColumns(baseColumns, formSettings);
+  const clipboardColumns = React.useMemo(() => visibleColumns.map((column) => {
+    const setting = getColumnSetting(column);
+    return {
+      key: column.valueKey || column.rendererKey || column.key,
+      label: column.label || column.key,
+      isUdf: isUdfColumn(column),
+      readOnly: Boolean(column.readOnly || setting.active === false),
+    };
+  }), [visibleColumns, formSettings]);
+  const { tableClipboardProps, tableClipboardUi } = useDocumentTableClipboard({
+    columns: clipboardColumns,
+    rows: lines,
+    columnOffset: 1,
+    canPaste: canPasteTable,
+    onPaste: onPasteTable,
+    onFeedback: onClipboardFeedback,
+  });
   const tableMinWidth = INDEX_COL_WIDTH + ACTION_COL_WIDTH + visibleColumns.reduce((total, col) => total + getColumnWidth(col), 0);
 
   const renderInput = (line, rowIndex, fieldName, options = {}) => (
@@ -372,7 +396,7 @@ export default function ContentsTab({
       case 'uomCode':
         return (
           <td key={key}>
-            <select className="so-grid__input" name="uomCode" value={line.uomCode || ''} onChange={(e) => onLineChange(rowIndex, e)}>
+            <select className="so-grid__input" name="uomCode" value={line.uomCode || ''} onChange={(e) => onLineChange(rowIndex, e)} disabled={isBaseDocumentLine(line) || Number(line.uomEntry) < 0 || String(line.uomCode || '').toUpperCase() === 'MANUAL'}>
               <option value=""></option>
               {uomOpts.map((uom) => <option key={uom} value={uom}>{uom}</option>)}
               {line.uomCode && !uomOpts.includes(line.uomCode) && <option value={line.uomCode}>{line.uomCode}</option>}
@@ -382,7 +406,7 @@ export default function ContentsTab({
       case 'uomName':
         return (
           <td key={key}>
-            <input className="so-grid__input" name="uomName" value={line.uomNameEdited ? (line.uomName ?? '') : (line.uomName || line.uomCode || '')} onChange={(e) => onLineChange(rowIndex, e)} />
+            <input className="so-grid__input" name="uomName" value={line.uomNameEdited ? (line.uomName ?? '') : (line.uomName || line.uomCode || '')} onChange={(e) => onLineChange(rowIndex, e)} disabled={isBaseDocumentLine(line) || !(Number(line.uomEntry) < 0 || String(line.uomCode || '').toUpperCase() === 'MANUAL')} />
           </td>
         );
       case 'taxCode':
@@ -398,6 +422,22 @@ export default function ContentsTab({
             />
           </td>
         );
+      case 'totalLC':
+      case 'totalBeforeTax':
+      case 'taxAmount':
+      case 'taxAmountLC':
+      case 'grossTotal':
+      case 'totalDocumentCurrency':
+      case 'priceAfterDiscount': {
+        const value = ['totalLC', 'totalBeforeTax'].includes(key)
+          ? lineTotals.beforeTax
+          : ['taxAmount', 'taxAmountLC'].includes(key)
+            ? (lineTotals.beforeTax === '' ? '' : (Number(lineTotals.total) - Number(lineTotals.beforeTax)).toFixed(2))
+            : key === 'priceAfterDiscount'
+              ? (line.unitPrice === '' || line.unitPrice == null ? '' : (Number(line.unitPrice) * (1 - Number(line.stdDiscount || 0) / 100)).toFixed(2))
+              : lineTotals.total;
+        return <td key={key}><input className="so-grid__input" value={value} readOnly style={{ background: '#f5f8fc' }} /></td>;
+      }
       case 'total':
         return (
           <td key={key}>
@@ -437,10 +477,31 @@ export default function ContentsTab({
             </select>
           </td>
         );
+      case 'loc':
+      case 'branch':
+        return (
+          <td key={key}>
+            <input
+              className="so-grid__input"
+              value={(getBranchName ? getBranchName(line.branch) : '') || line[key] || ''}
+              readOnly
+              style={{ background: '#f5f8fc' }}
+            />
+          </td>
+        );
+      case 'distRule':
+      case 'countryOfOrigin':
+      case 'sac':
+      case 'blanketAgreementNo':
+        return (
+          <td key={key}>
+            {renderInput(line, rowIndex, key)}
+          </td>
+        );
       default:
         return (
           <td key={key}>
-            {renderMappedInput(line, rowIndex, key)}
+            {renderMappedInput(line, rowIndex, key, { readOnly: column.readOnly === true })}
           </td>
         );
     }
@@ -456,7 +517,7 @@ export default function ContentsTab({
       </div>
       <div className="so-grid-wrap so-grid-wrap--contents">
         <div className="so-grid-wrap__scroller so-grid-wrap__scroller--contents">
-          <table className="so-grid so-grid--contents" style={{ width: 'max-content', minWidth: tableMinWidth, tableLayout: 'auto' }}>
+          <table {...tableClipboardProps} className="so-grid so-grid--contents" style={{ width: 'max-content', minWidth: tableMinWidth, tableLayout: 'auto' }}>
             <colgroup>
               <col style={{ width: INDEX_COL_WIDTH }} />
               {visibleColumns.map((column) => (
@@ -478,7 +539,7 @@ export default function ContentsTab({
             <tbody>
               {lines.map((line, rowIndex) => {
                 const uomOpts = getUomOptions(line);
-                const lineTotals = getLineTotalsForDisplay(line, effectiveTaxCodes);
+                const lineTotals = getLineTotalsForDisplay(line, effectiveTaxCodes, 2, { preferCalculated: true });
                 return (
                   <tr key={rowIndex}>
                     <td className="so-grid__cell--muted" style={{ textAlign: 'center', fontSize: 11 }}>{rowIndex + 1}</td>
@@ -498,8 +559,13 @@ export default function ContentsTab({
               })}
             </tbody>
           </table>
+          {tableClipboardUi}
         </div>
       </div>
     </div>
   );
+}
+
+export default function ContentsTab(props) {
+  return <EditableContentsTab {...props} />;
 }

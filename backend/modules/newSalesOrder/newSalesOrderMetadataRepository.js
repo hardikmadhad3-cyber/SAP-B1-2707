@@ -84,6 +84,13 @@ const PHYSICAL_COLUMNS_SQL = buildPhysicalColumnsSql('sqlserver');
 const TABLE_EXISTS_SQL = buildTableExistsSql('sqlserver');
 const UFD1_VALUES_SQL = buildUfd1ValuesSql('sqlserver');
 
+// CompanyId is the company's real identity; companyDb only still matches the
+// legacy rows the CompanyId backfill could not attribute to exactly one company.
+const LAYOUT_COMPANY_SCOPE = `(
+    CompanyId = @companyId
+    OR (CompanyId IS NULL AND UPPER(companyDb) = UPPER(@companyDb))
+  )`;
+
 const LAYOUT_SQL = `
   SELECT
     tableName,
@@ -99,12 +106,28 @@ const LAYOUT_SQL = `
     source,
     updatedAt
   FROM sap_form_layout_columns
-  WHERE companyDb = @companyDb
-    AND userCode = @userCode
+  WHERE ${LAYOUT_COMPANY_SCOPE}
+    AND UPPER(userCode) = UPPER(@userCode)
     AND documentType = @documentType
     AND formType = @formType
     AND matrixId = @matrixId
   ORDER BY columnOrder, id
+`;
+
+// SAP Form Settings belong to a SAP B1 user. When the signed-in person has no
+// layout of their own, the company's most recently synchronised one is a far
+// better answer than no layout at all, which used to silently swap the page to
+// an entirely different field set.
+const LAYOUT_FALLBACK_USER_SQL = `
+  SELECT userCode
+  FROM sap_form_layout_columns
+  WHERE ${LAYOUT_COMPANY_SCOPE}
+    AND documentType = @documentType
+    AND formType = @formType
+    AND matrixId = @matrixId
+  GROUP BY userCode
+  ORDER BY MAX(updatedAt) DESC
+  LIMIT 1
 `;
 
 const text = (value) => String(value ?? '').trim();
@@ -311,13 +334,22 @@ const createNewSalesOrderMetadataRepository = ({
   const getLayoutRows = async (context, rawDocument = SALES_ORDER_DOCUMENT) => {
     const document = typeof rawDocument === 'string' ? resolveSalesDocument(rawDocument) : rawDocument;
     if (!authDb || typeof authDb.queryRows !== 'function') return [];
-    return authDb.queryRows(LAYOUT_SQL, {
+
+    const scope = {
+      companyId: Number(context.companyId) || null,
       companyDb: context.companyDb,
-      userCode: context.userCode,
       documentType: document.documentType,
       formType: document.formType,
       matrixId: document.matrixId,
-    });
+    };
+
+    const ownRows = await authDb.queryRows(LAYOUT_SQL, { ...scope, userCode: context.userCode });
+    if (ownRows.length) return ownRows;
+
+    const [fallback] = await authDb.queryRows(LAYOUT_FALLBACK_USER_SQL, scope);
+    const fallbackUserCode = text(rowValue(fallback, 'userCode'));
+    if (!fallbackUserCode) return [];
+    return authDb.queryRows(LAYOUT_SQL, { ...scope, userCode: fallbackUserCode });
   };
 
   const getDocumentMetadata = async (context, rawDocument = SALES_ORDER_DOCUMENT) => {
@@ -382,6 +414,7 @@ const defaultRepository = createNewSalesOrderMetadataRepository();
 
 module.exports = defaultRepository;
 module.exports.LAYOUT_SQL = LAYOUT_SQL;
+module.exports.LAYOUT_FALLBACK_USER_SQL = LAYOUT_FALLBACK_USER_SQL;
 module.exports.PHYSICAL_COLUMNS_SQL = PHYSICAL_COLUMNS_SQL;
 module.exports.TABLE_EXISTS_SQL = TABLE_EXISTS_SQL;
 module.exports.UFD1_VALUES_SQL = UFD1_VALUES_SQL;

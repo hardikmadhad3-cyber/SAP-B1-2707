@@ -11,14 +11,14 @@ const renderContentsTab = (overrides = {}) => render(
     onAddLine={jest.fn()}
     onRemoveLine={jest.fn()}
     getUomOptions={() => []}
-    effectiveTaxCodes={[]}
+    effectiveTaxCodes={overrides.effectiveTaxCodes || []}
     effectiveWarehouses={[]}
     fmtTaxLabel={(value) => value}
     valErrors={{ lines: [] }}
     matrixFields={overrides.matrixFields || []}
     shippingTypeOptions={overrides.shippingTypeOptions || []}
     onLoadLookupOptions={overrides.onLoadLookupOptions}
-    formSettings={{}}
+    formSettings={overrides.formSettings || {}}
   />
 );
 
@@ -50,6 +50,43 @@ test('shows the Shipping Type name while retaining its SAP transport code', () =
   fireEvent.change(shippingType, { target: { value: '5' } });
   expect(onLineChange).toHaveBeenCalledTimes(1);
   expect(selectedChange).toEqual({ name: 'lineShippingType', value: '5' });
+});
+
+test('always renders the mandatory row-number column when an imported layout omits it', () => {
+  renderContentsTab({
+    lines: [{ itemNo: 'RM-001' }],
+    matrixFields: [{
+      key: 'itemNo',
+      fieldName: 'ItemCode',
+      label: 'Item No.',
+      importedLayout: true,
+    }],
+  });
+
+  expect(screen.getByRole('columnheader', { name: '#' })).toBeInTheDocument();
+  expect(screen.getByRole('cell', { name: '1' })).toBeInTheDocument();
+});
+
+test('renders the row-number column first when an imported layout places it mid-grid', () => {
+  renderContentsTab({
+    lines: [{ itemNo: 'RM-001' }],
+    matrixFields: [
+      { key: 'itemNo', fieldName: 'ItemCode', label: 'Item No.', order: 1, importedLayout: true },
+      { key: 'brockSeller', fieldName: 'U_BrockSeller', label: 'Brock Seller', order: 40, importedLayout: true },
+      { key: '__lineNumber', fieldName: 'LineNum', label: '#', order: 41, importedLayout: true },
+      { key: 'lineDistrRule', fieldName: 'CostingCode', label: 'Distr. Rule', order: 42, importedLayout: true },
+    ],
+    formSettings: {
+      matrixColumns: {
+        itemNo: { visible: true, order: 1 },
+        brockSeller: { visible: true, order: 40 },
+        __lineNumber: { visible: true, order: 41 },
+        lineDistrRule: { visible: true, order: 42 },
+      },
+    },
+  });
+
+  expect(screen.getAllByRole('columnheader')[0]).toHaveTextContent('#');
 });
 
 test('allows typing in an editable HSN column', () => {
@@ -143,4 +180,93 @@ test('keeps UoM Name blank after the user clears it', () => {
   expect(onLineChange).toHaveBeenCalledTimes(1);
   expect(onLineChange.mock.calls[0][0]).toBe(0);
   expect(onLineChange.mock.calls[0][1].target.name).toBe('uomName');
+});
+
+test('does not fabricate a Manual UoM when company item options are unavailable', () => {
+  const onLineChange = jest.fn();
+  renderContentsTab({
+    lines: [{ uomCode: '' }],
+    onLineChange,
+    matrixFields: [{
+      key: 'uomCode',
+      label: 'UoM Code',
+      active: true,
+      readOnly: false,
+      importedLayout: true,
+    }],
+    getUomOptions: () => [],
+  });
+
+  const uomCodeSelect = screen.getByRole('combobox');
+  expect(uomCodeSelect).toHaveValue('');
+  expect(screen.queryByRole('option', { name: 'Manual' })).not.toBeInTheDocument();
+});
+
+test('keeps Manual UoM Name editable while its code is fixed', () => {
+  renderContentsTab({
+    lines: [{ uomEntry: -1, uomCode: 'Manual', uomName: 'MTR' }],
+    matrixFields: [
+      { key: 'uomCode', label: 'UoM Code', active: true, readOnly: false, importedLayout: true },
+      { key: 'uomName', label: 'UoM Name', active: true, readOnly: false, importedLayout: true },
+    ],
+    getUomOptions: () => ['Manual'],
+  });
+
+  expect(screen.getByRole('combobox')).toBeDisabled();
+  expect(screen.getByRole('textbox')).toBeEnabled();
+  expect(screen.getByRole('textbox')).toHaveValue('MTR');
+});
+
+test('does not lock core editable fields from a stale imported active flag', () => {
+  renderContentsTab({
+    lines: [{ stdDiscount: '2' }],
+    matrixFields: [{
+      key: 'stdDiscount',
+      label: 'Discount %',
+      active: false,
+      readOnly: false,
+      importedLayout: true,
+    }],
+  });
+
+  expect(screen.getByDisplayValue('2')).toBeEnabled();
+});
+
+test('uses native Tab navigation after a configured Packing Type selector', () => {
+  renderContentsTab({
+    lines: [{ udf: { U_PackingType: 'Bag' }, stdDiscount: '' }],
+    matrixFields: [
+      {
+        key: 'U_PackingType',
+        label: 'Packing-Type',
+        active: true,
+        readOnly: false,
+        importedLayout: true,
+        isUdf: true,
+        options: [{ value: 'Bag', label: 'Bag' }],
+      },
+      { key: 'stdDiscount', label: 'Discount %', active: true, readOnly: false, importedLayout: true },
+    ],
+  });
+
+  expect(screen.getByRole('combobox')).toHaveAttribute('data-sap-native-tab', 'true');
+  expect(screen.getByRole('textbox')).toBeEnabled();
+});
+
+test('calculates FOR Rate in find mode when loaded value is zero', () => {
+  renderContentsTab({
+    lines: [{ forRate: '0.000000', unitPrice: '21', stdDiscount: '2', taxCode: '12-GST' }],
+    effectiveTaxCodes: [{ Code: '12-GST', Rate: 12 }],
+    matrixFields: [{
+      key: 'forRate',
+      label: 'FOR Rate',
+      type: 'number',
+      numeric: true,
+      active: true,
+      readOnly: false,
+      importedLayout: true,
+    }],
+  });
+
+  expect(screen.getByDisplayValue('23.04960')).toBeInTheDocument();
 });

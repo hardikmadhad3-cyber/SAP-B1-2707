@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { fetchSalesOrderReferenceDocumentLookup } from '../../../api/salesOrderApi';
 import SapGoldenArrowButton from '../../../components/document/SapGoldenArrowButton';
+import './ReferenceDocumentsModal.css';
 
 export const SALES_ORDER_REFERENCE_DOCUMENT_TYPES = [
   { value: '22', label: 'Purchase Order', serviceLayer: 'rot_PurchaseOrder' },
@@ -82,6 +83,7 @@ export default function ReferenceDocumentsModal({
   const [rows, setRows] = useState([]);
   const [onlyBusinessPartner, setOnlyBusinessPartner] = useState(false);
   const [typeDropdownRow, setTypeDropdownRow] = useState(null);
+  const openingDocumentRef = useRef(false);
   const [lookup, setLookup] = useState({
     open: false,
     rowIndex: -1,
@@ -104,6 +106,7 @@ export default function ReferenceDocumentsModal({
     ]);
     setActiveTab('to');
     setTypeDropdownRow(null);
+    openingDocumentRef.current = false;
     setLookup((prev) => ({ ...prev, open: false, rowIndex: -1, query: '', options: [], error: '', selectedIndex: -1 }));
   }, [isOpen, referenceDocuments]);
 
@@ -233,12 +236,19 @@ export default function ReferenceDocumentsModal({
     }),
   );
 
-  const openDocumentFromRows = (row, nextRows = rows) => {
-    onOpenDocument?.(row, {
-      referenceDocuments: compactRows(nextRows),
-      referenceDocumentsChanged: true,
-      referenceDocumentsModalOpen: true,
-    });
+  const openDocumentFromRows = async (row, nextRows = rows) => {
+    if (typeof onOpenDocument !== 'function' || openingDocumentRef.current) return;
+    openingDocumentRef.current = true;
+    try {
+      const opened = await onOpenDocument(row, {
+        referenceDocuments: compactRows(nextRows),
+        referenceDocumentsChanged: true,
+        referenceDocumentsModalOpen: false,
+      });
+      if (opened !== false) onClose?.();
+    } finally {
+      openingDocumentRef.current = false;
+    }
   };
 
   const openLookupDocument = (documentRow) => {

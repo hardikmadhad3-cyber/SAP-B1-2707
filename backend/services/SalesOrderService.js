@@ -1,3 +1,4 @@
+const { buildDocumentConfirmationPayload, updateDocumentConfirmationOnly } = require('./documentConfirmationUtils');
 const sapService = require('./sapService');
 const salesOrderDb = require('./salesOrderDbService');
 const hsnCodeDbService = require('./hsnCodeDbService');
@@ -6,6 +7,7 @@ const { getActiveCompanyConfig } = require('./companyConfigService');
 const { getUdfDefinitionsOrEmpty } = require('./udfMetadataService');
 const { isBlankUdfValue, normalizeUdfValues } = require('./udfPayloadUtils');
 const { buildDocumentSeriesPayload } = require('./documentSeriesPayloadUtils');
+const { buildDocumentRoundingPayload } = require('./documentRoundingPayloadUtils');
 const {
   applySapDocumentCurrency,
   normalizeCopyDocumentRateForCompany,
@@ -541,11 +543,29 @@ const SALES_ORDER_LINE_UDF_MAPPINGS = [
   { sapField: 'U_GrossWt', skipBlank: true, getValue: (line) => firstLineValueByAliases(line, ['U_GrossWt', 'U_GROSSWT', 'U_Gross_Wt', 'U_GrossWeight', 'grossWt']) },
   { sapField: 'U_TotalPackage', skipBlank: true, getValue: (line) => firstLineValueByAliases(line, ['U_TotalPackage', 'U_TOTALPACKAGE', 'U_Total_Package', 'U_TotalPackge', 'totalPackage']) },
   { sapField: 'U_TAXCODE', skipBlank: true, getValue: (line) => firstLineValueByAliases(line, ['U_TAXCODE', 'U_TaxCode', 'taxCodeRepeat', 'taxCode']) },
-  { sapField: 'U_PRICE', skipBlank: true, getValue: (line) => firstLineValueByAliases(line, ['U_PRICE', 'U_Price', 'price']) },
+  {
+    sapField: 'U_PRICE',
+    skipBlank: true,
+    getValue: (line) => {
+      const explicitValue = firstLineValueByAliases(line, ['U_PRICE', 'U_Price', 'price']);
+      if (hasValue(explicitValue)) return explicitValue;
+      return line.bomType === 'S' && line.bomRole === 'parent'
+        ? line.unitPrice
+        : undefined;
+    },
+  },
   { sapField: 'U_SPLRBT', getValue: (line) => firstLineValueByAliases(line, ['specialRebate', 'U_SPLRBT', 'U_SpecialRebate']) },
   { sapField: 'U_COMPRC', getValue: (line) => firstLineValueByAliases(line, ['commission', 'commision', 'U_COMPRC', 'U_Commision', 'U_Commission']) },
   { sapField: 'U_S_BrokPerQty', getValue: (line) => firstLineValueByAliases(line, ['sellerBrokeragePerQty', 'brokPerQty', 'U_S_BrokPerQty', 'U_S_BROKPERQTY']) },
-  { sapField: 'U_Unit_Price', getValue: (line) => line.unitPriceUdf },
+  {
+    sapField: 'U_Unit_Price',
+    getValue: (line) => {
+      if (hasValue(line.unitPriceUdf)) return line.unitPriceUdf;
+      return line.bomType === 'S' && line.bomRole === 'parent'
+        ? line.unitPrice
+        : undefined;
+    },
+  },
   { sapField: 'U_Rate', getValue: (line) => (hasLineDiscountValue(line) ? getLineDiscountAmount(line) : undefined) },
   { sapField: 'U_ForRate', getValue: getLineForRate },
   { sapField: 'U_FORRATE', getValue: getLineForRate },
@@ -728,8 +748,15 @@ const setValidatedRdr1Udf = (target, fieldMetadata, fieldName, value) => {
   setValidatedRdr1Field(target, fieldMetadata, resolvedFieldName, value);
 };
 
+const isSapYes = (value) => ['TYES', 'YES', 'Y', 'TRUE', '1'].includes(
+  String(value || '').trim().toUpperCase().replace(/\s+/g, ''),
+);
+
 const buildDocumentLinePayload = async (line = {}, context = {}) => {
   const fieldMetadata = context.rdr1FieldMetadata || {};
+  const itemDetails = context.itemDetailsByCode?.get(String(line.itemNo || '').trim());
+  const hasGstRelevantFlag = String(itemDetails?.GSTRelevnt || '').trim() !== '';
+  const isGstRelevant = hasGstRelevantFlag ? isSapYes(itemDetails.GSTRelevnt) : null;
   const documentLine = {
     ItemCode: toRequiredString(line.itemNo),
     Quantity: toRequiredNumber(line.quantity, 0),
@@ -737,7 +764,7 @@ const buildDocumentLinePayload = async (line = {}, context = {}) => {
     WarehouseCode: toRequiredString(line.whse),
   };
 
-  if (hasValue(line.taxCode)) {
+  if (hasValue(line.taxCode) && isGstRelevant !== false) {
     documentLine.TaxCode = String(line.taxCode).trim();
   }
 
@@ -750,13 +777,15 @@ const buildDocumentLinePayload = async (line = {}, context = {}) => {
   }
 
   const uomNameEdited = isTruthyFlag(line.uomNameEdited);
-  const rawUomValue = uomNameEdited
+  const manualUomEntry = Number(line.uomEntry ?? line.UoMEntry);
+  const usesManualUom = uomNameEdited || (Number.isInteger(manualUomEntry) && manualUomEntry < 0);
+  const rawUomValue = usesManualUom
     ? (line.uomName ?? line.UoMName ?? line.UomName ?? line.UnitMsr ?? line.unitMsr ?? line.uomCode)
     : (line.uomEntry ?? line.UoMEntry ?? line.uomName ?? line.UoMName ?? line.UomName ?? line.UnitMsr ?? line.unitMsr ?? line.uomCode);
   const resolvedUomEntry = await salesOrderDb.resolveSalesOrderLineUomEntry(
     documentLine.ItemCode,
     rawUomValue,
-    { allowDefaultFallback: !uomNameEdited },
+    { allowDefaultFallback: !usesManualUom },
   );
   if (resolvedUomEntry !== null && resolvedUomEntry !== undefined) {
     documentLine.UoMEntry = resolvedUomEntry;
@@ -765,7 +794,7 @@ const buildDocumentLinePayload = async (line = {}, context = {}) => {
       ? (line.uomName || line.unitMsr || rawUomValue)
       : rawUomValue;
     if (hasValue(uomCode)) {
-      if (uomNameEdited) {
+      if (usesManualUom) {
         documentLine.MeasureUnit = String(uomCode).trim();
       } else {
         documentLine.UoMCode = String(uomCode).trim();
@@ -819,6 +848,19 @@ const buildDocumentLinePayload = async (line = {}, context = {}) => {
     hasFieldMetadata(fieldMetadata, 'ShipDate')
   ) {
     documentLine.ShipDate = formatDateForInput(line.lineDeliveryDate ?? line.deliveryDate ?? line.ShipDate);
+  }
+
+  if (hasValue(line.requiredDate ?? line.RequiredDate ?? line.ReqDate)
+    && (hasFieldMetadata(fieldMetadata, 'ReqDate') || hasFieldMetadata(fieldMetadata, 'RequiredDate'))) {
+    documentLine.RequiredDate = formatDateForInput(line.requiredDate ?? line.RequiredDate ?? line.ReqDate);
+  }
+
+  const packageQuantity = toOptionalNumber(
+    line.noOfPackages ?? line.NoOfPackages ?? line.packageQuantity ?? line.PackageQuantity ?? line.PackQty
+  );
+  if (packageQuantity !== undefined
+    && (hasFieldMetadata(fieldMetadata, 'PackQty') || hasFieldMetadata(fieldMetadata, 'PackageQuantity'))) {
+    documentLine.PackageQuantity = packageQuantity;
   }
 
   const lineShippingType = toOptionalNumber(line.lineShippingType ?? line.shippingType ?? line.ShippingMethod ?? line.TrnsCode);
@@ -939,14 +981,147 @@ const buildDocumentLinePayload = async (line = {}, context = {}) => {
 
 const buildDocumentLinesPayload = async (lines = [], includeLineNum = false, extraContext = {}) => {
   const rdr1FieldMetadata = await salesOrderDb.getSalesOrderLineFieldMetadata();
+  const itemCodes = [...new Set(
+    (lines || []).map((line) => String(line.itemNo || '').trim()).filter(Boolean),
+  )];
+  const itemDetailsRows = await Promise.all(
+    itemCodes.map((itemCode) => salesOrderDb.getItemDetails(itemCode)),
+  );
+  const itemDetailsByCode = new Map(
+    itemCodes.map((itemCode, index) => [itemCode, itemDetailsRows[index]]),
+  );
 
   return Promise.all(
     (lines || []).map((line) => buildDocumentLinePayload(line, {
       ...extraContext,
+      itemDetailsByCode,
       rdr1FieldMetadata,
       includeLineNum,
     }))
   );
+};
+
+const hasCompleteBaseReference = (line = {}) => (
+  hasValue(line.baseEntry)
+  && hasValue(line.baseType)
+  && line.baseLine !== undefined
+  && line.baseLine !== null
+  && String(line.baseLine).trim() !== ''
+);
+
+const isUnbasedSalesBomComponent = (line = {}) => (
+  line.bomType === 'S'
+  && line.bomRole === 'component'
+  && !hasCompleteBaseReference(line)
+);
+
+const getSalesOrderCreateSourceLines = (lines = []) => (
+  (Array.isArray(lines) ? lines : []).filter((line) => !isUnbasedSalesBomComponent(line))
+);
+
+const getServiceLayerLineNum = (line = {}) => {
+  const value = line.LineNum ?? line.lineNum;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+};
+
+const getServiceLayerParentLineNum = (line = {}) => {
+  const value = line.ParentLineNum ?? line.parentLineNum;
+  if (!hasValue(value)) return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+};
+
+const getServiceLayerItemCode = (line = {}) => (
+  String(line.ItemCode ?? line.itemNo ?? '').trim()
+);
+
+const getCreatedSalesOrderLines = async (responseData = {}, docEntry) => {
+  if (Array.isArray(responseData.DocumentLines)) return responseData.DocumentLines;
+
+  const createdOrderResponse = await sapService.request({
+    method: 'get',
+    url: `/Orders(${Number(docEntry)})`,
+  });
+  return Array.isArray(createdOrderResponse.data?.DocumentLines)
+    ? createdOrderResponse.data.DocumentLines
+    : [];
+};
+
+const applySalesBomComponentOverrides = async (responseData = {}, sourceLines = []) => {
+  const editedComponents = (Array.isArray(sourceLines) ? sourceLines : []).filter((line) => (
+    isUnbasedSalesBomComponent(line)
+    && (
+      isTruthyFlag(line.bomQuantityManuallyEdited)
+      || isTruthyFlag(line.bomComponentManuallyEdited)
+    )
+  ));
+  if (!editedComponents.length) return;
+
+  const docEntry = responseData.DocEntry ?? responseData.docEntry;
+  if (!hasValue(docEntry)) {
+    throw new Error('SAP created the Sales Order but did not return DocEntry, so Sales BOM component adjustments could not be applied.');
+  }
+
+  const createdLines = await getCreatedSalesOrderLines(responseData, docEntry);
+  const usedCreatedLineNums = new Set();
+  const matchedComponents = [];
+  let parentSearchStart = 0;
+  const sourceParents = sourceLines.filter((line) => (
+    line.bomType === 'S'
+    && line.bomRole === 'parent'
+    && editedComponents.some((component) => component.bomGroupId === line.bomGroupId)
+  ));
+
+  sourceParents.forEach((sourceParent) => {
+    const parentIndex = createdLines.findIndex((createdLine, index) => (
+      index >= parentSearchStart
+      && getServiceLayerItemCode(createdLine) === String(sourceParent.itemNo || '').trim()
+      && getServiceLayerParentLineNum(createdLine) === null
+    ));
+    if (parentIndex < 0) {
+      throw new Error(`SAP created the Sales Order but the expanded Sales BOM parent ${sourceParent.itemNo} could not be matched for component adjustment.`);
+    }
+
+    parentSearchStart = parentIndex + 1;
+    const createdParentLineNum = getServiceLayerLineNum(createdLines[parentIndex]);
+    const createdComponents = createdLines.filter((createdLine) => (
+      getServiceLayerParentLineNum(createdLine) === createdParentLineNum
+    ));
+    const sourceComponents = editedComponents.filter((component) => (
+      component.bomGroupId === sourceParent.bomGroupId
+    ));
+
+    sourceComponents.forEach((sourceComponent) => {
+      const createdComponent = createdComponents.find((candidate) => {
+        const lineNum = getServiceLayerLineNum(candidate);
+        return (
+          !usedCreatedLineNums.has(lineNum)
+          && getServiceLayerItemCode(candidate) === String(sourceComponent.itemNo || '').trim()
+        );
+      });
+      const createdComponentLineNum = getServiceLayerLineNum(createdComponent);
+      if (!createdComponent || createdComponentLineNum === null) {
+        throw new Error(`SAP created the Sales Order but Sales BOM component ${sourceComponent.itemNo} could not be matched for adjustment.`);
+      }
+
+      usedCreatedLineNums.add(createdComponentLineNum);
+      matchedComponents.push({
+        ...sourceComponent,
+        lineNum: createdComponentLineNum,
+      });
+    });
+  });
+
+  if (!matchedComponents.length) return;
+
+  const componentPayloads = await buildDocumentLinesPayload(matchedComponents, true);
+
+  await sapService.request({
+    method: 'patch',
+    url: `/Orders(${Number(docEntry)})`,
+    data: { DocumentLines: componentPayloads },
+  });
 };
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€ REFERENCE DATA (USING ODBC) â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1367,6 +1542,15 @@ const submitSalesOrder = async (payload) => {
     const refData = await salesOrderDb.getReferenceData();
     const branchesEnabled = Boolean(refData.branches_enabled ?? (refData.branches || []).length > 0);
     validateRequiredBranchAndWarehouse(payload, { branchesEnabled });
+    const postingDate = String(payload.header?.postingDate || '').trim();
+    const postingPeriod = await salesOrderDb.getPostingPeriodValidation(postingDate);
+    if (!postingPeriod) {
+      const error = new Error(
+        `Posting Date ${postingDate || 'is required'} is outside an open SAP posting period. Select a date in an open period or ask an SAP administrator to open the period.`,
+      );
+      error.statusCode = 400;
+      throw error;
+    }
 
     console.log("â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
     console.log("ðŸ”¥ CREATE - RECEIVED PAYLOAD FROM FRONTEND:");
@@ -1421,7 +1605,8 @@ const submitSalesOrder = async (payload) => {
     const Freight = payload.header.freight ? Number(payload.header.freight) : 0;
     const DiscountPercent = getHeaderDiscountPercent(payload.header);
     const documentAdditionalExpenses = buildDocumentAdditionalExpenses(payload.freightCharges);
-    const documentLines = await buildDocumentLinesPayload(payload.lines);
+    const createSourceLines = getSalesOrderCreateSourceLines(payload.lines);
+    const documentLines = await buildDocumentLinesPayload(createSourceLines);
     const documentReferences = payload.reference_documents_changed
       ? buildDocumentReferencesPayload(payload.reference_documents)
       : [];
@@ -1467,8 +1652,8 @@ const submitSalesOrder = async (payload) => {
       ...(JournalRemark ? { JournalMemo: JournalRemark } : {}),
       ...(toOptionalNumber(payload.header.shippingType) !== undefined ? { TransportationCode: toOptionalNumber(payload.header.shippingType) } : {}),
       ...(toOptionalNumber(payload.header.language) !== undefined ? { LanguageCode: toOptionalNumber(payload.header.language) } : {}),
-      ...(hasOwn(payload.header, 'confirmed') ? { Confirmed: toSapYesNo(payload.header.confirmed) } : {}),
-      Rounding: toSapYesNo(payload.header.rounding),
+      ...buildDocumentConfirmationPayload(payload.header),
+      ...buildDocumentRoundingPayload(payload.header),
 
       // âœ… Add Sales Employee if present (converted from name to code)
       ...(SlpCode !== null && SlpCode !== undefined ? { SalesPersonCode: SlpCode } : {}),
@@ -1518,6 +1703,7 @@ const submitSalesOrder = async (payload) => {
       url: '/Orders',
       data: sapPayload,
     });
+    await applySalesBomComponentOverrides(response.data, payload.lines);
 
     console.log("â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
     console.log("âœ… SAP RESPONSE:");
@@ -1556,7 +1742,7 @@ const submitSalesOrder = async (payload) => {
     // Create a new error with the SAP message
     const sapError = new Error(errorMessage);
     sapError.response = error.response;
-    sapError.statusCode = error.statusCode;
+    sapError.statusCode = error.statusCode || error.response?.status;
     sapError.code = error.code;
     throw sapError;
   }
@@ -1565,10 +1751,21 @@ const submitSalesOrder = async (payload) => {
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€ UPDATE ORDER (USING SERVICE LAYER) â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const updateSalesOrder = async (docEntry, payload) => {
+  const confirmationResult = await updateDocumentConfirmationOnly(docEntry, payload, 'Orders', sapService);
+  if (confirmationResult) return confirmationResult;
   try {
     const refData = await salesOrderDb.getReferenceData();
     const branchesEnabled = Boolean(refData.branches_enabled ?? (refData.branches || []).length > 0);
     validateRequiredBranchAndWarehouse(payload, { branchesEnabled });
+    const postingDate = String(payload.header?.postingDate || '').trim();
+    const postingPeriod = await salesOrderDb.getPostingPeriodValidation(postingDate);
+    if (!postingPeriod) {
+      const error = new Error(
+        `Posting Date ${postingDate || 'is required'} is outside an open SAP posting period. Select a date in an open period or ask an SAP administrator to open the period.`,
+      );
+      error.statusCode = 400;
+      throw error;
+    }
 
     console.log("â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
     console.log("ðŸ”¥ UPDATE - RECEIVED PAYLOAD FROM FRONTEND:");
@@ -1675,8 +1872,8 @@ const updateSalesOrder = async (docEntry, payload) => {
       ...(JournalRemark ? { JournalMemo: JournalRemark } : {}),
       ...(toOptionalNumber(payload.header.shippingType) !== undefined ? { TransportationCode: toOptionalNumber(payload.header.shippingType) } : {}),
       ...(toOptionalNumber(payload.header.language) !== undefined ? { LanguageCode: toOptionalNumber(payload.header.language) } : {}),
-      ...(hasOwn(payload.header, 'confirmed') ? { Confirmed: toSapYesNo(payload.header.confirmed) } : {}),
-      Rounding: toSapYesNo(payload.header.rounding),
+      ...buildDocumentConfirmationPayload(payload.header),
+      ...buildDocumentRoundingPayload(payload.header),
 
       ...(SlpCode !== null && SlpCode !== undefined && { SalesPersonCode: SlpCode }),
       ...(OwnerCode !== null && OwnerCode !== undefined && { DocumentsOwner: OwnerCode }),
@@ -1743,7 +1940,7 @@ const getDocumentSeries = async (targetDate = null, { branch = '' } = {}) => {
     return { series };
   } catch (error) {
     console.error('[Sales Order Service] Failed to load document series:', error);
-    return { series: [] };
+    throw error;
   }
 };
 
@@ -2014,6 +2211,7 @@ module.exports = {
   setCurrencyRate,
   _mergeCompanyCurrencyRows: mergeCompanyCurrencyRows,
   _resolveSalesOrderDocumentCurrency: resolveSalesOrderDocumentCurrency,
+  _buildDocumentRoundingPayload: buildDocumentRoundingPayload,
   _buildDocumentLinePayload: buildDocumentLinePayload,
   getOpenSalesOrders:          async (customerCode = '') => { try { return { documents: await salesOrderDb.getOpenSalesOrders(customerCode) }; } catch(e) { return { documents: [] }; } },
   getSalesOrderForCopy:        async (d) => normalizeCopyDocumentRateForCompany(await salesOrderDb.getSalesOrderForCopy(d)),

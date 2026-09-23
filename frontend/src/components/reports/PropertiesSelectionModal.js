@@ -20,7 +20,7 @@ function PropertiesSelectionModal({
   value,
 }) {
   const [draft, setDraft] = useState(buildDraftState(value));
-  const windowFrame = useFloatingWindow({ isOpen, defaultTop: 60 });
+  const windowFrame = useFloatingWindow({ isOpen, defaultTop: 60, bounds: 'parent' });
 
   useEffect(() => {
     if (!isOpen) return;
@@ -87,7 +87,14 @@ function PropertiesSelectionModal({
             >
               {windowFrame.isMinimized ? '□' : '-'}
             </button>
-            <button type="button" aria-label="Restore" onClick={windowFrame.restoreWindow}>□</button>
+            <button
+              type="button"
+              aria-label={windowFrame.isMaximized ? 'Restore' : 'Maximize'}
+              title={windowFrame.isMaximized ? 'Restore' : 'Maximize'}
+              onClick={windowFrame.toggleMaximize}
+            >
+              []
+            </button>
             <button type="button" aria-label="Close" onClick={onClose}>x</button>
           </div>
         </div>
@@ -156,6 +163,7 @@ function PropertiesSelectionModal({
               <table className="sap-properties-modal__grid">
                 <thead>
                   <tr>
+                    <th className="is-check">&nbsp;</th>
                     <th className="is-index">&nbsp;</th>
                     <th className="is-property">Property</th>
                   </tr>
@@ -173,6 +181,15 @@ function PropertiesSelectionModal({
                           }
                         }}
                       >
+                        <td className="is-check">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            disabled={draft.ignoreProperties}
+                            onChange={() => toggleProperty(property.number)}
+                            onClick={(event) => event.stopPropagation()}
+                          />
+                        </td>
                         <td className="is-index">{property.number}</td>
                         <td className="is-property">{property.name}</td>
                       </tr>

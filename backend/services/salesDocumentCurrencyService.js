@@ -22,7 +22,7 @@ const normalizeCurrencyRows = (rows = [], localCurrency = '', systemCurrency = '
     const name = text(currency?.CurrName ?? currency?.Name ?? currency?.name ?? code) || code;
     const existing = byCode.get(code.toUpperCase());
     if (!existing || existing.CurrName === existing.CurrCode) {
-      byCode.set(code.toUpperCase(), { CurrCode: code, CurrName: name });
+      byCode.set(code.toUpperCase(), { ...existing, ...(typeof currency === 'object' ? currency : {}), CurrCode: code, CurrName: name });
     }
   };
 
@@ -48,6 +48,10 @@ const loadCompanyCurrencyContext = async () => {
     systemCurrency,
     currencies,
     rateSettings,
+    decimalSettings: Object.fromEntries(['QtyDec', 'PriceDec', 'SumDec', 'RateDec', 'PercentDec']
+      .filter(key => company[key] != null && Number.isInteger(Number(company[key])) && Number(company[key]) >= 0 && Number(company[key]) <= 6)
+      .map(key => [key, Number(company[key])])),
+    roundingMethod: text(company.RoundMthd),
   };
 };
 
@@ -75,6 +79,8 @@ const mergeCurrencyReferenceData = (data = {}, context = {}) => ({
   system_currency: context.systemCurrency || context.localCurrency || '',
   company_currency: context.localCurrency || '',
   currencies: context.currencies || [],
+  decimal_settings: { ...(data.decimal_settings || {}), ...(context.decimalSettings || {}) },
+  rounding_settings: { method: context.roundingMethod || '', currencies: context.currencies || [] },
   company_currencies: {
     ...(data.company_currencies || {}),
     localCurrency: context.localCurrency || '',

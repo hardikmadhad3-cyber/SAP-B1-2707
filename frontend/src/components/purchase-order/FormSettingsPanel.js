@@ -21,7 +21,7 @@ export default function FormSettingsPanel(props) {
     isOpen, onClose, matrixFields = [], rowUdfFields = [], formSettings = {},
     onSettingChange, onColumnOrderChange, isRefreshing = false, settingsLoaded = true,
     isSaving = false, hasUnsavedChanges = false, saveError = '', onSave, onCancel,
-    settingsScopeLabel = '', variant = 'floating', className = '', style,
+    settingsScopeLabel = '', variant = 'floating', className = '', style, showClose = true,
   } = props;
   const [draggedKey, setDraggedKey] = React.useState('');
   const fields = React.useMemo(
@@ -57,7 +57,8 @@ export default function FormSettingsPanel(props) {
     : { position: 'fixed', top: 172, right: 12, width: 400,
         height: 'calc(100vh - 184px)', zIndex: 1050, overflowY: 'auto', ...style };
   return (
-    <div className={(sidebar ? 'sap-header-udf-panel ' : 'po-form-settings-floating ') + className} style={wrapperStyle}>
+    <div data-document-display-preferences="true"
+      className={(sidebar ? 'sap-header-udf-panel ' : 'po-form-settings-floating ') + className} style={wrapperStyle}>
       <div className="card p-3 po-udf-sidebar-card h-100">
         <div className="po-udf-sidebar-header">
           <div>
@@ -66,8 +67,8 @@ export default function FormSettingsPanel(props) {
               {loading ? 'Loading company Form Settings...' : `Content Columns for ${settingsScopeLabel || 'the selected scope'}`}
             </small>
           </div>
-          <button type="button" onClick={close} aria-label="Close Form Settings"
-            title="Close and discard unsaved changes" className="po-udf-sidebar-close" />
+          {showClose ? <button type="button" onClick={close} aria-label="Close Form Settings"
+            title="Close and discard unsaved changes" className="po-udf-sidebar-close" /> : null}
         </div>
         <div className="po-udf-sidebar-body overflow-auto" aria-busy={loading}>
           {loading ? <div className="small text-muted py-3">Loading saved Content-column settings...</div> : (
@@ -102,10 +103,10 @@ export default function FormSettingsPanel(props) {
                       {label}{locked && <span className="ms-1 text-muted" title="Required field is always visible">&#128274;</span>}
                     </span>
                     <button type="button" className="btn btn-outline-secondary btn-sm py-0 px-1"
-                      aria-label={`Move ${label} up`} disabled={index === 0}
+                      aria-label={`Move ${label} up`} disabled={locked || index === 0}
                       onClick={() => move(field.key, index - 1)}>&#8593;</button>
                     <button type="button" className="btn btn-outline-secondary btn-sm py-0 px-1"
-                      aria-label={`Move ${label} down`} disabled={index === ordered.length - 1}
+                      aria-label={`Move ${label} down`} disabled={locked || index === ordered.length - 1}
                       onClick={() => move(field.key, index + 1)}>&#8595;</button>
                     <div className="form-check mb-0">
                       <input id={inputId} type="checkbox" className="form-check-input"

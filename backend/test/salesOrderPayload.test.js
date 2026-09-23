@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const salesOrderDb = require('../services/salesOrderDbService');
 const {
+  _buildDocumentRoundingPayload,
   _buildDocumentLinePayload,
   _mergeCompanyCurrencyRows,
   _resolveSalesOrderDocumentCurrency,
@@ -32,6 +33,13 @@ test('does not inject warehouse or tax defaults from another SAP company', async
   assert.equal(payload.TaxCode, undefined);
   assert.notEqual(payload.WarehouseCode, '01');
   assert.notEqual(payload.TaxCode, 'IGST5');
+});
+
+test('loads SAP line Price when PriceBefDi is zero for a Sales BOM parent', () => {
+  assert.equal(salesOrderDb._resolveSavedLineUnitPrice({
+    PriceBefDi: 0,
+    Price: 1200,
+  }), '1200');
 });
 
 test('uses only selected-company currencies without injecting INR or a common-currency list', () => {
@@ -67,6 +75,25 @@ test('resolves a missing payload currency from the selected company and business
   assert.equal(_resolveSalesOrderDocumentCurrency({ vendor: 'C-ALL' }, referenceData), 'SGD');
   assert.equal(_resolveSalesOrderDocumentCurrency({ vendor: 'C-ALL', currencyMode: 'SYSTEM' }, referenceData), 'USD');
   assert.equal(_resolveSalesOrderDocumentCurrency({ vendor: 'C-USD', currency: 'EUR' }, referenceData), 'EUR');
+});
+
+test('lets SAP calculate the Sales Order rounding difference for its company', () => {
+  assert.deepEqual(_buildDocumentRoundingPayload({
+    rounding: true,
+    roundingAmount: '-0.3776',
+  }), {
+    Rounding: 'tYES',
+  });
+});
+
+test('clears a stale Sales Order rounding difference when rounding is disabled', () => {
+  assert.deepEqual(_buildDocumentRoundingPayload({
+    rounding: false,
+    roundingAmount: '-0.3776',
+  }), {
+    Rounding: 'tNO',
+    RoundingDiffAmount: 0,
+  });
 });
 
 test('serializes editable Sales Order line fields to their Service Layer properties', async () => {
@@ -114,6 +141,23 @@ test('serializes editable Sales Order line fields to their Service Layer propert
   assert.equal(payload.CommissionPercent, 2.75);
   assert.equal(payload.WTLiable, 'tNO');
   assert.equal(payload.WithoutInventoryMovement, 'tYES');
+});
+
+test('persists the entered price in the configured UDF for a Sales BOM parent', async () => {
+  const payload = await _buildDocumentLinePayload({
+    itemNo: 'KIT-01',
+    quantity: '2',
+    unitPrice: '1200',
+    whse: 'W-01',
+    bomType: 'S',
+    bomRole: 'parent',
+  }, {
+    rdr1FieldMetadata: { U_Unit_Price: 'numeric', U_PRICE: 'numeric' },
+  });
+
+  assert.equal(payload.UnitPrice, 1200);
+  assert.equal(payload.U_Unit_Price, 1200);
+  assert.equal(payload.U_PRICE, 1200);
 });
 
 test('omits optional RDR1 properties that the selected company does not expose', async () => {

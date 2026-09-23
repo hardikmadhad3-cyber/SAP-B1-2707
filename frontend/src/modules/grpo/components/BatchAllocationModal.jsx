@@ -26,6 +26,7 @@ export default function BatchAllocationModal({
   availableBatches = [],
   loading = false,
   error = '',
+  documentLabel = 'GRPO',
   onGenerateBatchNumber,
   workspaceRef,
   onClose,
@@ -212,7 +213,7 @@ export default function BatchAllocationModal({
       >
         <div className="del-modal__header">
           <div>
-            <h6 style={{ margin: '0 0 6px 0', fontSize: 12, fontWeight: 600 }}>Allocate GRPO Batches</h6>
+            <h6 style={{ margin: '0 0 6px 0', fontSize: 12, fontWeight: 600 }}>Allocate {documentLabel} Batches</h6>
             <div style={{ fontSize: 11, color: '#666' }}>
               {line.itemNo || 'Item'} | Document Qty: {line.quantity || '0'}
               {documentUoM ? ` ${documentUoM}` : ''} | Whse: {line.whse || '-'}

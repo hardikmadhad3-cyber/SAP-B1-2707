@@ -37,7 +37,10 @@ export const readServiceDocumentFormSettings = ({
   try {
     const raw = localStorage.getItem(storageKey);
     if (!raw) return defaults;
-    return mergeSavedFormSettings(defaults, JSON.parse(raw));
+    const saved = JSON.parse(raw);
+    const settings = mergeSavedFormSettings(defaults, saved);
+    if (saved?.__companyQueryLayout) settings.__companyQueryLayout = saved.__companyQueryLayout;
+    return settings;
   } catch (_error) {
     return defaults;
   }

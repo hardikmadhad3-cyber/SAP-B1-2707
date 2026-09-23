@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import './JournalEntryPreviewModal.css';
 
 const toNumber = (value) => {
   const parsed = Number(String(value ?? '').replace(/,/g, ''));

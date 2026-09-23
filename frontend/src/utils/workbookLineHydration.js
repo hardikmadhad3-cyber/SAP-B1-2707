@@ -10,6 +10,11 @@ const firstString = (...values) => {
   return value === '' ? '' : String(value);
 };
 
+const firstUomEntry = (...values) => {
+  const numericValue = Number(firstValue(...values));
+  return Number.isInteger(numericValue) && numericValue !== 0 ? numericValue : null;
+};
+
 const normalizeToken = (value) =>
   String(value || '')
     .trim()
@@ -209,6 +214,15 @@ export const hydrateWorkbookDocumentLine = ({
     openQty: firstString(source.openQty, source.OpenQuantity, source.OpenQty, quantity),
     requiredQty: firstString(source.requiredQty, source.RequiredQty, source.RequiredQuantity),
     requiredDate: firstString(source.requiredDate, source.RequiredDate, source.ReqDate),
+    noOfPackages: firstString(
+      source.noOfPackages,
+      source.NoOfPackages,
+      source.packageQuantity,
+      source.PackageQuantity,
+      source.PackQty,
+      source.Packages,
+      source.NumOfPacks
+    ),
     quotedDate: firstString(source.quotedDate, source.QuotedDate, source.ShipDate),
     unitPrice,
     price: firstString(source.price, source.U_PRICE, source.U_Price, findUdfValue(normalizedUdfs, udfAlias.price)),
@@ -233,7 +247,8 @@ export const hydrateWorkbookDocumentLine = ({
       source.CogsOcrCod,
       source.CogsOcrCode
     ),
-    // UomEntry is SAP's numeric internal key, not the user-facing UoM code.
+    // UoMEntry is SAP's numeric internal key, not the user-facing UoM code.
+    uomEntry: firstUomEntry(source.uomEntry, source.UoMEntry, source.UomEntry),
     uomCode: firstString(source.uomCode, source.UoMCode, source.UomCode, source.UOMCode),
     uomName: firstString(
       source.uomName,

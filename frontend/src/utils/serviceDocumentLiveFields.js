@@ -50,8 +50,16 @@ const SERVICE_FIELD_KEYS = Object.freeze({
   LINETOTAL: 'totalLC',
   TOTALFRGN: 'totalDocumentCurrency',
   ROWTOTALFC: 'totalDocumentCurrency',
+  PRICEAFTERDISCOUNT: 'priceAfterDisc',
+  PRICEAFTERDISC: 'priceAfterDisc',
   TAXAMOUNT: 'taxAmountLC',
   VATSUM: 'taxAmountLC',
+  REQUIREDDATE: 'requiredDate',
+  REQDATE: 'requiredDate',
+  PACKAGEQUANTITY: 'noOfPackages',
+  PACKQTY: 'noOfPackages',
+  PACKAGES: 'noOfPackages',
+  NUMOFPACKS: 'noOfPackages',
 });
 
 const WRITABLE_SERVICE_KEYS = new Set([
@@ -59,6 +67,7 @@ const WRITABLE_SERVICE_KEYS = new Set([
   'glAccount',
   'sQty',
   'unitPrice',
+  'priceAfterDisc',
   'discountPercent',
   'taxCode',
   'distRule',
@@ -71,7 +80,35 @@ const WRITABLE_SERVICE_KEYS = new Set([
   'sac',
   'loc',
   'blanketAgreementNo',
+  'requiredDate',
+  'noOfPackages',
+  'totalLC',
 ]);
+
+// SAP stores LineTotal as a calculated database column, but in the service
+// document matrix it is a direct-entry amount. Metadata sourced from the
+// physical table can therefore report it as non-editable even when the SAP
+// client allows entry. Keep this UI capability separate from storage flags.
+const DIRECT_ENTRY_SERVICE_KEYS = new Set([
+  'totalLC',
+]);
+
+// Service documents share the marketing-document tables with item documents,
+// but their line matrix uses account-oriented renderers.  Schema metadata
+// describes the physical field and may provide a generic lookup object; it
+// must not replace the SAP renderer key used by the service form.
+const SERVICE_LOOKUP_RENDERERS = Object.freeze({
+  glAccount: 'account',
+  taxCode: 'tax',
+  distRule: 'distRule',
+  distRule2: 'distRule',
+  distRule3: 'distRule',
+  distRule4: 'distRule',
+  distRule5: 'distRule',
+  wtaxLiable: 'yesNo',
+  sac: 'sac',
+  loc: 'location',
+});
 
 const ITEM_ONLY_SERVICE_TOKENS = new Set([
   'ITEMCODE',
@@ -86,6 +123,11 @@ const ITEM_ONLY_SERVICE_TOKENS = new Set([
 ]);
 
 export const SAP_STANDARD_SERVICE_MATRIX_COLUMNS = Object.freeze([
+  Object.freeze({ key: 'glAccountName', label: 'G/L Account Name', width: 220, visible: false, readOnly: true, source: 'service-display' }),
+  Object.freeze({ key: 'priceAfterDisc', label: 'Price after Discount', width: 140, visible: false, numeric: true, readOnly: false, source: 'service-display' }),
+  Object.freeze({ key: 'blanketAgreementNo', fieldName: 'AgrNo', label: 'Blanket Agreement No.', width: 150, visible: false, source: 'service-standard' }),
+  Object.freeze({ key: 'costSheet', label: 'Cost Sheet', width: 140, visible: false, readOnly: true, source: 'service-display' }),
+  Object.freeze({ key: 'containerType', label: 'Container Type', width: 140, visible: false, readOnly: true, source: 'service-display' }),
   Object.freeze({ key: 'description', fieldName: 'Dscription', sapField: 'ItemDescription', label: 'Description', width: 240, visible: true, requiredVisible: true, source: 'sap-standard-service-fallback' }),
   Object.freeze({ key: 'glAccount', fieldName: 'AcctCode', sapField: 'AccountCode', label: 'G/L Account', width: 145, visible: true, requiredVisible: true, lookup: 'account', source: 'sap-standard-service-fallback' }),
   Object.freeze({ key: 'unitPrice', fieldName: 'Price', sapField: 'UnitPrice', label: 'Unit Price', width: 120, visible: true, numeric: true, source: 'sap-standard-service-fallback' }),
@@ -95,7 +137,7 @@ export const SAP_STANDARD_SERVICE_MATRIX_COLUMNS = Object.freeze([
   Object.freeze({ key: 'wtaxLiable', fieldName: 'WTLiable', sapField: 'WTLiable', label: 'WTax Liable', width: 105, visible: true, lookup: 'yesNo', source: 'sap-standard-service-fallback' }),
   Object.freeze({ key: 'sac', fieldName: 'SacEntry', sapField: 'SACEntry', label: 'SAC', width: 110, visible: true, lookup: 'sac', source: 'sap-standard-service-fallback' }),
   Object.freeze({ key: 'loc', fieldName: 'LocCode', sapField: 'LocationCode', label: 'Loc.', width: 115, visible: true, lookup: 'location', source: 'sap-standard-service-fallback' }),
-  Object.freeze({ key: 'totalLC', fieldName: 'LineTotal', sapField: 'LineTotal', label: 'Total (LC)', width: 120, visible: true, numeric: true, readOnly: true, source: 'sap-standard-service-fallback' }),
+  Object.freeze({ key: 'totalLC', fieldName: 'LineTotal', sapField: 'LineTotal', label: 'Total (LC)', width: 120, visible: true, numeric: true, readOnly: false, source: 'sap-standard-service-fallback' }),
   Object.freeze({ key: 'taxAmountLC', fieldName: 'VatSum', sapField: 'TaxAmount', label: 'Tax Amount (LC)', width: 130, visible: true, numeric: true, readOnly: true, source: 'sap-standard-service-fallback' }),
 ]);
 
@@ -160,7 +202,13 @@ const buildStandardColumn = (field, index, layout) => {
   const writable = WRITABLE_SERVICE_KEYS.has(key);
   const unsupportedKey = `sapLayout_${String(field.databaseField || field.sapField || index + 1).replace(/[^A-Za-z0-9_]+/g, '_')}`;
   const width = Number(layout?.width || field.width) || 125;
-  const readOnly = !writable || field.readOnly || field.editable === false || layout?.editable === false;
+  // SAP's live matrix layout is authoritative for a supported field. The
+  // schema describes physical storage and commonly labels LineTotal as a
+  // calculated column even though SAP service documents allow direct entry.
+  const readOnly = !writable || (
+    layout?.editable === false
+    && !DIRECT_ENTRY_SERVICE_KEYS.has(key)
+  );
   return {
     key: key || unsupportedKey,
     valueKey: key || unsupportedKey,
@@ -173,12 +221,12 @@ const buildStandardColumn = (field, index, layout) => {
     order: Number(layout?.columnOrder ?? layout?.order ?? field.order) || index + 1,
     columnOrder: Number(layout?.columnOrder ?? layout?.order ?? field.order) || index + 1,
     visible: layout ? layout.visible !== false : field.visible !== false,
-    active: !readOnly && (layout ? layout.editable !== false : field.editable !== false),
+    active: !readOnly,
     readOnly,
     numeric: inputType(field) === 'number',
     type: inputType(field),
     lookupSource: field.lookup?.source || field.lookupSource || undefined,
-    lookup: field.lookup,
+    lookup: SERVICE_LOOKUP_RENDERERS[key] || field.lookup,
     options: field.options || [],
     schemaFieldId: field.id,
     sapControlled: true,
@@ -255,9 +303,14 @@ export const buildServiceDocumentLiveFields = ({
     .filter(({ layout }) => Boolean(layout))
     .map(({ field, layout: fieldLayout, index }) => buildStandardColumn(field, index, fieldLayout))
     .filter((column) => column.key !== '__lineNumber')
-    .sort((left, right) => left.order - right.order);
+    .sort((left, right) => left.order - right.order)
+    .filter((column, index, columns) => (
+      columns.findIndex((candidate) => candidate.key === column.key) === index
+    ));
   const matrixColumns = schemaColumns.length
-    ? schemaColumns
+    ? [...schemaColumns, ...getSapStandardServiceMatrixColumns()
+      .filter((column) => !schemaColumns.some((existing) => existing.key === column.key))
+      .map((column) => ({ ...column, visible: false, requiredVisible: false }))]
     : getSapStandardServiceMatrixColumns();
 
   return {

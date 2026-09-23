@@ -1,60 +1,39 @@
-import {
-  getDefaultSeriesForCurrentYear,
-  getSapVisibleDocumentSeries,
-  normalizeDocumentSeriesList,
-} from './seriesDefaults';
-
-describe('series default helpers', () => {
-  test('deduplicates by SAP series code', () => {
-    expect(normalizeDocumentSeriesList([
-      { Series: 1, SeriesName: 'SO 25-26' },
-      { Series: 1, SeriesName: 'Duplicate' },
-      { Series: 2, SeriesName: 'SO 26-27' },
-    ])).toEqual([
-      { Series: 1, SeriesName: 'SO 25-26' },
-      { Series: 2, SeriesName: 'SO 26-27' },
-    ]);
-  });
-
-  test('finds the current financial year series', () => {
-    const series = getDefaultSeriesForCurrentYear([
-      { Series: 1, SeriesName: 'DCS02324', Indicator: '2023-2024' },
-      { Series: 2, SeriesName: 'DCS02425', Indicator: '2024-2025' },
-      { Series: 3, SeriesName: 'DCS02526', Indicator: '2025-2026' },
-    ], new Date('2026-02-15T00:00:00'));
-
-    expect(series.Series).toBe(3);
-  });
-
-  test('shows only the selected SAP series when a noisy list is returned', () => {
-    const visible = getSapVisibleDocumentSeries([
-      { Series: 10, SeriesName: 'AYPLS021' },
-      { Series: 11, SeriesName: 'DCS023' },
-      { Series: 12, SeriesName: 'DCS02324' },
-      { Series: 13, SeriesName: 'EXS02526' },
-    ], { selectedSeries: '10', postingDate: '2026-08-11' });
-
-    expect(visible).toEqual([{ Series: 10, SeriesName: 'AYPLS021' }]);
-  });
-
-  test('supports lowercase service document series objects', () => {
-    const visible = getSapVisibleDocumentSeries([
-      { series: '1', seriesName: 'GST21-22' },
-      { series: '2', seriesName: 'AYDC2223' },
-      { series: '3', seriesName: 'AYDC2324' },
-    ], { selectedSeries: 'manual', postingDate: '11-08-2026' });
-
-    expect(visible).toEqual([{ series: '1', seriesName: 'GST21-22' }]);
-  });
-
-  test('keeps all SAP series in the preferred financial-year indicator', () => {
-    const visible = getSapVisibleDocumentSeries([
-      { Series: 256, SeriesName: 'EXSO2425', Indicator: 'FY2024-25' },
-      { Series: 257, SeriesName: 'DCSO2425', Indicator: 'FY2024-25' },
-      { Series: 328, SeriesName: 'EXSO2526', Indicator: 'FY2025-26', IsDefault: true },
-      { Series: 329, SeriesName: 'DCSO2526', Indicator: 'FY2025-26' },
-    ], { selectedSeries: '328', postingDate: '2026-08-12' });
-
-    expect(visible.map((series) => series.Series)).toEqual([328, 329]);
-  });
+import {getDefaultSeriesForCurrentYear,getSapVisibleDocumentSeries,normalizeDocumentSeriesList,pickDocumentSeries,canUseManualSeries} from './seriesDefaults';
+test('preserves every eligible series despite names or selected series',()=>{
+ const rows=[{Series:1,SeriesName:'1999'},{Series:2,SeriesName:'2026',IsDefault:true}];
+ expect(getSapVisibleDocumentSeries(rows,{selectedSeries:'1'})).toEqual(rows);
+ expect(getDefaultSeriesForCurrentYear(rows).Series).toBe(2);
+});
+test('falls back in SAP series-key order, never alphabetically or by fiscal-year labels',()=>{
+ expect(getDefaultSeriesForCurrentYear([
+  {Series:274,SeriesName:'CAN2627'},
+  {Series:273,SeriesName:'JKLC2627'},
+  {Series:272,SeriesName:'JKLD2627'},
+ ])).toMatchObject({Series:272});
+});
+test('deduplicates by identity and supports lower-case historical records',()=>{
+ expect(normalizeDocumentSeriesList([{series:1},{series:1},{series:2}])).toEqual([{series:1},{series:2}]);
+});
+test('historical locked series are display-only',()=>{
+ const rows=[{Series:1,Locked:'Y',IsLoadedDocumentSeries:true},{Series:2}];
+ expect(getSapVisibleDocumentSeries(rows)).toEqual([{Series:2}]);
+ expect(getSapVisibleDocumentSeries(rows,{includeHistorical:true})).toEqual(rows);
+ expect(pickDocumentSeries(rows,1).Series).toBe(2);
+});
+test('preserves eligible selection and does not invent a default',()=>{
+ const rows=[{Series:1},{Series:2}];
+ expect(pickDocumentSeries(rows,'2').Series).toBe(2);
+ expect(pickDocumentSeries(rows,'99').Series).toBe(1);
+});
+test('manual requires explicit server availability, including empty automatic list',()=>{
+ expect(canUseManualSeries({series:[]})).toBe(false);
+ expect(canUseManualSeries({series:[],manualAllowed:true})).toBe(true);
+});
+test('explicit posting date honors SAP period bounds over an out-of-period default',()=>{
+ const rows=[
+  {Series:1,SeriesName:'Older',IsDefault:true,FromDate:'2025-04-01',ToDate:'2026-03-31'},
+  {Series:2,SeriesName:'Current',FromDate:'2026-04-01',ToDate:'2027-03-31'},
+ ];
+ expect(getDefaultSeriesForCurrentYear(rows,new Date('2026-09-17T00:00:00')).Series).toBe(2);
+ expect(getDefaultSeriesForCurrentYear(rows,'2027-04-01')).toBeNull();
 });

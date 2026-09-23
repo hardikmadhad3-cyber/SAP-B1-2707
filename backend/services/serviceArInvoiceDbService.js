@@ -515,7 +515,8 @@ const getServiceARInvoice = async (docEntry) => {
       T0.VatSum,
       T0.DocTotal,
       ${optionalColumn(headerColumns, 'T0', 'DiscSum', 'DiscSum', '0')},
-      ${optionalColumn(headerColumns, 'T0', 'RoundDif', 'RoundDif', '0')},
+      ${optionalColumn(headerColumns, 'T0', 'RoundDif', 'RoundDif', 'NULL')},
+      ${optionalColumn(headerColumns, 'T0', 'Rounding', 'Rounding', 'NULL')},
       ${optionalColumn(headerColumns, 'T0', 'WTSum', 'WTSum', '0')},
       ${optionalColumn(headerColumns, 'T0', 'PaidToDate', 'PaidToDate', '0')},
       ${optionalColumn(headerColumns, 'T0', 'DpmAmnt', 'DpmAmnt', '0')},
@@ -571,6 +572,8 @@ const getServiceARInvoice = async (docEntry) => {
       ${optionalColumn(inv1Columns, 'T0', 'AgrNo', 'BlanketAgreementNo')},
       ${optionalColumn(inv1Columns, 'T0', 'Project', 'ProjectCode')},
       T0.Quantity,
+      ${optionalColumn(inv1Columns, 'T0', 'ReqDate', 'RequiredDate')},
+      ${optionalColumn(inv1Columns, 'T0', 'PackQty', 'PackageQuantity', '0')},
       T0.BaseEntry,
       T0.BaseType,
       T0.BaseLine,
@@ -602,6 +605,8 @@ const getServiceARInvoice = async (docEntry) => {
       NULL AS BlanketAgreementNo,
       NULL AS ProjectCode,
       T0.Quantity,
+      NULL AS RequiredDate,
+      0 AS PackageQuantity,
       T0.BaseEntry,
       T0.BaseType,
       T0.BaseLine,
@@ -640,7 +645,8 @@ const getServiceARInvoice = async (docEntry) => {
     - totalBeforeDiscount
     - Number(header.TotalExpns || 0)
     - Number(header.VatSum || 0);
-  const roundingAmount = Number(header.RoundDif || 0) || (Math.abs(derivedRounding) <= 1 ? derivedRounding : 0);
+  const roundingAmount = header.RoundDif != null && header.RoundDif !== ''
+    ? Number(header.RoundDif) : (Math.abs(derivedRounding) <= 1 ? derivedRounding : 0);
 
   return {
     service_ar_invoice: {
@@ -675,6 +681,8 @@ const getServiceARInvoice = async (docEntry) => {
         freight: header.TotalExpns != null ? String(header.TotalExpns) : '',
         tax: header.VatSum != null ? String(header.VatSum) : '',
         roundingAmount: String(roundingAmount),
+        rounding: header.Rounding != null
+          ? ['Y', 'TYES'].includes(String(header.Rounding).toUpperCase()) : roundingAmount !== 0,
         wtaxAmount: header.WTSum != null ? String(header.WTSum) : '',
         appliedAmount: header.PaidToDate != null ? String(header.PaidToDate) : '',
         totalDownPayment: header.DpmAmnt != null ? String(header.DpmAmnt) : '',
@@ -701,6 +709,8 @@ const getServiceARInvoice = async (docEntry) => {
           glAccount: line.AcctCode || '',
           glAccountName: line.AcctName || '',
           distRule: line.OcrCode || '',
+          requiredDate: formatDate(line.RequiredDate),
+          noOfPackages: line.PackageQuantity != null ? String(line.PackageQuantity) : '',
           discountPercent: line.DiscountPercent != null ? String(line.DiscountPercent) : '',
           priceAfterDisc: line.Price != null ? String(line.Price) : '',
           taxCode: line.TaxCode || '',
@@ -767,6 +777,8 @@ const getServiceDocumentForCopy = async ({ headerTable, lineTable, docEntry, bas
       ACT.AcctName AS AccountName,
       T0.Dscription AS ItemDescription,
       T0.Quantity,
+      ${optionalColumn(lineColumns, 'T0', 'ReqDate', 'RequiredDate')},
+      ${optionalColumn(lineColumns, 'T0', 'PackQty', 'PackageQuantity', '0')},
       T0.Price AS UnitPrice,
       T0.TaxCode,
       T0.OcrCode AS DistributionRule,
@@ -789,6 +801,8 @@ const getServiceDocumentForCopy = async ({ headerTable, lineTable, docEntry, bas
       ACT.AcctName AS AccountName,
       T0.Dscription AS ItemDescription,
       T0.Quantity,
+      NULL AS RequiredDate,
+      0 AS PackageQuantity,
       T0.Price AS UnitPrice,
       T0.TaxCode,
       T0.OcrCode AS DistributionRule,
@@ -824,43 +838,7 @@ const getServiceDocumentForCopy = async ({ headerTable, lineTable, docEntry, bas
   };
 };
 
-const getServiceARDocumentSeries = async (date, transactionType = '', branch = '') => {
-  const series = await arInvoiceDb.getDocumentSeries(date, transactionType, branch);
-  if (!date) return series;
-
-  const parsedTargetDate = new Date(`${String(date).split('T')[0]}T00:00:00Z`);
-  const targetDate = parsedTargetDate.getTime();
-  if (!Number.isFinite(targetDate)) return [];
-
-  const dateMatchedSeries = (series || []).filter((row) => {
-    const fromDate = row.FromDate ? new Date(row.FromDate).getTime() : NaN;
-    const toDate = row.ToDate ? new Date(row.ToDate).getTime() : NaN;
-    return Number.isFinite(fromDate) && Number.isFinite(toDate) && targetDate >= fromDate && targetDate <= toDate;
-  });
-
-  const startYear = parsedTargetDate.getUTCMonth() >= 3
-    ? parsedTargetDate.getUTCFullYear()
-    : parsedTargetDate.getUTCFullYear() - 1;
-  const endYear = startYear + 1;
-  const yearTokens = [
-    `${String(startYear).slice(-2)}${String(endYear).slice(-2)}`,
-    `${startYear}${String(endYear).slice(-2)}`,
-    `${startYear}${endYear}`,
-  ];
-  const yearNamedSeries = dateMatchedSeries.filter((row) => {
-    const name = `${row.SeriesName || ''} ${row.Indicator || ''}`.toUpperCase().replace(/[^A-Z0-9]/g, '');
-    return yearTokens.some((token) => name.includes(token));
-  });
-  const hasFinancialYearNamedSeries = dateMatchedSeries.some((row) => {
-    return [row.SeriesName, row.Indicator].some((value) => {
-      const match = String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '').match(/(\d{2})(\d{2})$/);
-      return match && Number(match[2]) === (Number(match[1]) + 1) % 100;
-    });
-  });
-
-  if (yearNamedSeries.length) return yearNamedSeries;
-  return hasFinancialYearNamedSeries ? [] : dateMatchedSeries;
-};
+const getServiceARDocumentSeries = async (date, transactionType = '', branch = '', docSubType) => arInvoiceDb.getDocumentSeries(date, transactionType, branch, docSubType);
 
 module.exports = {
   getReferenceData,

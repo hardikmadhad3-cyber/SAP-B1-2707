@@ -42,17 +42,11 @@ const EMPTY_HEADER = {
 };
 
 const getDefaultWarehouseCode = (warehouses = []) => {
-  const preferred = warehouses.find((warehouse) => String(warehouse.WarehouseCode) === "01");
-  return preferred?.WarehouseCode || warehouses[0]?.WarehouseCode || "";
+  return warehouses[0]?.WarehouseCode || "";
 };
 
 const getDefaultPriceListNo = (priceLists = []) => {
-  const preferred = priceLists.find((priceList) => {
-    const no = String(priceList.PriceListNo ?? "");
-    const name = String(priceList.PriceListName || "").trim().toLowerCase();
-    return no === "1" || name === "price list 01";
-  });
-  const value = preferred?.PriceListNo ?? priceLists[0]?.PriceListNo ?? "";
+  const value = priceLists[0]?.PriceListNo ?? "";
   return value === "" || value == null ? "" : String(value);
 };
 
@@ -309,13 +303,17 @@ export default function BOMModule() {
       return false;
     }
 
-    const validLines = lines.filter((line) => line.ItemCode.trim());
+    const validLines = lines.filter((line) =>
+      line.ItemType === "pit_Text"
+        ? Boolean(String(line.Comment || "").trim())
+        : Boolean(String(line.ItemCode || "").trim())
+    );
     if (validLines.length === 0) {
       showAlert("error", "At least one component required.");
       return false;
     }
 
-    const codes = validLines.map((line) => line.ItemCode);
+    const codes = validLines.filter((line) => line.ItemType !== "pit_Text").map((line) => line.ItemCode);
     if (new Set(codes).size !== codes.length) {
       showAlert("error", "Duplicate item codes.");
       return false;
@@ -341,7 +339,9 @@ export default function BOMModule() {
       ...(opt(header.DistributionRule) && { DistributionRule: header.DistributionRule }),
       ...(opt(header.Project) && { Project: header.Project }),
       ProductTreeLines: lines
-        .filter((line) => line.ItemCode.trim())
+        .filter((line) => line.ItemType === "pit_Text"
+          ? Boolean(String(line.Comment || "").trim())
+          : Boolean(String(line.ItemCode || "").trim()))
         .map((line) => ({
           ItemCode: line.ItemCode,
           ItemType: line.ItemType || "pit_Item",
@@ -350,6 +350,7 @@ export default function BOMModule() {
           ...(opt(line.Warehouse) && { Warehouse: line.Warehouse }),
           ...(opt(line.PriceList) && { PriceList: Number(line.PriceList) }),
           ...(opt(line.Comment) && { Comment: line.Comment }),
+          ...(line.ItemType === "pit_Text" && { LineText: line.Comment }),
           ...(opt(line.WipAccount) && { WipAccount: line.WipAccount }),
           ...(opt(line.DistributionRule) && { DistributionRule: line.DistributionRule }),
           ...(opt(line.Project) && { Project: line.Project }),

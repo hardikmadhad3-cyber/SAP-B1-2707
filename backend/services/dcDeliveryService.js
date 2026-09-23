@@ -107,7 +107,7 @@ const submitDelivery = async (...args) => {
 };
 
 const updateDelivery = async (...args) => {
-  await ensureDCDeliveryLineUdfs();
+  if (args[1]?.confirmation_only !== true) await ensureDCDeliveryLineUdfs();
   return deliveryService.updateDelivery(...args);
 };
 

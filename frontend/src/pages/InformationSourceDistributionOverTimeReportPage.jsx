@@ -159,10 +159,10 @@ const buildPayload = (criteria) => {
   };
 };
 
-function WindowControls({ frame, onClose }) {
+function WindowControls({ frame, onClose, onMinimize }) {
   return (
     <div className="sales-analysis-window__controls">
-      <button type="button" aria-label={frame.isMinimized ? 'Restore' : 'Minimize'} onClick={frame.toggleMinimize}>-</button>
+      <button type="button" aria-label={frame.isMinimized ? 'Restore' : 'Minimize'} onClick={onMinimize || frame.toggleMinimize}>-</button>
       <button type="button" aria-label={frame.isMaximized ? 'Restore' : 'Maximize'} onClick={frame.toggleMaximize}>[]</button>
       <button type="button" aria-label="Close" onClick={onClose}>x</button>
     </div>
@@ -293,6 +293,8 @@ export default function InformationSourceDistributionOverTimeReportPage() {
   const criteriaFrame = useFloatingWindow({
     isOpen: true,
     defaultTop: 22,
+    bounds: 'parent',
+    allowPersistedMinimized: false,
     taskId: 'information-source-distribution-over-time-criteria',
     taskTitle: `${REPORT_TITLE} - Selection Criteria`,
     taskPath: '/reports/crm/opportunities/information-source-distribution-over-time',
@@ -300,6 +302,7 @@ export default function InformationSourceDistributionOverTimeReportPage() {
   const reportFrame = useFloatingWindow({
     isOpen: hasReport,
     defaultTop: 14,
+    bounds: 'parent',
     taskId: 'information-source-distribution-over-time-report',
     taskTitle: REPORT_TITLE,
     taskPath: '/reports/crm/opportunities/information-source-distribution-over-time',
@@ -307,6 +310,7 @@ export default function InformationSourceDistributionOverTimeReportPage() {
   const graphFrame = useFloatingWindow({
     isOpen: showGraph,
     defaultTop: 8,
+    bounds: 'parent',
     taskId: 'information-source-distribution-over-time-graph',
     taskTitle: `${REPORT_TITLE} - Selection Criteria`,
     taskPath: '/reports/crm/opportunities/information-source-distribution-over-time',
@@ -411,6 +415,11 @@ export default function InformationSourceDistributionOverTimeReportPage() {
     navigate('/dashboard');
   };
 
+  const minimizeCriteria = () => {
+    criteriaFrame.toggleMinimize();
+    navigate('/dashboard');
+  };
+
   const sources = useMemo(() => report?.sources || [], [report]);
   const rows = report?.data || [];
 
@@ -419,7 +428,7 @@ export default function InformationSourceDistributionOverTimeReportPage() {
       <div className={`opp-forecast-window sales-analysis-window sap-report-window${criteriaFrame.isMinimized ? ' is-minimized' : ''}${criteriaFrame.isMaximized ? ' is-maximized' : ''}`} {...criteriaFrame.windowProps}>
         <div className="sales-analysis-window__titlebar sap-report-titlebar" {...criteriaFrame.titleBarProps}>
           <div className="sales-analysis-window__title sap-report-title">{REPORT_TITLE} - Selection Criteria</div>
-          <WindowControls frame={criteriaFrame} onClose={closeCriteria} />
+          <WindowControls frame={criteriaFrame} onClose={closeCriteria} onMinimize={minimizeCriteria} />
         </div>
         <div className="sales-analysis-window__accent sap-report-accent" />
         {!criteriaFrame.isMinimized ? (
@@ -433,12 +442,13 @@ export default function InformationSourceDistributionOverTimeReportPage() {
                 setShowSalesEmployeeLookup(true);
               }}
               onSubmit={handleSubmit}
-              onCancel={() => {
+              onClear={() => {
                 setCriteria(createInitialCriteria());
                 setReport(null);
                 setShowGraph(false);
                 setStatusMessage('');
               }}
+              onClose={closeCriteria}
               loading={loading}
               filterRows={FILTER_ROWS}
               groupByOptions={GROUP_BY_OPTIONS}

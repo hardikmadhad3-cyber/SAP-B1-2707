@@ -61,3 +61,54 @@ test('respects Purchase Request row-UDF visibility settings', () => {
 
   expect(screen.queryByText('Request Class')).not.toBeInTheDocument();
 });
+
+test('renders and edits SAP Purchase Request row vendor and required date', () => {
+  const onLineChange = jest.fn();
+  const onOpenVendorModal = jest.fn();
+  render(
+    <ContentsTab
+      {...baseProps}
+      onLineChange={onLineChange}
+      lines={[{
+        itemNo: 'RM-001',
+        vendor: 'V100',
+        requiredDate: '2026-09-20',
+        udf: {},
+      }]}
+      matrixFields={[
+        { key: 'itemNo', label: 'Item No.' },
+        { key: 'vendor', label: 'Vendor' },
+        { key: 'requiredDate', label: 'Required Date' },
+      ]}
+      onOpenVendorModal={onOpenVendorModal}
+    />
+  );
+
+  expect(screen.getByText('Vendor')).toBeInTheDocument();
+  expect(screen.getByDisplayValue('V100')).toHaveAttribute('name', 'vendor');
+  fireEvent.click(screen.getByTitle('Select Vendor'));
+  expect(onOpenVendorModal).toHaveBeenCalledWith(0);
+  fireEvent.change(screen.getByDisplayValue('2026-09-20'), { target: { name: 'requiredDate', value: '2026-09-25' } });
+  expect(onLineChange).toHaveBeenCalledWith(0, expect.objectContaining({
+    target: expect.objectContaining({ name: 'requiredDate' }),
+  }));
+});
+
+test('service mode uses a G/L account field and account reference data', () => {
+  render(
+    <ContentsTab
+      {...baseProps}
+      documentType="Service"
+      lines={[{ accountCode: '610000', itemDescription: 'Consulting', udf: {} }]}
+      matrixFields={[
+        { key: 'itemNo', label: 'Item No.' },
+        { key: 'itemDescription', label: 'Description' },
+      ]}
+      serviceAccounts={[{ code: '610000', name: 'Consulting Expense' }]}
+    />
+  );
+
+  expect(screen.getByText('G/L Account')).toBeInTheDocument();
+  expect(screen.getByDisplayValue('610000')).toHaveAttribute('name', 'accountCode');
+  expect(screen.getByText('Consulting Expense')).toBeInTheDocument();
+});

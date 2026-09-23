@@ -1,3 +1,5 @@
+import useConfirmationOnlyUpdate from '../../utils/useConfirmationOnlyUpdate';
+import useDocumentSeries from '../../hooks/useDocumentSeries';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import TaxCodeLookup from '../../components/TaxCodeLookup';
@@ -12,13 +14,17 @@ import { createActiveCompanyScopedRouteState, isRouteStateForCompany } from '../
 import useServiceDocumentFormSettings from '../../utils/useServiceDocumentFormSettings';
 import { updateFormSettingPreference } from '../../utils/formSettingsPreferences';
 import { getOrderedVisibleMatrixColumns } from '../../utils/formSettingsColumns';
+import { getReadableDocumentLineColumnWidth } from '../../utils/documentLineColumnWidth';
+import { calculateServiceInvoiceLine } from '../../utils/serviceInvoiceLineCalculations';
 import { consumeCopyToState, replaceRouteStatePreservingWindow } from '../../utils/copyToState';
 import useStandardDocumentDraftTask from '../../hooks/useStandardDocumentDraftTask';
 import { buildVisibleEnteredRowUdfPayload } from '../../utils/rowUdfPayload';
-import { getSapVisibleDocumentSeries } from '../../utils/seriesDefaults';
+import { getSapVisibleDocumentSeries, getDefaultSeriesForCurrentYear, canUseManualSeries } from '../../utils/seriesDefaults';
+import { calculateDocumentRounding, getDocumentRoundingPolicy, formatDocumentRoundingAmount } from '../../utils/documentRounding';
 import { resolveLocationDisplayName } from '../../utils/locationLookup';
 import { getDocumentLayout } from '../../api/sapLayoutApi';
-import { fetchSalesDocumentSchema } from '../../api/salesDocumentSchemaApi';
+import { fetchSalesDocumentLookup, fetchSalesDocumentSchema } from '../../api/salesDocumentSchemaApi';
+import { loadSalesDocumentFieldLookupOptions } from '../../utils/salesDocumentLiveFields';
 import { useAuth } from '../../auth/AuthContext';
 import { convertDocumentAmountForDisplay, resolveDisplayCurrency } from '../../utils/documentCurrency';
 import { buildServiceDocumentLiveFields, getSapStandardServiceMatrixColumns } from '../../utils/serviceDocumentLiveFields';
@@ -48,7 +54,6 @@ import {
   fetchOpenServiceARInvoicesForARCreditMemo,
   fetchServiceARInvoiceForARCreditMemoCopy,
   fetchServiceARCreditMemoByDocEntry,
-  fetchServiceARCreditMemoNextNumber,
   fetchServiceARCreditMemoReferenceData,
   fetchServiceARCreditMemoSeries,
   fetchServiceARCreditMemoCustomerDetails,
@@ -114,7 +119,7 @@ const INIT_HEADER = {
   billToCode: '',
   billToAddress: '',
   shippingType: '',
-  confirmed: false,
+  confirmed: undefined,
   useBillToForTax: false,
   journalRemark: '',
   paymentMethod: '',
@@ -301,47 +306,7 @@ const includeSelectedSeries = (series = [], selectedSeries = '', selectedSeriesN
   }, ...series];
 };
 
-const getSeriesFamilyKey = (series = {}) => {
-  const safeSeries = series || {};
-  const label = String(
-    safeSeries.SeriesName ||
-    safeSeries.DisplayName ||
-    safeSeries.RawSeriesName ||
-    safeSeries.BeginStr ||
-    safeSeries.Indicator ||
-    ''
-  );
-  return label
-    .replace(/^U_/i, '')
-    .replace(/[^a-z0-9]+/gi, '')
-    .toLowerCase()
-    .replace(/(?:fy)?\d{2}\d{2}$/i, '')
-    .replace(/\d{4,}$/i, '')
-    .replace(/\d{2}$/i, '');
-};
 
-const pickSeriesForNewDocument = (series = [], preferredSeries = '', sourceSeries = []) => {
-  const available = Array.isArray(series) ? series.filter(Boolean) : [];
-  if (!available.length) return null;
-  const sourceAvailable = toArray(sourceSeries, ['series']);
-
-  const preferred = String(preferredSeries || '').trim();
-  const currentMatch = preferred
-    ? available.find((item) => String(item.Series || '') === preferred)
-    : null;
-  if (currentMatch) return currentMatch;
-
-  const oldSeries = preferred
-    ? sourceAvailable.find((item) => String(item.Series || '') === preferred)
-    : null;
-  const familyKey = getSeriesFamilyKey(oldSeries);
-  const familyMatch = familyKey
-    ? available.find((item) => getSeriesFamilyKey(item) === familyKey)
-    : null;
-  if (familyMatch) return familyMatch;
-
-  return available.find((item) => item.IsDefault || item.isDefault) || available[0];
-};
 
 const normalizeFieldName = (value) =>
   String(value || '')
@@ -359,6 +324,7 @@ const FIXED_SERVICE_MATRIX_FIELD_NAMES = new Set([
   'grossweight',
   'totalpackage',
   'taxcoderepeat',
+  'taxcode',
   'taxcodeudf',
   'price',
   'apinvdockey',
@@ -409,7 +375,8 @@ const fieldNameMatches = (field = {}, names = new Set()) =>
   names.has(normalizeFieldName(field.aliasId));
 
 const isFixedServiceMatrixField = (field = {}) =>
-  fieldNameMatches(field, FIXED_SERVICE_MATRIX_FIELD_NAMES);
+  !/^U_/i.test(String(field.key || field.sapField || ''))
+  && fieldNameMatches(field, FIXED_SERVICE_MATRIX_FIELD_NAMES);
 
 const applyServiceRowUdfDefaults = (definitions = []) =>
   definitions.map((field) => ({ ...field, visible: field.visible === true }));
@@ -591,6 +558,8 @@ const normalizeCopyLine = (line, idx, docEntry, baseType, accounts) => {
 };
 
 function ServiceARCreditMemoPage() {
+  const [seriesRevision, setSeriesRevision] = useState(0);
+
   const location = useLocation();
   const navigate = useNavigate();
   const { company } = useAuth();
@@ -614,6 +583,7 @@ function ServiceARCreditMemoPage() {
     formSettings,
     setFormSettings,
     formSettingsStatus,
+    formSettingsStorageKey,
     formSettingsReady: companyFormSettingsReady,
     hydrateFormSettings,
     clearMetadataScope: clearFormSettingsMetadataScope,
@@ -707,6 +677,7 @@ function ServiceARCreditMemoPage() {
     searchPlaceholder: 'Search values',
     emptyMessage: 'No values found',
     allowCreate: false,
+    isUdf: false,
     columns: null,
   });
 
@@ -740,7 +711,7 @@ function ServiceARCreditMemoPage() {
       ? includeSelectedSeries(availableSeries, header.series, header.seriesName)
       : availableSeries;
     return getSapVisibleDocumentSeries(options, {
-      selectedSeries: header.series,
+      selectedSeries: header.series, includeHistorical: Boolean(currentDocEntry),
       postingDate: header.postingDate || header.documentDate,
     });
   }, [currentDocEntry, refData.series, header.series, header.seriesName, header.postingDate, header.documentDate]);
@@ -957,6 +928,8 @@ function ServiceARCreditMemoPage() {
     },
   }), [freightProviderLookupOptions, itemLookupOptions, locationLookupOptions, paymentTermLookupOptions, refData.price_options, refData.quality_options, serviceSacLookupOptions]);
 
+  const sumDecimals = Number(refData.decimal_settings?.sum);
+  const numDec = Number.isInteger(sumDecimals) && sumDecimals >= 0 && sumDecimals <= 6 ? sumDecimals : 2;
   const totals = useMemo(() => {
     if (currentDocEntry) {
       const total = parseNum(header.totalPaymentDue);
@@ -977,7 +950,8 @@ function ServiceARCreditMemoPage() {
         total + wtaxAmount + discountAmount + downPayment - freight - tax - explicitRounding
       );
       const derivedRounding = total + wtaxAmount + discountAmount + downPayment - subtotal - freight - tax;
-      const roundingAmount = explicitRounding || (Math.abs(derivedRounding) <= 1 ? derivedRounding : 0);
+      const roundingAmount = header.roundingAmount !== '' && header.roundingAmount != null
+        ? explicitRounding : derivedRounding;
       return {
         subtotal,
         tax,
@@ -997,12 +971,12 @@ function ServiceARCreditMemoPage() {
     const discountAmount = subtotal * parseNum(header.discount) / 100;
     const freight = parseNum(header.freight);
     const downPayment = parseNum(header.totalDownPayment);
-    const roundingAmount = parseNum(header.roundingAmount);
-    const total = Math.max(0, subtotal - discountAmount - downPayment) + freight + tax + roundingAmount;
+    const totalBeforeRounding = Math.max(0, subtotal - discountAmount - downPayment) + freight + tax;
+    const { roundingAmount, total } = calculateDocumentRounding(totalBeforeRounding, header.rounding, numDec, currentDocEntry ? header : null, getDocumentRoundingPolicy(refData, header));
     const appliedAmount = parseNum(header.appliedAmount);
     const balanceDue = Math.max(0, total - appliedAmount);
     return { subtotal, tax, discountAmount, freight, downPayment, roundingAmount, total, appliedAmount, balanceDue, wtaxAmount: 0 };
-  }, [currentDocEntry, header.appliedAmount, header.balanceDue, header.discount, header.discountAmount, header.freight, header.roundingAmount, header.tax, header.totalBeforeDiscount, header.totalDownPayment, header.totalPaymentDue, header.wtaxAmount, lines]);
+  }, [refData, numDec, currentDocEntry, header.appliedAmount, header.balanceDue, header.discount, header.discountAmount, header.freight, header.rounding, header.roundingAmount, header.tax, header.totalBeforeDiscount, header.totalDownPayment, header.totalPaymentDue, header.wtaxAmount, lines]);
 
   const wtaxDecimals = { total: 2, tax: 2, totalPaymentDue: 2 };
   const hasSavedWTaxAmount = Boolean(currentDocEntry && Math.abs(parseNum(header.wtaxAmount)) > 0);
@@ -1174,7 +1148,7 @@ function ServiceARCreditMemoPage() {
             ...(layoutRes?.data?.warning ? [layoutRes.data.warning] : []),
           ],
         });
-        const firstSeries = nextRefData.series[0];
+        const firstSeries = getDefaultSeriesForCurrentYear(nextRefData.series);
         if (firstSeries && !requestedDocEntry) {
           setHeader((prev) => ({
             ...prev,
@@ -1373,18 +1347,10 @@ function ServiceARCreditMemoPage() {
     };
   }, [requestedDocEntry, headerUdfDefinitions, rowUdfDefinitions]);
 
-  const updateLineCalculatedValues = (line) => {
-    const next = { ...line };
-    next.taxCodeRepeat = next.taxCode || '';
-    const qty = parseNum(next.sQty);
-    const price = parseNum(next.unitPrice);
-    if (qty > 0 && price > 0) {
-      next.totalLC = fmt(qty * price);
-    }
-    const taxRate = getTaxRate(taxCodes, next.taxCode);
-    next.taxAmountLC = next.totalLC ? fmt(parseNum(next.totalLC) * taxRate / 100) : '';
-    return next;
-  };
+  const updateLineCalculatedValues = (line, changedField) => ({
+    ...calculateServiceInvoiceLine(line, changedField, getTaxRate(taxCodes, line.taxCode)),
+    taxCodeRepeat: line.taxCode || '',
+  });
 
   const loadCustomerDetails = async (vendorCode) => {
     const normalizedCustomerCode = String(vendorCode || '').trim();
@@ -1475,6 +1441,7 @@ function ServiceARCreditMemoPage() {
       searchPlaceholder: override.searchPlaceholder || config.searchPlaceholder || 'Search values',
       emptyMessage: override.emptyMessage || config.emptyMessage || 'No values found',
       allowCreate: Boolean(override.allowCreate ?? config.allowCreate ?? false),
+      isUdf: Boolean(override.isUdf),
       columns: override.columns || config.columns || null,
     });
   };
@@ -1488,6 +1455,9 @@ function ServiceARCreditMemoPage() {
     const selectedValue = option?.value || '';
     setLines((prev) => prev.map((line, lineIndex) => {
       if (lineIndex !== lineLookupModal.lineIndex) return line;
+      if (lineLookupModal.isUdf) {
+        return { ...line, udf: { ...(line.udf || {}), [lineLookupModal.field]: selectedValue } };
+      }
       const next = { ...line, [lineLookupModal.field]: selectedValue };
       if (lineLookupModal.field === 'glAccount') {
         next.glAccountName = option?.description || '';
@@ -1533,62 +1503,14 @@ function ServiceARCreditMemoPage() {
       return;
     }
 
-    if (name === 'postingDate') {
-      setHeader((prev) => ({ ...prev, postingDate: value, exchangeRate: '' }));
-      setPageState((prev) => ({ ...prev, seriesLoading: true }));
-      try {
-        const res = await fetchServiceARCreditMemoSeries(value, header.transactionType, header.branch);
-        const nextSeries = toArray(res.data?.series || res.data, ['series']);
-        setRefData((prev) => ({ ...prev, series: nextSeries }));
-        setHeader((prev) => {
-          if (prev.series === 'manual') {
-            return { ...prev, postingDate: value };
-          }
-
-          const selectedSeries =
-            nextSeries.find((series) => String(series.Series || '') === String(prev.series || '')) ||
-            nextSeries[0];
-
-          return {
-            ...prev,
-            postingDate: value,
-            branch: prev.branch || String(selectedSeries?.BPLId || ''),
-            series: selectedSeries ? String(selectedSeries.Series || '') : '',
-            nextNumber: selectedSeries ? String(selectedSeries.NextNumber || '') : '',
-          };
-        });
-      } catch (_error) {
-        setHeader((prev) => ({ ...prev, postingDate: value }));
-      } finally {
-        setPageState((prev) => ({ ...prev, seriesLoading: false }));
-      }
-      return;
-    }
+    if (name === 'postingDate') { setHeader(prev => ({ ...prev, [name]: value, exchangeRate: '', series: '', nextNumber: '', docNo: '' })); return; }
 
     if (name === 'series') {
-      if (value === 'manual') {
-        setHeader((prev) => ({ ...prev, series: value, nextNumber: '', docNo: '' }));
-        return;
-      }
-
-      const selectedSeries = seriesOptions.find((series) => String(series.Series || '') === String(value || ''));
-      setHeader((prev) => ({
-        ...prev,
-        branch: prev.branch || String(selectedSeries?.BPLId || ''),
-        series: value,
-        nextNumber: selectedSeries ? String(selectedSeries.NextNumber || '') : '...',
-      }));
-      setPageState((prev) => ({ ...prev, seriesLoading: true }));
-      try {
-        const res = await fetchServiceARCreditMemoNextNumber(value);
-        setHeader((prev) => ({ ...prev, nextNumber: String(res.data?.nextNumber || '') }));
-      } catch (_error) {
-        setHeader((prev) => ({ ...prev, nextNumber: '' }));
-      } finally {
-        setPageState((prev) => ({ ...prev, seriesLoading: false }));
-      }
-      return;
-    }
+ const manual = ['-1','manual'].includes(String(value));
+ if(manual && !canUseManualSeries(refData)) return;
+ const selected = (refData.series || []).find(row => String(row.Series) === String(value));
+ setHeader(prev => ({ ...prev, series: manual ? 'manual' : selected ? String(selected.Series) : '', nextNumber: manual ? '' : String(selected?.NextNumber ?? ''), docNo: '' })); return;
+}
 
     if (name === 'shipToCode') {
       const selected = vendorEffectiveShipToAddresses.find((address) => String(address.Address || '') === String(value));
@@ -1658,10 +1580,19 @@ function ServiceARCreditMemoPage() {
       if (name === 'loc') {
         next.locCode = '';
       }
-      return ['taxCode', 'totalLC', 'unitPrice', 'sQty'].includes(name)
-        ? updateLineCalculatedValues(next)
+      return ['taxCode', 'discountPercent', 'priceAfterDisc', 'totalLC', 'unitPrice', 'sQty'].includes(name)
+        ? updateLineCalculatedValues(next, name)
         : next;
     }));
+  };
+
+  const handleLineBlur = (index, fieldName) => {
+    if (!isDocumentEditable || fieldName !== 'priceAfterDisc') return;
+    setLines((prev) => prev.map((line, lineIndex) => (
+      lineIndex === index && line._pendingPriceDiscountApplication
+        ? updateLineCalculatedValues(line, 'priceAfterDiscCommit')
+        : line
+    )));
   };
 
   const addLine = () => {
@@ -1826,6 +1757,7 @@ function ServiceARCreditMemoPage() {
   const buildPayload = () => ({
     header: {
       ...header,
+      roundingAmount: totals.roundingAmount,
       wtaxAmount,
       totalPaymentDue: totalPaymentDueAfterWTax,
     },
@@ -1891,6 +1823,11 @@ function ServiceARCreditMemoPage() {
     }
   };
 
+  const narrowConfirmationUpdate = useConfirmationOnlyUpdate({
+    docEntry: currentDocEntry, isDirty,
+    state: { header, lines, headerUdfs, withholdingTax, companyDb: activeCompanyDb , company_id: activeCompanyId, companyKey: formSettingsStorageKey },
+  });
+
   const handleSubmit = async (event) => {
     event.preventDefault();
     if (!companyFormSettingsReady) {
@@ -1918,7 +1855,7 @@ function ServiceARCreditMemoPage() {
     setPageState((prev) => ({ ...prev, posting: true, error: '', success: '' }));
     try {
       const res = currentDocEntry
-        ? await updateServiceARCreditMemo(currentDocEntry, buildPayload())
+        ? await updateServiceARCreditMemo(currentDocEntry, narrowConfirmationUpdate(buildPayload()))
         : await submitServiceARCreditMemo(buildPayload());
       const docEntry = res.data?.doc_entry || res.data?.DocEntry || currentDocEntry;
       const docNum = res.data?.doc_num || res.data?.DocNum || header.docNo;
@@ -1933,7 +1870,9 @@ function ServiceARCreditMemoPage() {
   };
 
   const resetForm = () => {
-    const firstSeries = seriesOptions[0];
+    setSeriesRevision(value => value + 1);
+
+    const firstSeries = getDefaultSeriesForCurrentYear(seriesOptions);
     setIsDirty(false);
     setCurrentDocEntry(null);
     setHeader({
@@ -1977,58 +1916,11 @@ function ServiceARCreditMemoPage() {
     return null;
   };
 
-  const refreshSeriesForNewDocument = async ({
-    postingDate = header.postingDate,
-    transactionType = header.transactionType,
-    branch = header.branch,
-    preferredSeries = header.series,
-  } = {}) => {
-    if (String(preferredSeries || '') === 'manual') {
-      setHeader((prev) => ({ ...prev, series: 'manual', nextNumber: '', docNo: '' }));
-      return;
-    }
-
-    setPageState((prev) => ({ ...prev, seriesLoading: true }));
-    try {
-      const res = await fetchServiceARCreditMemoSeries(postingDate, transactionType, branch);
-      const nextSeries = toArray(res.data?.series || res.data, ['series']);
-      const selectedSeries = pickSeriesForNewDocument(nextSeries, preferredSeries, refData.series || []);
-      setRefData((prev) => ({ ...prev, series: nextSeries }));
-      if (selectedSeries) {
-        const numberRes = await fetchServiceARCreditMemoNextNumber(selectedSeries.Series);
-        setHeader((prev) => ({
-          ...prev,
-          postingDate,
-          documentDate: postingDate,
-          deliveryDate: postingDate,
-          transactionType,
-          branch: branch || prev.branch || String(selectedSeries.BPLId || ''),
-          series: String(selectedSeries.Series || ''),
-          nextNumber: String(numberRes.data?.nextNumber || selectedSeries.NextNumber || ''),
-          docNo: '',
-        }));
-      }
-    } catch (_error) {
-      const selectedSeries = pickSeriesForNewDocument(refData.series || [], preferredSeries, refData.series || []);
-      if (selectedSeries) {
-        setHeader((prev) => ({
-          ...prev,
-          postingDate,
-          documentDate: postingDate,
-          deliveryDate: postingDate,
-          transactionType,
-          branch: branch || prev.branch || String(selectedSeries.BPLId || ''),
-          series: String(selectedSeries.Series || ''),
-          nextNumber: String(selectedSeries.NextNumber || ''),
-          docNo: '',
-        }));
-      }
-    } finally {
-      setPageState((prev) => ({ ...prev, seriesLoading: false }));
-    }
-  };
+  const refreshSeriesForNewDocument = async ({ postingDate = header.postingDate, transactionType = header.transactionType, branch = header.branch } = {}) => { setHeader(prev => ({ ...prev, postingDate, transactionType, branch, series: '', nextNumber: '', docNo: '' })); };
 
   const handleCopyFrom = async (data, sourceType) => {
+    setSeriesRevision(value => value + 1);
+
     const copySource = unwrapCopyFromDocument(data);
     const sourceLines = toArray(copySource.lines, ['lines', 'DocumentLines']);
     const copyKey = `${sourceType}-${copySource.docEntry}-${sourceLines.length}`;
@@ -2079,6 +1971,8 @@ function ServiceARCreditMemoPage() {
   };
 
   const handleDuplicate = async () => {
+    setSeriesRevision(value => value + 1);
+
     const duplicateDate = today();
     const duplicateTransactionType = header.transactionType || transactionTypeOptions[0]?.value || 'GST Tax Invoice';
     const duplicateBranch = header.branch || '';
@@ -2124,6 +2018,9 @@ function ServiceARCreditMemoPage() {
   };
 
   const renderLineCell = (line, index, column) => {
+    const numericValue = column.key === 'priceAfterDisc'
+      ? Number(line.unitPrice || 0) * (1 - Number(line.discountPercent || 0) / 100)
+      : line[column.key];
     const error = valErrors.lines[index]?.[column.key];
     if (column.isUdf) {
       const disabled =
@@ -2132,11 +2029,41 @@ function ServiceARCreditMemoPage() {
         formSettings.rowUdfs?.[column.udfKey]?.active === false;
       const value = line.udf?.[column.udfKey] || '';
 
+      if (column.lookupSource) {
+        return (
+          <div className="service-ar-lookup-cell">
+            <input className="del-grid__input" value={value} disabled={disabled} onChange={(event) => handleRowUdfChange(index, column.udfKey, event.target.value)} title={`Select ${column.label}`} />
+            <button
+              type="button"
+              className="del-btn service-ar-lookup-btn"
+              disabled={disabled}
+              title={`Select ${column.label}`}
+              onClick={async () => {
+                try {
+                  const options = await loadSalesDocumentFieldLookupOptions({
+                    fetchLookup: fetchSalesDocumentLookup,
+                    source: column.lookupSource,
+                    field: column,
+                    line,
+                    documentType: 'SERVICE_AR_CREDIT_MEMO',
+                    schemaVersion: refData.line_field_metadata?.live_schema?.schemaVersion || '',
+                  });
+                  openLineLookup(column.udfKey, index, { title: `Select ${column.label}`, options, isUdf: true });
+                } catch (_error) {
+                  openLineLookup(column.udfKey, index, { title: `Select ${column.label}`, options: column.options || [], isUdf: true });
+                }
+              }}
+            >...</button>
+          </div>
+        );
+      }
+
       if (column.type === 'checkbox') {
         const checked = ['Y', 'YES', 'TRUE', '1', 'TYES'].includes(String(value || '').trim().toUpperCase());
         return (
-          <input
-            type="checkbox"
+        <input
+          type="checkbox"
+          data-sap-native-tab="true"
             className="form-check-input service-ar-udf-checkbox"
             checked={checked}
             disabled={disabled}
@@ -2291,8 +2218,9 @@ function ServiceARCreditMemoPage() {
         className={`del-grid__input${error ? ' del-field__input--error' : ''}`}
         type={column.type === 'date' ? 'date' : 'text'}
         name={column.key}
-        value={column.readOnly && column.numeric ? String(displayAmount(line[column.key] || 0)) : (column.key === 'taxCodeRepeat' ? (line.taxCodeRepeat || line.taxCode || '') : (line[column.key] || ''))}
+        value={column.readOnly && column.numeric ? String(displayAmount(numericValue ?? 0)) : (column.key === 'taxCodeRepeat' ? (line.taxCodeRepeat || line.taxCode || '') : (line[column.key] || ''))}
         onChange={(event) => handleLineChange(index, event)}
+        onBlur={() => handleLineBlur(index, column.key)}
         readOnly={column.readOnly}
         disabled={!isDocumentEditable || column.readOnly}
         style={{ textAlign: column.numeric || column.readOnly ? 'right' : 'left' }}
@@ -2316,9 +2244,18 @@ function ServiceARCreditMemoPage() {
       readOnly: field.readOnly,
       isUdf: true,
       options: toArray(field.options, ['options']),
+      lookupSource: field.lookupSource,
+      lookupTable: field.lookupTable,
+      fieldId: field.fieldId,
+      schemaFieldId: field.schemaFieldId,
     })),
-  ], formSettings);
+  ], formSettings).map((column) => {
+    const width = getReadableDocumentLineColumnWidth(column);
+    return { ...column, width, minWidth: width };
+  });
   const tableMinWidth = 42 + 48 + visibleLineColumns.reduce((sum, column) => sum + column.width, 0);
+
+  useDocumentSeries({ endpoint: '/services/ar-credit-memo', companyKey: formSettingsStorageKey, currentDocEntry, header: header, setHeader, setRefData, setPageState, ready: !pageState.loading && !pageState.posting , refreshKey: seriesRevision});
 
   return (
     <form className={`ar-invoice-page del-page sap-document-page service-ar-credit-memo-page${isRightSidebarOpen ? ' del-page--sidebar-open' : ''}`} onSubmit={handleSubmit} onChangeCapture={markDirty}>
@@ -2451,13 +2388,6 @@ function ServiceARCreditMemoPage() {
                   ))}
                 </select>
               </div>
-              <div className="del-field">
-                <label className="del-field__label">Place of Supply</label>
-                <div className="service-ar-header-lookup">
-                  <input className="del-field__input" name="placeOfSupply" value={header.placeOfSupply} onChange={handleHeaderChange} disabled={!isDocumentEditable} />
-                  <button type="button" className="del-btn service-ar-lookup-btn" onClick={() => setStateModalOpen(true)} disabled={!isDocumentEditable} title="List of States">...</button>
-                </div>
-              </div>
             </div>
 
             <div>
@@ -2465,8 +2395,8 @@ function ServiceARCreditMemoPage() {
                 <label className="del-field__label">No.</label>
                 <div className="service-ar-docnum">
                   <select className="del-field__select" name="series" value={header.series} onChange={handleHeaderChange} disabled={!isDocumentEditable || currentDocEntry || pageState.seriesLoading}>
-                    <option value="">Select Series</option>
-                    <option value="manual">Manual</option>
+                    <option value="">{pageState.seriesLoading ? 'Loading series...' : pageState.seriesError ? 'Series unavailable' : 'Select Series'}</option>
+                    {(canUseManualSeries(refData) || (currentDocEntry && ['-1','manual','__sap_manual__'].includes(String(header.series)))) && (<option value="manual">Manual</option>)}
                     {seriesOptions.map((series) => (
                       <option key={series.Series} value={series.Series}>{series.SeriesName}</option>
                     ))}
@@ -2474,7 +2404,7 @@ function ServiceARCreditMemoPage() {
                   <input
                     className={`del-field__input${valErrors.header.docNo ? ' del-field__input--error' : ''}`}
                     name="docNo"
-                    value={pageState.seriesLoading ? '...' : (header.docNo || header.nextNumber || '')}
+                    value={currentDocEntry ? (header.docNo || header.nextNumber || '') : pageState.seriesLoading ? '...' : (header.docNo || header.nextNumber || '')}
                     onChange={handleHeaderChange}
                     readOnly={header.series !== 'manual'}
                     disabled={!isDocumentEditable || currentDocEntry || pageState.seriesLoading}
@@ -2497,6 +2427,13 @@ function ServiceARCreditMemoPage() {
                 <label className="del-field__label">Document Date</label>
                 <input type="date" className={`del-field__input${valErrors.header.documentDate ? ' del-field__input--error' : ''}`} name="documentDate" value={header.documentDate} onChange={handleHeaderChange} disabled={!isDocumentEditable} />
               </div>
+              <div className="del-field">
+                <label className="del-field__label">Place of Supply</label>
+                <div className="service-ar-header-lookup">
+                  <input className="del-field__input" name="placeOfSupply" value={header.placeOfSupply} onChange={handleHeaderChange} disabled={!isDocumentEditable} />
+                  <button type="button" className="del-btn service-ar-lookup-btn" onClick={() => setStateModalOpen(true)} disabled={!isDocumentEditable} title="List of States">...</button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -2516,7 +2453,7 @@ function ServiceARCreditMemoPage() {
 
         {activeTab === 'Contents' && (
           <div className="del-tab-panel" style={{ overflow: 'visible', minWidth: 0 }}>
-            <div className="service-ar-content-toolbar">
+            <div className="service-ar-content-toolbar" style={{ justifyContent: 'flex-end' }}>
               <button type="button" className="del-btn del-btn--primary" onClick={addLine} disabled={!isDocumentEditable}>+ Add Line</button>
             </div>
 
@@ -2629,7 +2566,7 @@ function ServiceARCreditMemoPage() {
                   <tr><td>Discount %</td><td><input className="del-grid__input" name="discount" value={header.discount} onChange={handleHeaderChange} disabled={!isDocumentEditable} /></td></tr>
                   <tr><td>Total Down Payment</td><td><input className="del-grid__input" name="totalDownPayment" value={header.totalDownPayment} onChange={handleHeaderChange} disabled={!isDocumentEditable} /></td></tr>
                   <tr><td>Freight</td><td><input className="del-grid__input" name="freight" value={header.freight} onChange={handleHeaderChange} disabled={!isDocumentEditable} /></td></tr>
-                  <tr><td><label className="service-ar-checkbox"><input type="checkbox" name="rounding" checked={header.rounding || parseNum(header.roundingAmount) !== 0} onChange={handleHeaderChange} disabled={!isDocumentEditable} /> Rounding</label></td><td><input className="del-grid__input" value={`${displayCurrency} ${fmt(displayAmount(totals.roundingAmount))}`.trim()} readOnly /></td></tr>
+                  <tr><td><label className="service-ar-checkbox"><input type="checkbox" name="rounding" checked={header.rounding || parseNum(header.roundingAmount) !== 0} onChange={handleHeaderChange} disabled={!isDocumentEditable} /> Rounding</label></td><td><input className="del-grid__input" value={`${displayCurrency} ${formatDocumentRoundingAmount(displayAmount(totals.roundingAmount), numDec)}`.trim()} readOnly /></td></tr>
                   <tr><td>Tax</td><td><input className="del-grid__input" value={fmt(displayAmount(totals.tax))} readOnly /></td></tr>
                   {hasWTaxLiableLines && (
                     <tr>

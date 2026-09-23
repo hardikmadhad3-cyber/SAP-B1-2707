@@ -1,0 +1,237 @@
+.query-manager-page {
+  display: flex;
+  height: calc(100vh - 90px);
+  gap: 16px;
+  padding: 16px;
+  position: relative;
+}
+
+.query-manager-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.query-manager-modal {
+  background: white;
+  border-radius: 8px;
+  padding: 20px 24px;
+  width: 380px;
+  max-width: 90vw;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
+}
+
+.query-manager-modal h3 {
+  margin-top: 0;
+}
+
+.query-manager-modal form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.query-manager-sidebar {
+  width: 320px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border-right: 1px solid #e0e0e0;
+  padding-right: 12px;
+}
+
+.query-manager-sidebar h2 {
+  margin-top: 0;
+  font-size: 18px;
+}
+
+.query-manager-main {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.query-manager-tree-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.query-manager-tree-toolbar button {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid #ccc;
+  background: #f7f7f7;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.query-manager-tree-node {
+  position: relative;
+}
+
+.query-manager-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 4px;
+  cursor: pointer;
+  border-radius: 4px;
+  position: relative;
+}
+
+.query-manager-tree-row:hover {
+  background: #f0f4ff;
+}
+
+.query-manager-tree-toggle {
+  border: none;
+  background: none;
+  cursor: pointer;
+  width: 16px;
+}
+
+.query-manager-tree-menu-btn {
+  margin-left: auto;
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 0 6px;
+}
+
+.query-manager-tree-menu {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 10;
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  min-width: 140px;
+}
+
+.query-manager-tree-menu button {
+  border: none;
+  background: none;
+  text-align: left;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.query-manager-tree-menu button:hover {
+  background: #f0f4ff;
+}
+
+.query-manager-tree-empty {
+  color: #888;
+  padding: 8px 4px;
+}
+
+.query-manager-grid-status {
+  padding: 24px;
+  color: #555;
+}
+
+.query-manager-grid-error {
+  color: #b00020;
+}
+
+.query-manager-grid-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.query-manager-grid-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.query-manager-grid-scroll {
+  overflow: auto;
+  max-height: 60vh;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+}
+
+.query-manager-grid-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+
+.query-manager-grid-table th,
+.query-manager-grid-table td {
+  border: 1px solid #eee;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
+.query-manager-grid-table th {
+  background: #f7f7f7;
+  position: sticky;
+  top: 0;
+}
+
+.query-generator-editor {
+  max-width: 760px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.query-generator-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.query-generator-field span {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.query-generator-field input,
+.query-generator-field select,
+.query-generator-field textarea {
+  padding: 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-family: inherit;
+}
+
+.query-generator-field textarea {
+  font-family: 'Consolas', 'Menlo', monospace;
+  font-size: 13px;
+}
+
+.query-generator-field-inline {
+  max-width: 160px;
+}
+
+.query-generator-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.query-generator-actions button {
+  padding: 8px 16px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #f7f7f7;
+  cursor: pointer;
+}
+
+.query-generator-preview {
+  margin-top: 12px;
+}
+
+.query-manager-result-header h3 {
+  margin-top: 0;
+}

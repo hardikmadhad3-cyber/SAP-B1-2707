@@ -18,6 +18,7 @@ router.get('/lookup/linked-orders',      ctrl.lookupLinkedOrders);
 
 // Reference data
 router.get('/reference-data', ctrl.getReferenceData);
+router.get('/series',         ctrl.getSeries);
 
 // BOM explosion
 router.get('/bom-explode/:itemCode', ctrl.explodeBOM);

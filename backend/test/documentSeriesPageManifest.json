@@ -1,0 +1,23 @@
+{
+  "sales-order/SalesOrder.jsx": "/sales-order",
+  "sales-quotation/SalesQuotation.jsx": "/sales-quotation",
+  "Delivery/Delivery.jsx": "/delivery",
+  "soda-delivery/Delivery.jsx": "/soda-delivery",
+  "dc-delivery/Delivery.jsx": "/dc-delivery",
+  "nc-delivery/Delivery.jsx": "/nc-delivery",
+  "soda-sales-order/SODASalesOrder.jsx": "/soda-sales-order",
+  "dc-sales-order/DCSalesOrder.jsx": "/dc-sales-order",
+  "nc-sales-order/NCSalesOrder.jsx": "/nc-sales-order",
+  "ar-invoice/ARInvoicePage.jsx": "/ar-invoice",
+  "ar-CreditMemo/ARCreditMemo.jsx": "/ar-credit-memo",
+  "APInvoice/APInvoice.jsx": "/ap-invoice",
+  "APCreditMemo/APCreditMemo.jsx": "/ap-credit-memo",
+  "purchase-order/PurchaseOrder.jsx": "/purchase-order",
+  "purchase-quatation/PurchaseQuatation.jsx": "/purchase-quotation",
+  "purchase-request/purchase-request.jsx": "/purchase-request",
+  "grpo/GoodsReceiptPO.jsx": "/grpo",
+  "services-ar-invoice/ServiceARInvoicePage.jsx": "/services/ar-invoice",
+  "services-ap-invoice/ServiceAPInvoicePage.jsx": "/services/ap-invoice",
+  "services-ar-credit-memo/ServiceARCreditMemoPage.jsx": "/services/ar-credit-memo",
+  "services-ap-credit-memo/ServiceAPCreditMemoPage.jsx": "/services/ap-credit-memo"
+}

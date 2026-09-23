@@ -12,7 +12,7 @@ function GLAccountLookupModal({
 }) {
   const [searchText, setSearchText] = useState("");
   const [draftCodes, setDraftCodes] = useState([]);
-  const windowFrame = useFloatingWindow({ isOpen, defaultTop: 54 });
+  const windowFrame = useFloatingWindow({ isOpen, defaultTop: 54, bounds: 'parent' });
 
   useEffect(() => {
     if (!isOpen) return;

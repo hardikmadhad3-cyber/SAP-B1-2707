@@ -19,6 +19,11 @@ const yesNo = (value) => {
   return ['y', 'yes', 'true', '1', 'tyes'].includes(normalized) ? 'tYES' : 'tNO';
 };
 
+const optionalDate = (value) => {
+  const normalized = optionalString(value);
+  return normalized ? normalized.split('T')[0] : undefined;
+};
+
 const buildStandardServiceLinePayload = (line = {}) => {
   const quantity = parseNumber(line.sQty, 0) > 0 ? parseNumber(line.sQty) : 1;
   const unitPrice = parseNumber(line.unitPrice, 0) > 0
@@ -35,6 +40,14 @@ const buildStandardServiceLinePayload = (line = {}) => {
     CostingCode: optionalString(line.distRule),
     WTLiable: yesNo(line.wtaxLiable),
   };
+
+  const requiredDate = optionalDate(line.requiredDate || line.RequiredDate || line.ReqDate);
+  if (requiredDate !== undefined) payload.RequiredDate = requiredDate;
+
+  const packageQuantity = optionalNumber(
+    line.noOfPackages ?? line.NoOfPackages ?? line.packageQuantity ?? line.PackageQuantity ?? line.PackQty
+  );
+  if (packageQuantity !== undefined) payload.PackageQuantity = packageQuantity;
 
   ['2', '3', '4', '5'].forEach((dimension) => {
     const value = optionalString(line[`distRule${dimension}`]);

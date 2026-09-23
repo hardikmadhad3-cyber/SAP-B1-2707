@@ -2569,6 +2569,10 @@ body > .so-exchange-rates-modal__overlay,
 }
 
 .so-sales-order-page .so-document-summary {
+  width: calc(100% - 24px);
+  position: relative;
+  z-index: 2;
+  isolation: isolate;
   overflow: visible;
   container-type: inline-size;
   margin-bottom: 12px;

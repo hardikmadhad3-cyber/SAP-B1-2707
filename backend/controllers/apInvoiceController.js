@@ -1,3 +1,6 @@
+const { getDocumentSeriesNumberPreview } = require('../services/documentSeriesNumberPreview');
+const { resolveMarketingDocumentSeries } = require('../services/documentSeriesDbUtils');
+const seriesDatabase = require('../services/dbService');
 const apInvoiceService = require('../services/apInvoiceService');
 
 const getErrorPayload = (error, fallbackMessage) => {
@@ -113,21 +116,20 @@ const updateAPInvoice = async (req, res) => {
 
 const getDocumentSeries = async (req, res) => {
   try {
-    res.json(await apInvoiceService.getDocumentSeries({
-      date: req.query.date || req.query.postingDate || null,
-      branch: req.query.branch || req.query.branchId || '',
-      transactionType: req.query.transactionType || '',
-    }));
+    const data = await resolveMarketingDocumentSeries({ db: seriesDatabase, objectCode: '18', targetDate: req.query.date, branch: req.query.branch || '', docSubType: req.query.docSubType, transactionType: req.query.transactionType });
+    res.json(data);
   } catch (error) {
-    res.status(500).json(getErrorPayload(error, 'Failed to load document series.'));
+    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
   }
 };
 
 const getNextNumber = async (req, res) => {
   try {
-    res.json(await apInvoiceService.getNextNumber(req.params.series));
+    res.json(await getDocumentSeriesNumberPreview({ db: seriesDatabase, objectCode: '18', seriesId: req.query.series ?? req.params.series,
+      targetDate: req.query.date || req.query.postingDate || req.query.targetDate, branch: req.query.branch || '',
+      docSubType: req.query.docSubType, transactionType: req.query.transactionType }));
   } catch (error) {
-    res.status(500).json(getErrorPayload(error, 'Failed to get next number.'));
+    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
   }
 };
 
@@ -144,6 +146,14 @@ const getOpenGRPO = async (req, res) => {
     res.json(await apInvoiceService.getOpenGRPO(req.query.vendorCode || req.query.vendor || null));
   } catch (error) {
     res.status(500).json(getErrorPayload(error, 'Failed to load open GRPOs.'));
+  }
+};
+
+const getPurchaseOrderForCopy = async (req, res) => {
+  try {
+    res.json(await apInvoiceService.getPurchaseOrderForCopy(req.params.docEntry));
+  } catch (error) {
+    res.status(500).json(getErrorPayload(error, 'Failed to load purchase order.'));
   }
 };
 
@@ -184,6 +194,7 @@ module.exports = {
   getStateFromWarehouse,
   getOpenGRPO,
   getGRPOForCopy,
+  getPurchaseOrderForCopy,
   getItemsForModal,
   getFreightCharges,
 };

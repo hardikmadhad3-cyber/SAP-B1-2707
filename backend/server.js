@@ -1,4 +1,4 @@
-require('dotenv').config();
+﻿require('dotenv').config();
 
 const express = require('express');
 const cors    = require('cors');
@@ -20,11 +20,11 @@ if (!env.verboseSapLogs) {
       'Available Sales Employees',
       'Reference data:',
       'response keys',
-      '════════',
-      '🔥',
-      '🔍',
-      '✅',
-      '⚠️',
+      'â•â•â•â•â•â•â•â•',
+      'ðŸ”¥',
+      'ðŸ”',
+      'âœ…',
+      'âš ï¸',
     ];
 
     if (noisyPatterns.some((pattern) => first.includes(pattern))) {
@@ -130,6 +130,12 @@ const generalSettingsRoutes      = require('./routes/generalSettingsRoutes');
 const predefinedTextRoutes       = require('./routes/predefinedTextRoutes');
 const relationshipMapRoutes      = require('./routes/relationshipMap');
 const sapDocumentLayoutRoutes    = require('./routes/sapDocumentLayout');
+const queryManagerRoutes         = require('./routes/queryManagerRoutes');
+const jobWorkRoutes              = require('./routes/jobWork');
+const gatePassRoutes             = require('./routes/gatePass');
+const qcRoutes                   = require('./routes/qcRoutes');
+const whatsappRoutes             = require('./routes/whatsappRoutes');
+const whatsappWebhookRoutes      = require('./routes/whatsappWebhookRoutes');
 
 const app = express();
 
@@ -174,34 +180,35 @@ const reusableLookupCache = cacheMiddleware({
   shouldCache: isReusableLookupRequest,
 });
 
-const isAllowedOrigin = (origin) => {
+const isAllowedOrigin = (origin, requestHost = '') => {
   if (!origin) return true;
-
-  // Explicitly listed origins from ALLOWED_ORIGINS env var take priority
-  if (env.allowedOrigins.includes(origin)) return true;
 
   try {
     const { protocol, hostname, port } = new URL(origin);
+    const originHost = `${hostname}${port ? `:${port}` : ''}`.toLowerCase();
+    const normalizedRequestHost = String(requestHost || '').trim().toLowerCase();
+
+    // The frontend served by this backend may be reached through a public IP
+    // address or DNS name forwarded by a router. That exact same-origin request
+    // is trusted without opening access to unrelated external websites.
+    if (normalizedRequestHost && originHost === normalizedRequestHost) return true;
+
+    // Explicitly listed origins from ALLOWED_ORIGINS take priority.
+    if (env.allowedOrigins.includes(origin)) return true;
+
     const allowedPorts = new Set(['3000', '3001', String(env.port)]);
-    if (protocol !== 'http:' || !allowedPorts.has(port)) {
-      return false;
-    }
+    if (protocol !== 'http:' || !allowedPorts.has(port)) return false;
 
     const isPrivateLanHost =
       /^192\.168\.\d{1,3}\.\d{1,3}$/.test(hostname) ||
       /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname) ||
       /^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(hostname);
 
-    return (
-      hostname === 'localhost' ||
-      hostname === '127.0.0.1' ||
-      isPrivateLanHost
-    );
+    return hostname === 'localhost' || hostname === '127.0.0.1' || isPrivateLanHost;
   } catch (_error) {
     return false;
   }
 };
-
 
 const redactSensitiveFields = (value) => {
   if (!value || typeof value !== 'object') return value;
@@ -230,17 +237,19 @@ process.on('uncaughtException', (error, origin) => {
   console.error(error?.stack || error?.message || error);
 });
 
-app.use(cors({
-  origin(origin, callback) {
-    if (isAllowedOrigin(origin)) {
-      callback(null, true);
-      return;
-    }
+app.use((req, res, next) => {
+  cors({
+    origin(origin, callback) {
+      if (isAllowedOrigin(origin, req.headers.host)) {
+        callback(null, true);
+        return;
+      }
 
-    callback(new Error('Not allowed by CORS'));
-  },
-  credentials: true,
-}));
+      callback(new Error('Not allowed by CORS'));
+    },
+    credentials: true,
+  })(req, res, next);
+});
 
 // Ensure Authorization header is allowed in CORS preflight responses
 // so frontend clients can send Bearer tokens from browsers.
@@ -248,9 +257,19 @@ app.use((req, res, next) => {
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
   next();
 });
-app.use(express.json());
-app.use(apiTimingMiddleware);
+app.use(express.json({
+  verify(req, _res, buffer) {
+    const requestPath = String(req.originalUrl || '').split('?')[0];
+    if (requestPath === '/api/whatsapp/webhook') {
+      req.rawBody = Buffer.from(buffer);
+    }
+  },
+}));
 app.use((req, res, next) => runWithRequestContext(req, next));
+// Meta calls this exact endpoint without an application access token. POST payloads
+// are accepted only when their HMAC signature matches WHATSAPP_APP_SECRET.
+app.use('/api/whatsapp', apiRateLimitMiddleware, whatsappWebhookRoutes);
+app.use(apiTimingMiddleware);
 
 // Request logging middleware
 app.use((req, res, next) => {
@@ -379,6 +398,11 @@ app.use('/api/general-settings',   generalSettingsRoutes);
 app.use('/api/predefined-texts',   predefinedTextRoutes);
 app.use('/api/relationship-map',   relationshipMapRoutes);
 app.use('/api/sap/layout',         sapDocumentLayoutRoutes);
+app.use('/api/query-manager',      queryManagerRoutes);
+app.use('/api/job-work',           jobWorkRoutes);
+app.use('/api/gate-pass',          gatePassRoutes);
+app.use('/api/qc',                 qcRoutes);
+app.use('/api/whatsapp',           whatsappRoutes);
 app.use('/api',                    sapRoutes);
 
 // Health check
@@ -390,7 +414,7 @@ app.get('/health', (_req, res) =>
     port: env.port,
   }));
 
-// SAP connection debug — remove in production
+// SAP connection debug â€” remove in production
 app.get('/api/debug/production-orders', async (_req, res) => {
   try {
     const sapService = require('./services/sapService');

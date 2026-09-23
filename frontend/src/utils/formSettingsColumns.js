@@ -35,12 +35,33 @@ const normalizeIdentity = (value) => String(value || '')
   .toUpperCase()
   .replace(/[^A-Z0-9#]/g, '');
 
+// SAP renders the row number as a read-only, mandatory first column. It is
+// part of the matrix layout (so it can be carried through company settings),
+// but users must never be able to hide or move it behind data columns.
+export const isLineNumberMatrixField = (field = {}) => {
+  const identities = [field.key, field.valueKey, field.fieldName, field.rendererKey, field.label]
+    .map(normalizeIdentity)
+    .filter(Boolean);
+  return identities.includes('#')
+    || identities.includes('LINENUMBER')
+    || identities.includes('LINENUM')
+    || identities.includes('ROWNUMBER')
+    || identities.includes('__LINENUMBER');
+};
+
 const toFiniteOrder = (value) => {
   const order = Number(value);
   return Number.isFinite(order) && order >= 0 ? order : null;
 };
 
+// Grids re-sort the resolved columns by `columnOrder`, so the row number needs a
+// resolved order that is lower than every configurable column. Otherwise an
+// imported layout that stores `#` in the middle drags it back out of position
+// one after this helper has already pinned it to the front of the array.
+const LINE_NUMBER_COLUMN_ORDER = -1;
+
 export const isStructuralMatrixField = (field = {}) => {
+  if (isLineNumberMatrixField(field)) return false;
   if (field.structural === true || field.configurable === false) return true;
   const identities = [field.key, field.valueKey, field.fieldName, field.rendererKey]
     .map(normalizeIdentity)
@@ -49,6 +70,8 @@ export const isStructuralMatrixField = (field = {}) => {
 };
 
 export const isRequiredVisibleMatrixField = (field = {}, setting = {}) => {
+  if (isLineNumberMatrixField(field)) return true;
+  if (setting?.companyQueryLayout === true && hasOwn(setting, 'visible')) return false;
   if (
     field.requiredVisible === true
     || field.visibilityLocked === true
@@ -97,13 +120,21 @@ export const getOrderedVisibleMatrixColumns = (
   .filter(Boolean)
   .filter((entry) => includeStructural || !isStructuralMatrixField(entry.column))
   .filter((entry) => includeHidden || entry.visible)
-  .sort((left, right) => left.order - right.order || left.sourceIndex - right.sourceIndex)
-  .map((entry) => ({
-    ...entry.column,
-    visible: entry.visible,
-    order: entry.order,
-    columnOrder: entry.order,
-  }));
+  .sort((left, right) => {
+    const leftIsLineNumber = isLineNumberMatrixField(left.column);
+    const rightIsLineNumber = isLineNumberMatrixField(right.column);
+    if (leftIsLineNumber !== rightIsLineNumber) return leftIsLineNumber ? -1 : 1;
+    return left.order - right.order || left.sourceIndex - right.sourceIndex;
+  })
+  .map((entry) => {
+    const order = isLineNumberMatrixField(entry.column) ? LINE_NUMBER_COLUMN_ORDER : entry.order;
+    return {
+      ...entry.column,
+      visible: entry.visible,
+      order,
+      columnOrder: order,
+    };
+  });
 
 /**
  * Applies a single normalized order across standard matrix fields and row UDFs.
@@ -118,7 +149,16 @@ export const reorderFormSettingPreferences = (
   let changed = false;
   const nextSettings = { ...settings };
 
-  orderedFields.forEach((field, index) => {
+  // Keep SAP's mandatory row number at position one even when an imported
+  // layout or a drag/drop event supplied a different order.
+  const lineNumberFieldIndex = orderedFields.findIndex((field) => (
+    isLineNumberMatrixField(typeof field === 'string' ? { key: field } : field)
+  ));
+  const normalizedOrderedFields = lineNumberFieldIndex > 0
+    ? [orderedFields[lineNumberFieldIndex], ...orderedFields.filter((_field, index) => index !== lineNumberFieldIndex)]
+    : orderedFields;
+
+  normalizedOrderedFields.forEach((field, index) => {
     const key = typeof field === 'string' ? field : field?.key;
     const preferredGroup = typeof field === 'object' ? field?.settingsGroup : '';
     const groupKey = preferredGroup && isRecord(settings[preferredGroup]) && hasOwn(settings[preferredGroup], key)

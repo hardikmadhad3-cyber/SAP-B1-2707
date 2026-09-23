@@ -1,3 +1,4 @@
+const { reportTableExists, getReportTableColumns } = require('../reportMetadataService');
 const db = require("../../db/odbc");
 
 const DOCUMENT_CONFIG = {
@@ -34,8 +35,8 @@ const CREDIT_MEMO_CONFIG = {
   titleLabel: "A/P Credit Memo",
 };
 
-const tableColumnsCache = new Map();
-const tableExistsCache = new Map();
+
+
 
 const queryRows = async (sql, params = {}) => {
   const result = await db.query(sql, params);
@@ -76,42 +77,9 @@ const getPeriodKey = (dateValue, reportPeriod) => formatPeriodLabel(dateValue, r
 
 const buildLike = (value) => `%${normalizeText(value)}%`;
 
-const getTableExists = async (tableName) => {
-  const normalized = normalizeText(tableName).toUpperCase();
-  if (!normalized) return false;
-  if (tableExistsCache.has(normalized)) return tableExistsCache.get(normalized);
+const getTableExists = reportTableExists;
 
-  const rows = await queryRows(
-    `
-      SELECT 1 AS present
-      FROM INFORMATION_SCHEMA.TABLES
-      WHERE TABLE_NAME = @tableName
-    `,
-    { tableName: normalized }
-  );
-  const exists = rows.length > 0;
-  tableExistsCache.set(normalized, exists);
-  return exists;
-};
-
-const getTableColumns = async (tableName) => {
-  const normalized = normalizeText(tableName).toUpperCase();
-  if (!normalized) return new Set();
-  if (tableColumnsCache.has(normalized)) return tableColumnsCache.get(normalized);
-
-  const rows = await queryRows(
-    `
-      SELECT COLUMN_NAME
-      FROM INFORMATION_SCHEMA.COLUMNS
-      WHERE TABLE_NAME = @tableName
-    `,
-    { tableName: normalized }
-  );
-
-  const columns = new Set(rows.map((row) => String(row.COLUMN_NAME || "").toUpperCase()));
-  tableColumnsCache.set(normalized, columns);
-  return columns;
-};
+const getTableColumns = getReportTableColumns;
 
 const hasColumn = async (tableName, columnName) => {
   const columns = await getTableColumns(tableName);

@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS Companies (
   DbName TEXT NOT NULL,
   DbUser TEXT NULL,
   DbPassword TEXT NULL,
+  FormQueryDbUser TEXT NULL,
+  FormQueryDbPassword TEXT NULL,
   ServerName TEXT NULL,
   LicenseServer TEXT NULL,
   SAPVersion TEXT NULL,
@@ -151,6 +153,40 @@ CREATE TABLE IF NOT EXISTS ReportParameters (
   FOREIGN KEY (ReportId) REFERENCES Reports(ReportId)
 );
 
+CREATE TABLE IF NOT EXISTS SavedQueryFolders (
+  FolderId INTEGER PRIMARY KEY AUTOINCREMENT,
+  FolderName TEXT NOT NULL,
+  ParentId INTEGER NULL,
+  Icon TEXT NULL,
+  SortOrder INTEGER NOT NULL DEFAULT 0,
+  CompanyId INTEGER NOT NULL,
+  CreatedBy INTEGER NOT NULL,
+  CreatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UpdatedAt TEXT NULL,
+  FOREIGN KEY (ParentId) REFERENCES SavedQueryFolders(FolderId),
+  FOREIGN KEY (CompanyId) REFERENCES Companies(CompanyId),
+  FOREIGN KEY (CreatedBy) REFERENCES Users(UserId)
+);
+
+CREATE TABLE IF NOT EXISTS SavedQueries (
+  QueryId INTEGER PRIMARY KEY AUTOINCREMENT,
+  QueryName TEXT NOT NULL,
+  FolderId INTEGER NULL,
+  SqlText TEXT NOT NULL,
+  RowLimit INTEGER NOT NULL DEFAULT 500,
+  Description TEXT NULL,
+  Dialect TEXT NOT NULL DEFAULT 'sqlserver',
+  IsActive INTEGER NOT NULL DEFAULT 1,
+  CompanyId INTEGER NOT NULL,
+  CreatedBy INTEGER NOT NULL,
+  CreatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UpdatedAt TEXT NULL,
+  LastRunAt TEXT NULL,
+  FOREIGN KEY (FolderId) REFERENCES SavedQueryFolders(FolderId),
+  FOREIGN KEY (CompanyId) REFERENCES Companies(CompanyId),
+  FOREIGN KEY (CreatedBy) REFERENCES Users(UserId)
+);
+
 CREATE TABLE IF NOT EXISTS UserFormSettings (
   FormSettingId INTEGER PRIMARY KEY AUTOINCREMENT,
   UserId INTEGER NOT NULL,
@@ -160,6 +196,36 @@ CREATE TABLE IF NOT EXISTS UserFormSettings (
   CreatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UpdatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE (UserId, CompanyId, FormKey)
+);
+
+CREATE TABLE IF NOT EXISTS CompanyFormSettings (
+  CompanyFormSettingId INTEGER PRIMARY KEY AUTOINCREMENT,
+  CompanyId INTEGER NOT NULL,
+  FormKey TEXT NOT NULL,
+  SettingsJson TEXT NOT NULL,
+  CreatedByUserId INTEGER NULL,
+  CreatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UpdatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (CompanyId) REFERENCES Companies(CompanyId),
+  FOREIGN KEY (CreatedByUserId) REFERENCES Users(UserId),
+  UNIQUE (CompanyId, FormKey)
+);
+
+CREATE TABLE IF NOT EXISTS CompanyFormQueryLayouts (
+  CompanyFormQueryLayoutId INTEGER PRIMARY KEY AUTOINCREMENT,
+  CompanyId INTEGER NOT NULL,
+  FormKey TEXT NOT NULL,
+  QueryText TEXT NOT NULL,
+  ColumnsJson TEXT NOT NULL DEFAULT '[]',
+  IsPublished INTEGER NOT NULL DEFAULT 0,
+  Version INTEGER NOT NULL DEFAULT 1,
+  PublishedByUserId INTEGER NULL,
+  PublishedAt TEXT NULL,
+  CreatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UpdatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (CompanyId) REFERENCES Companies(CompanyId),
+  FOREIGN KEY (PublishedByUserId) REFERENCES Users(UserId),
+  UNIQUE (CompanyId, FormKey)
 );
 
 CREATE TABLE IF NOT EXISTS UserGeneralSettings (
@@ -203,6 +269,7 @@ CREATE TABLE IF NOT EXISTS SalesDocumentFieldLookupConfigurations (
 
 CREATE TABLE IF NOT EXISTS sap_form_layout_columns (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  CompanyId INTEGER NULL,
   companyDb TEXT NOT NULL,
   userCode TEXT NOT NULL,
   documentType TEXT NOT NULL,
@@ -277,6 +344,10 @@ CREATE TABLE IF NOT EXISTS ReportLayoutVersions (
   FOREIGN KEY (LayoutID) REFERENCES ReportLayouts(LayoutID)
 );
 
+CREATE INDEX IF NOT EXISTS IX_SavedQueryFolders_CompanyOwner
+  ON SavedQueryFolders (CompanyId, CreatedBy, ParentId, SortOrder, FolderName);
+CREATE INDEX IF NOT EXISTS IX_SavedQueries_CompanyFolder
+  ON SavedQueries (CompanyId, FolderId, IsActive, QueryName);
 CREATE INDEX IF NOT EXISTS IX_RLME_Category
   ON ReportLayoutMenuEntries (MenuCategory, MenuName, ReportCode);
 CREATE INDEX IF NOT EXISTS IX_ReportLayouts_MenuEntry
@@ -289,8 +360,6 @@ CREATE INDEX IF NOT EXISTS IX_ReportParameters_Report
   ON ReportParameters (ReportId, SortOrder, ParamId);
 CREATE INDEX IF NOT EXISTS IX_Reports_CompanyOwner
   ON Reports (CompanyId, CreatedBy, IsPublic, ReportMenuId, ReportName);
-CREATE UNIQUE INDEX IF NOT EXISTS UX_sap_form_layout_columns_scope
-  ON sap_form_layout_columns (companyDb, userCode, documentType, formType, matrixId, columnUid);
 CREATE INDEX IF NOT EXISTS IX_sap_form_layout_columns_lookup
   ON sap_form_layout_columns (companyDb, userCode, documentType, formType, matrixId, columnOrder, id);
 CREATE INDEX IF NOT EXISTS IX_sap_form_layout_sync_runs_lookup

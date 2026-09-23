@@ -1,4 +1,5 @@
 const db = require('./dbService');
+const { createTableColumnDetailsReader } = require('./salesDocumentDbCompatibility');
 const apInvoiceDb = require('./apInvoiceDbService');
 const masterDataDbService = require('./masterDataDbService');
 const hsnCodeDbService = require('./hsnCodeDbService');
@@ -15,15 +16,13 @@ const safe = async (promise) => {
   }
 };
 
+const readTableColumnDetails = createTableColumnDetailsReader({ database: db });
+
 const getTableColumns = async (tableName) => {
-  const rows = await safe(db.query(`
-    SELECT COLUMN_NAME
-    FROM INFORMATION_SCHEMA.COLUMNS
-    WHERE TABLE_NAME = @tableName
-  `, { tableName }));
+  const rows = await readTableColumnDetails(tableName);
 
   return new Map(rows
-    .map((row) => String(row.COLUMN_NAME || '').trim())
+    .map((row) => String(row.columnName || '').trim())
     .filter(Boolean)
     .map((columnName) => [columnName.toUpperCase(), columnName]));
 };
@@ -477,7 +476,8 @@ const getServiceAPInvoice = async (docEntry) => {
       T0.VatSum,
       T0.DocTotal,
       ${optionalColumn(headerColumns, 'T0', 'DiscSum', 'DiscSum', '0')},
-      ${optionalColumn(headerColumns, 'T0', 'RoundDif', 'RoundDif', '0')},
+      ${optionalColumn(headerColumns, 'T0', 'RoundDif', 'RoundDif', 'NULL')},
+      ${optionalColumn(headerColumns, 'T0', 'Rounding', 'Rounding', 'NULL')},
       ${optionalColumn(headerColumns, 'T0', 'WTSum', 'WTSum', '0')},
       ${optionalColumn(headerColumns, 'T0', 'PaidToDate', 'PaidToDate', '0')},
       ${optionalColumn(headerColumns, 'T0', 'DpmAmnt', 'DpmAmnt', '0')},
@@ -526,6 +526,8 @@ const getServiceAPInvoice = async (docEntry) => {
       ${optionalColumn(pch1Columns, 'T0', 'PriceBefDi', 'PriceBeforeDiscount', 'NULL')},
       NULL AS WTLiable,
       T0.Quantity,
+      ${optionalColumn(pch1Columns, 'T0', 'ReqDate', 'RequiredDate')},
+      ${optionalColumn(pch1Columns, 'T0', 'PackQty', 'PackageQuantity', '0')},
       T0.BaseEntry,
       T0.BaseType,
       T0.BaseLine,
@@ -552,6 +554,8 @@ const getServiceAPInvoice = async (docEntry) => {
       NULL AS PriceBeforeDiscount,
       NULL AS WTLiable,
       T0.Quantity,
+      NULL AS RequiredDate,
+      0 AS PackageQuantity,
       T0.BaseEntry,
       T0.BaseType,
       T0.BaseLine,
@@ -592,7 +596,8 @@ const getServiceAPInvoice = async (docEntry) => {
     - totalBeforeDiscount
     - Number(header.TotalExpns || 0)
     - Number(header.VatSum || 0);
-  const roundingAmount = Number(header.RoundDif || 0) || (Math.abs(derivedRounding) <= 1 ? derivedRounding : 0);
+  const roundingAmount = header.RoundDif != null && header.RoundDif !== ''
+    ? Number(header.RoundDif) : (Math.abs(derivedRounding) <= 1 ? derivedRounding : 0);
 
   return {
     service_ap_invoice: {
@@ -626,6 +631,8 @@ const getServiceAPInvoice = async (docEntry) => {
         freight: header.TotalExpns != null ? String(header.TotalExpns) : '',
         tax: header.VatSum != null ? String(header.VatSum) : '',
         roundingAmount: String(roundingAmount),
+        rounding: header.Rounding != null
+          ? ['Y', 'TYES'].includes(String(header.Rounding).toUpperCase()) : roundingAmount !== 0,
         wtaxAmount: header.WTSum != null ? String(header.WTSum) : '',
         appliedAmount: header.PaidToDate != null ? String(header.PaidToDate) : '',
         totalDownPayment: header.DpmAmnt != null ? String(header.DpmAmnt) : '',
@@ -652,6 +659,8 @@ const getServiceAPInvoice = async (docEntry) => {
           glAccount: line.AcctCode || '',
           glAccountName: line.AcctName || '',
           distRule: line.OcrCode || '',
+          requiredDate: formatDate(line.RequiredDate),
+          noOfPackages: line.PackageQuantity != null ? String(line.PackageQuantity) : '',
           taxCode: line.TaxCode || '',
           wtaxLiable: line.WTLiable != null
             ? (String(line.WTLiable).toUpperCase() === 'Y' ? 'Yes' : 'No')
@@ -721,6 +730,8 @@ const getServiceDocumentForCopy = async ({ headerTable, lineTable, docEntry, bas
         ELSE T0.Quantity
       END AS Quantity,
       T0.OpenQty,
+      ${optionalColumn(lineColumns, 'T0', 'ReqDate', 'RequiredDate')},
+      ${optionalColumn(lineColumns, 'T0', 'PackQty', 'PackageQuantity', '0')},
       T0.Price AS UnitPrice,
       T0.TaxCode,
       T0.OcrCode AS DistributionRule,
@@ -752,6 +763,8 @@ const getServiceDocumentForCopy = async ({ headerTable, lineTable, docEntry, bas
         ELSE T0.Quantity
       END AS Quantity,
       T0.OpenQty,
+      NULL AS RequiredDate,
+      0 AS PackageQuantity,
       T0.Price AS UnitPrice,
       T0.TaxCode,
       T0.OcrCode AS DistributionRule,
@@ -796,128 +809,7 @@ const getServiceDocumentForCopy = async ({ headerTable, lineTable, docEntry, bas
   };
 };
 
-const getServiceAPDocumentSeries = async (options = {}) => {
-  const date = typeof options === 'string' ? options : options.date;
-  const branch = typeof options === 'object' && options ? options.branch : '';
-  const transactionType = typeof options === 'object' && options ? options.transactionType : '';
-  const targetDate = date || new Date().toISOString().split('T')[0];
-  const [seriesColumns, numberingColumns] = await Promise.all([
-    getTableColumns('NNM1'),
-    getTableColumns('ONNM'),
-  ]);
-  const branchColumn = getColumnName(seriesColumns, 'BPLId');
-  const docSubTypeColumn = getColumnName(seriesColumns, 'DocSubType');
-  const defaultSeriesColumn = getColumnName(numberingColumns, 'DfltSeries')
-    || getColumnName(numberingColumns, 'DfltSerie');
-  const branchId = Number(branch);
-  const useBranch = Boolean(branchColumn && Number.isFinite(branchId) && String(branch || '').trim());
-  const params = {
-    ...(useBranch ? { targetDate, branchId } : { targetDate }),
-  };
-  const branchFilter = useBranch
-    ? `AND (T0.${branchColumn} IS NULL OR T0.${branchColumn} IN (-1, 0, @branchId))`
-    : '';
-  const subTypeFilter = '';
-  const defaultSeriesJoin = defaultSeriesColumn
-    ? `LEFT JOIN ONNM DEF ON DEF.ObjectCode = T0.ObjectCode AND DEF.${defaultSeriesColumn} = T0.Series`
-    : '';
-  const defaultSeriesSelect = defaultSeriesColumn
-    ? `CASE WHEN DEF.${defaultSeriesColumn} IS NOT NULL THEN 1 ELSE 0 END`
-    : '0';
-  const seriesSelect = `
-      T0.Series,
-      T0.SeriesName,
-      T0.Indicator,
-      T0.NextNumber,
-      ${optionalColumn(seriesColumns, 'T0', 'BeginStr', 'BeginStr', "''")},
-      ${optionalColumn(seriesColumns, 'T0', 'EndStr', 'EndStr', "''")},
-      ${optionalColumn(seriesColumns, 'T0', 'DocSubType', 'DocSubType', "''")},
-      ${optionalColumn(seriesColumns, 'T0', 'BPLId', 'BPLId', 'NULL')},
-      ${defaultSeriesSelect} AS IsDefault`;
-
-  const rows = await safe(db.query(`
-    SELECT
-      ${seriesSelect},
-      FY.Name AS FinancialYear,
-      FY.F_RefDate AS FromDate,
-      FY.T_RefDate AS ToDate
-    FROM NNM1 T0
-    INNER JOIN OFPR FY
-      ON FY.Indicator = T0.Indicator
-    ${defaultSeriesJoin}
-    WHERE T0.ObjectCode = '18'
-      AND COALESCE(T0.Locked, 'N') <> 'Y'
-      AND CAST(@targetDate AS date) BETWEEN FY.F_RefDate AND FY.T_RefDate
-      ${branchFilter}
-      ${subTypeFilter}
-    ORDER BY IsDefault DESC, T0.SeriesName, T0.Series
-  `, params));
-
-  const orderedRows = [...rows].sort((left, right) => {
-    const leftBranchMatch = useBranch && Number(left.BPLId) === branchId ? 0 : 1;
-    const rightBranchMatch = useBranch && Number(right.BPLId) === branchId ? 0 : 1;
-    return leftBranchMatch - rightBranchMatch ||
-      Number(right.IsDefault || 0) - Number(left.IsDefault || 0) ||
-      Number(left.Series || 0) - Number(right.Series || 0);
-  });
-
-  const mappedSeries = dedupeNumberingSeries(orderedRows.map((row) => ({
-    Series: row.Series,
-    SeriesName: row.SeriesName || '',
-    DisplayName: row.SeriesName || '',
-    RawSeriesName: row.SeriesName || '',
-    BeginStr: row.BeginStr || '',
-    EndStr: row.EndStr || '',
-    NextNumber: row.NextNumber,
-    Indicator: row.Indicator || '',
-    DocSubType: row.DocSubType || '',
-    BPLId: row.BPLId != null ? String(row.BPLId) : '',
-    IsDefault: Number(row.IsDefault || 0) === 1,
-    FinancialYear: row.FinancialYear || '',
-    FromDate: row.FromDate || null,
-    ToDate: row.ToDate || null,
-  })));
-  const parsedTargetDate = new Date(`${String(targetDate).split('T')[0]}T00:00:00Z`);
-  const startYear = parsedTargetDate.getUTCMonth() >= 3
-    ? parsedTargetDate.getUTCFullYear()
-    : parsedTargetDate.getUTCFullYear() - 1;
-  const endYear = startYear + 1;
-  const yearTokens = [
-    `${String(startYear).slice(-2)}${String(endYear).slice(-2)}`,
-    `${startYear}${String(endYear).slice(-2)}`,
-    `${startYear}${endYear}`,
-  ];
-  const yearNamedSeries = mappedSeries.filter((row) => {
-    const name = `${row.SeriesName || ''} ${row.Indicator || ''}`.toUpperCase().replace(/[^A-Z0-9]/g, '');
-    return yearTokens.some((token) => name.includes(token));
-  });
-  const hasFinancialYearNamedSeries = mappedSeries.some((row) => {
-    return [row.SeriesName, row.Indicator].some((value) => {
-      const match = String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '').match(/(\d{2})(\d{2})$/);
-      return match && Number(match[2]) === (Number(match[1]) + 1) % 100;
-    });
-  });
-
-  const parsedTargetTime = parsedTargetDate.getTime();
-  const dateMatchedSeries = mappedSeries.filter((row) => {
-    const fromDate = row.FromDate ? new Date(row.FromDate).getTime() : NaN;
-    const toDate = row.ToDate ? new Date(row.ToDate).getTime() : NaN;
-    return Number.isFinite(parsedTargetTime) &&
-      Number.isFinite(fromDate) &&
-      Number.isFinite(toDate) &&
-      parsedTargetTime >= fromDate &&
-      parsedTargetTime <= toDate;
-  });
-  const effectiveSeries = dateMatchedSeries.length
-    ? dateMatchedSeries
-    : (yearNamedSeries.length ? yearNamedSeries : (hasFinancialYearNamedSeries ? [] : mappedSeries));
-  const transactionMatchedSeries = filterSeriesByTransactionType(effectiveSeries, transactionType);
-  return {
-    series: String(transactionType || '').trim()
-      ? selectSapEligibleSeries(transactionMatchedSeries, date)
-      : selectSapEligibleSeries(effectiveSeries, date),
-  };
-};
+const getServiceAPDocumentSeries = async (options = {}) => apInvoiceDb.getDocumentSeries(typeof options === 'string' ? { date: options } : options);
 
 const getVendorDetails = async (vendorCode) => {
   const [details, vendorRows] = await Promise.all([

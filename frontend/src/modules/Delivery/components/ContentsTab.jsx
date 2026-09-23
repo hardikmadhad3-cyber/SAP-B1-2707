@@ -1,4 +1,5 @@
 import React from 'react';
+import { isBaseDocumentLine } from '../../../utils/documentUom';
 import DocumentLineSettingsLoading from '../../../components/sales-document/DocumentLineSettingsLoading';
 import TaxCodeLookup from '../../../components/TaxCodeLookup';
 import LineValueLookupModal from '../../../components/sales-document/LineValueLookupModal';
@@ -8,6 +9,7 @@ import { getSapStandardSalesMatrixColumns } from '../../sales-order/documentLayo
 import { normalizeDeliveryMatrixColumn } from '../deliveryLiveMatrix';
 import { getReadableDocumentLineColumnWidth } from '../../../utils/documentLineColumnWidth';
 import { getOrderedVisibleMatrixColumns } from '../../../utils/formSettingsColumns';
+import useDocumentTableClipboard from '../../../components/sales-document/useDocumentTableClipboard';
 
 const LINE_NUMBER_COLUMN_KEY = '__lineNumber';
 const INDEX_COLUMN_WIDTH = 42;
@@ -137,6 +139,9 @@ function ReadyContentsTab({
   onRowUdfChange,
   onLoadLookupOptions,
   currency = '',
+  canPasteTable = false,
+  onPasteTable,
+  onClipboardFeedback,
 }) {
   const sapItemTab = useSapItemCodeTab({ lineItemOptions, onLineChange, onOpenItemModal });
   const [dynamicLookup, setDynamicLookup] = React.useState({
@@ -158,8 +163,44 @@ function ReadyContentsTab({
   const validMatrixFields = hasExplicitMatrixFields ? matrixFields.filter((field) => field && field.key) : [];
   const safeRowUdfFields = Array.isArray(rowUdfFields) ? rowUdfFields.filter((field) => field && field.key) : [];
   const configuredMatrixFields = hasExplicitMatrixFields ? validMatrixFields : MATRIX_COLS;
-  const sourceMatrixFields = configuredMatrixFields.some((field) => field?.key === LINE_NUMBER_COLUMN_KEY)
-    ? configuredMatrixFields
+  const shouldForceBinAllocationColumn = configuredMatrixFields.length > 0 || formSettings?.__companyQueryLayout?.isPublished;
+  const configuredWithRequiredDeliveryColumns = shouldForceBinAllocationColumn
+    && !configuredMatrixFields.some((field) => field?.key === 'binLocationAllocation')
+    ? [
+        ...configuredMatrixFields,
+        {
+          key: 'binLocationAllocation',
+          valueKey: 'binLocationAllocation',
+          rendererKey: 'binLocationAllocation',
+          fieldName: 'BinLocationAllocation',
+          label: 'Bin Location Allocation',
+          visible: true,
+          active: false,
+          readOnly: true,
+          minWidth: 160,
+          width: 160,
+          order: Number.MAX_SAFE_INTEGER - 10,
+          columnOrder: Number.MAX_SAFE_INTEGER - 10,
+          sapControlled: true,
+          requiredVisible: true,
+        },
+      ]
+    : configuredMatrixFields;
+  const effectiveFormSettings = {
+    ...(formSettings || {}),
+    matrixColumns: {
+      ...(formSettings?.matrixColumns || {}),
+      binLocationAllocation: {
+        ...(formSettings?.matrixColumns?.binLocationAllocation || {}),
+        visible: true,
+        active: false,
+        requiredVisible: true,
+        visibilityLocked: true,
+      },
+    },
+  };
+  const sourceMatrixFields = configuredWithRequiredDeliveryColumns.some((field) => field?.key === LINE_NUMBER_COLUMN_KEY)
+    ? configuredWithRequiredDeliveryColumns
     : [{
         key: LINE_NUMBER_COLUMN_KEY,
         valueKey: LINE_NUMBER_COLUMN_KEY,
@@ -173,7 +214,7 @@ function ReadyContentsTab({
         width: INDEX_COLUMN_WIDTH,
         order: -10000,
         sapControlled: true,
-      }, ...configuredMatrixFields];
+      }, ...configuredWithRequiredDeliveryColumns];
   const usesMetadataDrivenMatrix = hasExplicitMatrixFields
     || sourceMatrixFields.some((field) => field?.sapControlled || field?.importedLayout);
   const rowUdfByKey = new Map(safeRowUdfFields.map((field) => [field.key, field]));
@@ -188,10 +229,10 @@ function ReadyContentsTab({
     visible: column.visible !== false,
     active: column.active !== false,
     ...(
-      formSettings.matrixColumns?.[column.key]
-      || formSettings.matrixColumns?.[column.valueKey]
+      effectiveFormSettings.matrixColumns?.[column.key]
+      || effectiveFormSettings.matrixColumns?.[column.valueKey]
       || (isUdfMatrixColumn(column)
-        ? formSettings.rowUdfs?.[column.key] || formSettings.rowUdfs?.[column.valueKey]
+        ? effectiveFormSettings.rowUdfs?.[column.key] || effectiveFormSettings.rowUdfs?.[column.valueKey]
         : undefined)
       || {}
     ),
@@ -230,9 +271,28 @@ function ReadyContentsTab({
 
   const visibleColumns = getOrderedVisibleMatrixColumns(
     dedupeColumns(matrixColumns),
-    formSettings,
+    effectiveFormSettings,
     { includeStructural: true },
   );
+  const clipboardColumns = React.useMemo(() => visibleColumns
+    .filter((column) => String(column.key) !== LINE_NUMBER_COLUMN_KEY)
+    .map((column) => {
+      const setting = getMatrixColumnSetting(column);
+      return {
+        key: column.valueKey || column.rendererKey || column.key,
+        label: column.label || column.key,
+        isUdf: isUdfMatrixColumn(column),
+        readOnly: Boolean(column.readOnly || setting.active === false),
+      };
+    }), [visibleColumns, formSettings]);
+  const { tableClipboardProps, tableClipboardUi } = useDocumentTableClipboard({
+    columns: clipboardColumns,
+    rows: lines,
+    columnOffset: 1,
+    canPaste: canPasteTable,
+    onPaste: onPasteTable,
+    onFeedback: onClipboardFeedback,
+  });
   // Ensure actions column is always present as the trailing column
   const visibleColumnsWithActions = [
     ...visibleColumns,
@@ -665,6 +725,7 @@ function ReadyContentsTab({
             name="uomCode"
             value={line.uomCode || ''}
             onChange={(e) => onLineChange(i, e)}
+            disabled={isBaseDocumentLine(line) || Number(line.uomEntry) < 0 || String(line.uomCode || '').toUpperCase() === 'MANUAL'}
           >
             <option value=""></option>
             {uomOpts.map((uom) => (
@@ -685,6 +746,7 @@ function ReadyContentsTab({
             name="uomName"
             value={line.uomNameEdited ? (line.uomName ?? '') : (line.uomName || line.uomCode || '')}
             onChange={(e) => onLineChange(i, e)}
+            disabled={isBaseDocumentLine(line) || !(Number(line.uomEntry) < 0 || String(line.uomCode || '').toUpperCase() === 'MANUAL')}
           />
         </td>
       ),
@@ -1273,6 +1335,7 @@ function ReadyContentsTab({
           }}
         >
           <table
+            {...tableClipboardProps}
             className="del-grid del-grid--contents"
             style={{
               width: tableWidth,
@@ -1335,6 +1398,7 @@ function ReadyContentsTab({
               })}
             </tbody>
           </table>
+          {tableClipboardUi}
         </div>
       </div>
     </div>

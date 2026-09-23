@@ -1,4 +1,5 @@
 const PDF_DATA_PREFIX = 'data:application/pdf;base64,';
+export const PDF_SAVE_PICKER_ID = 'sap-b1-document-print';
 
 const escapeHtml = (value) =>
   String(value || '')
@@ -113,12 +114,65 @@ export const openPdfBlobInNewTab = (blob, previewWindow = null, options = {}) =>
   return objectUrl;
 };
 
-export const downloadPdfBlob = (blob, fileName = 'document.pdf') => {
+const normalizePdfFileName = (fileName = 'document.pdf') => {
+  const safeName = String(fileName || 'document.pdf')
+    .trim()
+    .replace(/[<>:"/\\|?*]/g, '_')
+    .replace(/[. ]+$/g, '');
+  return /\.pdf$/i.test(safeName) ? safeName : `${safeName || 'document'}.pdf`;
+};
+
+export const choosePdfSaveTarget = async (fileName = 'document.pdf') => {
+  const suggestedName = normalizePdfFileName(fileName);
+
+  if (typeof window.showSaveFilePicker !== 'function') {
+    return { kind: 'browser-download', fileName: suggestedName };
+  }
+
+  try {
+    const fileHandle = await window.showSaveFilePicker({
+      id: PDF_SAVE_PICKER_ID,
+      suggestedName,
+      types: [{
+        description: 'PDF document',
+        accept: { 'application/pdf': ['.pdf'] },
+      }],
+      excludeAcceptAllOption: false,
+    });
+    return {
+      kind: 'file-system',
+      fileHandle,
+      fileName: fileHandle?.name || suggestedName,
+    };
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      return { kind: 'cancelled', cancelled: true, fileName: suggestedName };
+    }
+    throw error;
+  }
+};
+
+export const savePdfBlobToTarget = async (blob, fileName = 'document.pdf', target = null) => {
+  const saveTarget = target || await choosePdfSaveTarget(fileName);
+  if (saveTarget?.cancelled || saveTarget?.kind === 'cancelled') {
+    return { saved: false, cancelled: true, fileName: saveTarget?.fileName || normalizePdfFileName(fileName) };
+  }
+
+  if (saveTarget?.kind === 'file-system' && saveTarget.fileHandle) {
+    const writable = await saveTarget.fileHandle.createWritable();
+    try {
+      await writable.write(blob);
+    } finally {
+      await writable.close();
+    }
+    return { saved: true, cancelled: false, fileName: saveTarget.fileName || normalizePdfFileName(fileName) };
+  }
+
   const objectUrl = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
 
   anchor.href = objectUrl;
-  anchor.download = fileName;
+  anchor.download = saveTarget?.fileName || normalizePdfFileName(fileName);
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
@@ -126,4 +180,15 @@ export const downloadPdfBlob = (blob, fileName = 'document.pdf') => {
   window.setTimeout(() => {
     URL.revokeObjectURL(objectUrl);
   }, 0);
+
+  return {
+    saved: true,
+    cancelled: false,
+    fileName: saveTarget?.fileName || normalizePdfFileName(fileName),
+    fallback: true,
+  };
 };
+
+export const downloadPdfBlob = async (blob, fileName = 'document.pdf') => (
+  savePdfBlobToTarget(blob, fileName)
+);

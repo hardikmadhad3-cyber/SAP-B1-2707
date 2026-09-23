@@ -3,8 +3,12 @@ import ReactDOM from 'react-dom/client';
 import 'bootstrap/dist/css/bootstrap.min.css'; // If using Bootstrap
 import './index.css';
 import './components/document/addressComponentModal.css';
+import './modules/services-ar-invoice/JournalEntryPreviewModal.css';
 import App from './App'; // Points to your Router
 import reportWebVitals from './reportWebVitals';
+import { installSapDateShortcuts } from './utils/sapDateShortcuts';
+
+installSapDateShortcuts();
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(

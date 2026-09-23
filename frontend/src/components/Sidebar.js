@@ -35,6 +35,7 @@ const TOP_LEVEL_MENU_PRIORITY = new Map([
   ['master', 4],
   ['production', 5],
   ['inventory', 6],
+  ['quality control', 6.5],
   ['banking', 7],
   ['reports', 8],
   ['report layout manager', 9],
@@ -42,6 +43,7 @@ const TOP_LEVEL_MENU_PRIORITY = new Map([
   ['settings', 10],
   ['general settings', 10],
   ['admin panel', 11],
+  ['query manager', 12],
 ]);
 
 const REPORT_STUDIO_NAMES = new Set(['report studio', 'report layout manager', 'reportlayoutmanager']);

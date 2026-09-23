@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { fetchInventoryPostingList, fetchInventoryPostingListLookups } from "../api/inventoryPostingListApi";
@@ -6,9 +6,10 @@ import { fetchItemGroups, fetchItemProperties, fetchWarehouses } from "../api/it
 import BusinessPartnerLookupModal from "../components/reports/BusinessPartnerLookupModal";
 import ItemLookupModal from "../components/reports/ItemLookupModal";
 import PropertiesSelectionModal from "../components/reports/PropertiesSelectionModal";
+import ResourceLookupModal from "../components/reports/ResourceLookupModal";
+import WarehouseLookupModal from "../components/reports/WarehouseLookupModal";
 import useFloatingWindow from "../components/reports/useFloatingWindow";
 import { useSapWindowTaskbarActions } from "../components/SapWindowTaskbarContext";
-import { createActiveCompanyScopedRouteState } from "../utils/companyStorageScope";
 import "../styles/item-list-report.css";
 import "../styles/inventory-posting-list-report.css";
 import "../styles/sales-analysis-report.css";
@@ -18,6 +19,26 @@ const DEFAULT_ITEM_PROPERTIES = Array.from({ length: 64 }, (_, index) => ({
   number: index + 1,
   name: `Items Property ${index + 1}`,
 }));
+
+const parseSapDateToIso = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+
+  const match = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
+  if (!match) return "";
+
+  const [, dayText, monthText, yearText] = match;
+  const year = yearText.length === 2 ? `20${yearText}` : yearText;
+  return `${year}-${monthText.padStart(2, "0")}-${dayText.padStart(2, "0")}`;
+};
+
+const isoToSapDate = (value) => {
+  const match = String(value || "").trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return "";
+  const [, year, month, day] = match;
+  return `${day}/${month}/${year.slice(2)}`;
+};
 
 const ITEM_TABS = [
   { key: "items", label: "Items" },
@@ -331,6 +352,9 @@ function InventoryPostingListReportPage() {
   const [showOtherSelection, setShowOtherSelection] = useState(false);
   const [bpLookupTarget, setBpLookupTarget] = useState("");
   const [lookupTarget, setLookupTarget] = useState("");
+  const [resourceLookupTarget, setResourceLookupTarget] = useState("");
+  const [warehouseLookupTarget, setWarehouseLookupTarget] = useState("");
+  const dateNativeInputRefs = useRef({});
   const [reportResult, setReportResult] = useState(null);
   const [isLoadingReport, setIsLoadingReport] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
@@ -523,6 +547,35 @@ function InventoryPostingListReportPage() {
     setBpLookupTarget("");
   };
 
+  const handleResourceSelect = (resource) => {
+    if (resourceLookupTarget) {
+      setNested("resourceSelection", { [resourceLookupTarget]: resource?.code || "" });
+    }
+    setResourceLookupTarget("");
+  };
+
+  const handleWarehouseRangeSelect = (warehouse) => {
+    if (warehouseLookupTarget) {
+      setNested("warehouseSelection", { [warehouseLookupTarget]: warehouse?.code || "" });
+    }
+    setWarehouseLookupTarget("");
+  };
+
+  const getDateNativeInputRef = (field) => (node) => {
+    dateNativeInputRefs.current[field] = node;
+  };
+
+  const openDatePicker = (field) => {
+    const input = dateNativeInputRefs.current[field];
+    if (!input) return;
+    if (typeof input.showPicker === "function") {
+      input.showPicker();
+    } else {
+      input.focus();
+      input.click();
+    }
+  };
+
   const handleOk = async () => {
     setIsLoadingReport(true);
     setStatusMessage("");
@@ -578,9 +631,9 @@ function InventoryPostingListReportPage() {
     }
 
     navigate("/ar-invoice", {
-      state: createActiveCompanyScopedRouteState({
+      state: {
         arInvoiceDocEntry: docEntry,
-      }),
+      },
     });
   };
 
@@ -622,6 +675,48 @@ function InventoryPostingListReportPage() {
         []
       </button>
       <button className="sap-report-window-control" type="button" aria-label="Close" onClick={onClose}>x</button>
+    </div>
+  );
+
+  const renderDateRangeRow = () => (
+    <div className="ipl-criteria__date-row">
+      <label className="item-list-criteria__checkbox">
+        <input
+          type="checkbox"
+          checked={formState.dateEnabled}
+          onChange={(event) => setField("dateEnabled", event.target.checked)}
+        />
+        <span>Date</span>
+      </label>
+      <span>From</span>
+      <div className="ipl-date-field">
+        <input value={formState.dateFrom} onChange={(event) => setField("dateFrom", event.target.value)} />
+        <input
+          ref={getDateNativeInputRef("dateFrom")}
+          type="date"
+          className="ipl-date-native-input"
+          tabIndex={-1}
+          value={parseSapDateToIso(formState.dateFrom)}
+          onChange={(event) => setField("dateFrom", isoToSapDate(event.target.value))}
+        />
+        <button type="button" className="ipl-lookup-btn" aria-label="Open from date picker" onClick={() => openDatePicker("dateFrom")}>...</button>
+      </div>
+      <span>To</span>
+      <div className="ipl-date-field">
+        <input value={formState.dateTo} onChange={(event) => setField("dateTo", event.target.value)} />
+        <input
+          ref={getDateNativeInputRef("dateTo")}
+          type="date"
+          className="ipl-date-native-input"
+          tabIndex={-1}
+          value={parseSapDateToIso(formState.dateTo)}
+          onChange={(event) => setField("dateTo", isoToSapDate(event.target.value))}
+        />
+        <button type="button" className="ipl-lookup-btn" aria-label="Open to date picker" onClick={() => openDatePicker("dateTo")}>...</button>
+      </div>
+      <button type="button" className="item-list-btn" onClick={() => setShowExpanded(true)}>
+        Expanded
+      </button>
     </div>
   );
 
@@ -696,23 +791,7 @@ function InventoryPostingListReportPage() {
       </label>
 
       <div className="ipl-criteria__section-title">Trans. Selection Criteria</div>
-      <div className="ipl-criteria__date-row">
-        <label className="item-list-criteria__checkbox">
-          <input
-            type="checkbox"
-            checked={formState.dateEnabled}
-            onChange={(event) => setField("dateEnabled", event.target.checked)}
-          />
-          <span>Date</span>
-        </label>
-        <span>From</span>
-        <input value={formState.dateFrom} onChange={(event) => setField("dateFrom", event.target.value)} />
-        <span>To</span>
-        <input value={formState.dateTo} onChange={(event) => setField("dateTo", event.target.value)} />
-        <button type="button" className="item-list-btn" onClick={() => setShowExpanded(true)}>
-          Expanded
-        </button>
-      </div>
+      {renderDateRangeRow()}
 
       <label className="item-list-criteria__checkbox">
         <input
@@ -753,17 +832,7 @@ function InventoryPostingListReportPage() {
   const renderSharedTransactionCriteria = () => (
     <>
       <div className="ipl-criteria__section-title">Trans. Selection Criteria</div>
-      <div className="ipl-criteria__date-row">
-        <label className="item-list-criteria__checkbox">
-          <input type="checkbox" checked={formState.dateEnabled} onChange={(event) => setField("dateEnabled", event.target.checked)} />
-          <span>Date</span>
-        </label>
-        <span>From</span>
-        <input value={formState.dateFrom} onChange={(event) => setField("dateFrom", event.target.value)} />
-        <span>To</span>
-        <input value={formState.dateTo} onChange={(event) => setField("dateTo", event.target.value)} />
-        <button type="button" className="item-list-btn" onClick={() => setShowExpanded(true)}>Expanded</button>
-      </div>
+      {renderDateRangeRow()}
       <label className="item-list-criteria__checkbox">
         <input type="checkbox" checked={formState.hideTransWithoutQtyChange} onChange={(event) => setField("hideTransWithoutQtyChange", event.target.checked)} />
         <span>Hide Trans. without Qty Change</span>
@@ -777,7 +846,7 @@ function InventoryPostingListReportPage() {
 
   const renderResourcesTab = () => (
     <div className="ipl-criteria__left-panel">
-      {renderCodeRange({ label: "Resource Code", section: "resourceSelection" })}
+      {renderCodeRange({ label: "Resource Code", section: "resourceSelection", onLookup: setResourceLookupTarget })}
       <div className="ipl-other-summary">{resources.length} resources available</div>
       <div className="ipl-criteria__group-row">
         <label>Resource Group</label>
@@ -924,9 +993,23 @@ function InventoryPostingListReportPage() {
             <span>Including</span>
           </label>
           <span>From</span>
-          <input value={formState.warehouseSelection.includeFrom} onChange={(event) => setNested("warehouseSelection", { includeFrom: event.target.value })} />
+          <div className="item-list-criteria__lookup-wrap">
+            <input
+              disabled={!formState.warehouseSelection.includeEnabled}
+              value={formState.warehouseSelection.includeFrom}
+              onChange={(event) => setNested("warehouseSelection", { includeFrom: event.target.value })}
+            />
+            <button type="button" className="ipl-lookup-btn" disabled={!formState.warehouseSelection.includeEnabled} onClick={() => setWarehouseLookupTarget("includeFrom")}>...</button>
+          </div>
           <span>To</span>
-          <input value={formState.warehouseSelection.includeTo} onChange={(event) => setNested("warehouseSelection", { includeTo: event.target.value })} />
+          <div className="item-list-criteria__lookup-wrap">
+            <input
+              disabled={!formState.warehouseSelection.includeEnabled}
+              value={formState.warehouseSelection.includeTo}
+              onChange={(event) => setNested("warehouseSelection", { includeTo: event.target.value })}
+            />
+            <button type="button" className="ipl-lookup-btn" disabled={!formState.warehouseSelection.includeEnabled} onClick={() => setWarehouseLookupTarget("includeTo")}>...</button>
+          </div>
 
           <label>
             <input
@@ -937,9 +1020,23 @@ function InventoryPostingListReportPage() {
             <span>Excluding</span>
           </label>
           <span>From</span>
-          <input value={formState.warehouseSelection.excludeFrom} onChange={(event) => setNested("warehouseSelection", { excludeFrom: event.target.value })} />
+          <div className="item-list-criteria__lookup-wrap">
+            <input
+              disabled={!formState.warehouseSelection.excludeEnabled}
+              value={formState.warehouseSelection.excludeFrom}
+              onChange={(event) => setNested("warehouseSelection", { excludeFrom: event.target.value })}
+            />
+            <button type="button" className="ipl-lookup-btn" disabled={!formState.warehouseSelection.excludeEnabled} onClick={() => setWarehouseLookupTarget("excludeFrom")}>...</button>
+          </div>
           <span>To</span>
-          <input value={formState.warehouseSelection.excludeTo} onChange={(event) => setNested("warehouseSelection", { excludeTo: event.target.value })} />
+          <div className="item-list-criteria__lookup-wrap">
+            <input
+              disabled={!formState.warehouseSelection.excludeEnabled}
+              value={formState.warehouseSelection.excludeTo}
+              onChange={(event) => setNested("warehouseSelection", { excludeTo: event.target.value })}
+            />
+            <button type="button" className="ipl-lookup-btn" disabled={!formState.warehouseSelection.excludeEnabled} onClick={() => setWarehouseLookupTarget("excludeTo")}>...</button>
+          </div>
         </div>
       )}
     </div>
@@ -1337,6 +1434,8 @@ function InventoryPostingListReportPage() {
 
       <ItemLookupModal isOpen={Boolean(lookupTarget)} onClose={() => setLookupTarget("")} onSelect={handleItemSelect} />
       <BusinessPartnerLookupModal isOpen={Boolean(bpLookupTarget)} type="" onClose={() => setBpLookupTarget("")} onSelect={handleBpSelect} />
+      <ResourceLookupModal isOpen={Boolean(resourceLookupTarget)} onClose={() => setResourceLookupTarget("")} onSelect={handleResourceSelect} resources={resources} />
+      <WarehouseLookupModal isOpen={Boolean(warehouseLookupTarget)} onClose={() => setWarehouseLookupTarget("")} onSelect={handleWarehouseRangeSelect} warehouses={warehouses} />
 
       <PropertiesSelectionModal
         isOpen={Boolean(propertiesTarget)}

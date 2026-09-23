@@ -35,7 +35,7 @@ const useServiceDocumentFormSettings = ({
     baseStorageKey,
     readSavedFormSettings,
     [headerUdfDefinitions, rowUdfDefinitions, matrixColumnDefinitions],
-    { saveMode: 'explicit' },
+    { saveMode: 'explicit', followPublishedVersion: true },
   );
 
   const formSettingsReady = formSettingsStatus.loaded && isSalesDocumentFieldMetadataReady({
@@ -80,6 +80,7 @@ const useServiceDocumentFormSettings = ({
   return {
     formSettings,
     setFormSettings,
+    formSettingsStorageKey,
     formSettingsStatus,
     formSettingsReady,
     hydrateFormSettings,

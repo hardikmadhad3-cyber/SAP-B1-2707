@@ -165,6 +165,7 @@ export const LOGISTICS_COLUMNS = [
   { key: 'itemNo', label: 'Item No.', width: 140, type: 'text', readOnly: true },
   { key: 'freeText', label: 'Free Text', width: 120, type: 'text' },
   { key: 'uomCode', label: 'UoM Code', width: 100, type: 'select' },
+  { key: 'uomName', label: 'UoM Name', width: 120, type: 'text', readOnly: true },
   { key: 'cogsOcrCode', label: 'COGS Ocrcode', width: 120, type: 'select' },
   { key: 'distRule', label: 'Distr. Rule', width: 100, type: 'select' },
   { key: 'branch', label: 'Branch', width: 100, type: 'select' },

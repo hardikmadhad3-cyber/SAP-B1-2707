@@ -3,6 +3,8 @@
  * Mirrors salesOrderDbService.js but targets OQUT/QUT1 tables (ObjectCode = '23').
  */
 const db = require('./dbService');
+const { getDocumentUnitPriceSql } = require('./documentUnitPriceDbUtils');
+const { getDocumentUomSql, loadCompanyUomGroups } = require('./documentUomDbUtils');
 const { loadBusinessPartnerAddresses } = require('./businessPartnerAddressDbUtils');
 const masterDataDbService = require('./masterDataDbService');
 const { getHeaderUdfValues, getLineUdfValues, getMarketingDocumentUdfs } = require('./udfMetadataService');
@@ -171,56 +173,135 @@ const searchCustomers = async ({ query = '', cardCode = '', cardName = '', top, 
   }));
 };
 
-const getItems = () => safe(db.query(`
-  SELECT ItemCode, ItemName,
-         SalUnitMsr  AS SalesUnit,
-         InvntryUom  AS InventoryUOM,
-         SUoMEntry   AS UoMGroupEntry,
-         SWW         AS HSNCode,
-         DfltWH      AS DefaultWarehouse,
-         CountryOrg  AS ItemCountryOrg,
-         SACEntry    AS SACEntry,
-         VatGourpSa  AS TaxCodeAR,
-         ''          AS DistributionRule
-  FROM   OITM
-  WHERE  SellItem = 'Y'
-    AND  validFor  <> 'N'
-  ORDER  BY ItemCode
-`));
+const readOptionalTableMetadata = async (tableName) => {
+  try {
+    return await getTableFieldMetadata(tableName);
+  } catch (error) {
+    console.warn(`[Sales Quotation DB] ${tableName} metadata unavailable:`, error.message);
+    return {};
+  }
+};
 
-const getItemsForModal = () => safe(db.query(`
-  SELECT 
-    T0.ItemCode,
-    T0.ItemName,
-    T0.FrgnName AS ForeignName,
-    T0.ItmsGrpCod AS ItemGroupCode,
-    T1.ItmsGrpNam AS ItemGroup,
-    CAST(T0.OnHand AS DECIMAL(19,2)) AS InStock,
-    T0.IsCommited AS Committed,
-    T0.OnOrder AS Ordered,
-    T0.SalUnitMsr AS SalesUnit,
-    T0.InvntryUom AS InventoryUOM,
-    T0.SUoMEntry AS UoMGroupEntry,
-    CHP.ChapterID AS HSNCode,
-    T0.validFor AS Active,
-    T0.frozenFor AS Frozen,
-    T0.PrchseItem AS PurchaseItem,
-    T0.SellItem AS SalesItem,
-    T0.InvntItem AS InventoryItem,
-    T0.DfltWH AS DefaultWarehouse,
-    T0.ManBtchNum AS BatchManaged,
-    T0.ManSerNum AS SerialManaged,
-    T0.CountryOrg AS ItemCountryOrg,
-    T0.SACEntry AS SACEntry,
-    T0.VatGourpSa AS TaxCodeAR,
-    '' AS DistributionRule
-  FROM OITM T0
-  LEFT JOIN OITB T1 ON T0.ItmsGrpCod = T1.ItmsGrpCod
-  LEFT JOIN OCHP CHP ON CHP.AbsEntry = T0.ChapterID
-  WHERE T0.SellItem = 'Y'
-    AND T0.validFor <> 'N'
-  ORDER BY T0.ItemCode
-`));
+const itemColumn = (metadata, candidates, alias, fallback = 'NULL', tableAlias = 'T0') => {
+  const field = candidates.map((candidate) => resolveTableColumnName(metadata, candidate)).find(Boolean);
+  return `${field ? `${tableAlias}.${toSqlIdentifier(field)}` : fallback} AS ${sqlAlias(alias)}`;
+};
+
+const getSalesQuotationItems = async () => {
+  const [itemMetadata, groupMetadata, hsnMetadata, uomMetadata] = await Promise.all([
+    getTableFieldMetadata('OITM'),
+    readOptionalTableMetadata('OITB'),
+    readOptionalTableMetadata('OCHP'),
+    readOptionalTableMetadata('OUOM'),
+  ]);
+
+  const itemCodeField = resolveTableColumnName(itemMetadata, 'ItemCode');
+  const itemNameField = resolveTableColumnName(itemMetadata, 'ItemName');
+  if (!itemCodeField || !itemNameField) {
+    throw new Error('The active company OITM table does not expose ItemCode and ItemName.');
+  }
+
+  const itemGroupCode = resolveTableColumnName(itemMetadata, 'ItmsGrpCod');
+  const groupCode = resolveTableColumnName(groupMetadata, 'ItmsGrpCod');
+  const groupName = resolveTableColumnName(groupMetadata, 'ItmsGrpNam');
+  const chapterEntry = resolveTableColumnName(itemMetadata, 'ChapterID');
+  const hsnAbsEntry = resolveTableColumnName(hsnMetadata, 'AbsEntry');
+  const hsnCode = resolveTableColumnName(hsnMetadata, 'ChapterID');
+  const salesUomEntry = resolveTableColumnName(itemMetadata, 'SUoMEntry');
+  const inventoryUomEntry = resolveTableColumnName(itemMetadata, 'IUoMEntry');
+  const uomEntry = resolveTableColumnName(uomMetadata, 'UomEntry');
+  const uomCode = resolveTableColumnName(uomMetadata, 'UomCode');
+  const joins = [];
+
+  if (itemGroupCode && groupCode) {
+    joins.push(`LEFT JOIN OITB T1 ON T1.${toSqlIdentifier(groupCode)} = T0.${toSqlIdentifier(itemGroupCode)}`);
+  }
+  if (chapterEntry && hsnAbsEntry) {
+    joins.push(`LEFT JOIN OCHP CHP ON CHP.${toSqlIdentifier(hsnAbsEntry)} = T0.${toSqlIdentifier(chapterEntry)}`);
+  }
+  if (salesUomEntry && uomEntry) {
+    joins.push(`LEFT JOIN OUOM SU ON SU.${toSqlIdentifier(uomEntry)} = T0.${toSqlIdentifier(salesUomEntry)}`);
+  }
+  if (inventoryUomEntry && uomEntry) {
+    joins.push(`LEFT JOIN OUOM IU ON IU.${toSqlIdentifier(uomEntry)} = T0.${toSqlIdentifier(inventoryUomEntry)}`);
+  }
+
+  const emptyText = "CAST('' AS NVARCHAR(254))";
+  const yesValue = "CAST('Y' AS NVARCHAR(1))";
+  const noValue = "CAST('N' AS NVARCHAR(1))";
+  const salesUnitFallback = itemColumn(itemMetadata, ['SalUnitMsr'], 'SalesUnitFallback', emptyText);
+  const inventoryUomFallback = itemColumn(itemMetadata, ['InvntryUom'], 'InventoryUOMFallback', emptyText);
+  const swWField = resolveTableColumnName(itemMetadata, 'SWW');
+  const hsnExpression = [
+    hsnCode ? `CHP.${toSqlIdentifier(hsnCode)}` : '',
+    swWField ? `T0.${toSqlIdentifier(swWField)}` : '',
+  ].filter(Boolean);
+  const activeField = resolveTableColumnName(itemMetadata, 'validFor');
+  const sellItemField = resolveTableColumnName(itemMetadata, 'SellItem');
+  const where = [
+    sellItemField ? `T0.${toSqlIdentifier(sellItemField)} = 'Y'` : '',
+    activeField ? `T0.${toSqlIdentifier(activeField)} <> 'N'` : '',
+  ].filter(Boolean);
+
+  const rows = await db.query(`
+    SELECT
+      T0.${toSqlIdentifier(itemCodeField)} AS ItemCode,
+      T0.${toSqlIdentifier(itemNameField)} AS ItemName,
+      ${itemColumn(itemMetadata, ['FrgnName'], 'ForeignName', emptyText)},
+      ${itemColumn(itemMetadata, ['ItmsGrpCod'], 'ItemGroupCode')},
+      ${groupName && itemGroupCode && groupCode ? `T1.${toSqlIdentifier(groupName)}` : emptyText} AS ItemGroup,
+      ${itemColumn(itemMetadata, ['OnHand'], 'InStock', '0')},
+      ${itemColumn(itemMetadata, ['IsCommited'], 'Committed', '0')},
+      ${itemColumn(itemMetadata, ['OnOrder'], 'Ordered', '0')},
+      ${uomCode && salesUomEntry && uomEntry ? `SU.${toSqlIdentifier(uomCode)}` : 'NULL'} AS SalesUomCode,
+      ${salesUnitFallback},
+      ${uomCode && inventoryUomEntry && uomEntry ? `IU.${toSqlIdentifier(uomCode)}` : 'NULL'} AS InventoryUomCode,
+      ${inventoryUomFallback},
+      ${itemColumn(itemMetadata, ['UgpEntry'], 'UoMGroupEntry')},
+      ${itemColumn(itemMetadata, ['SUoMEntry'], 'UoMEntry')},
+      ${chapterEntry ? `T0.${toSqlIdentifier(chapterEntry)}` : 'NULL'} AS HSNEntry,
+      ${hsnExpression.length ? `COALESCE(${hsnExpression.join(', ')}, ${emptyText})` : emptyText} AS HSNCode,
+      ${itemColumn(itemMetadata, ['validFor'], 'Active', yesValue)},
+      ${itemColumn(itemMetadata, ['frozenFor'], 'Frozen', noValue)},
+      ${itemColumn(itemMetadata, ['PrchseItem'], 'PurchaseItem', noValue)},
+      ${itemColumn(itemMetadata, ['SellItem'], 'SalesItem', yesValue)},
+      ${itemColumn(itemMetadata, ['InvntItem'], 'InventoryItem', noValue)},
+      ${itemColumn(itemMetadata, ['DfltWH'], 'DefaultWarehouse', emptyText)},
+      ${itemColumn(itemMetadata, ['ManBtchNum'], 'BatchManaged', noValue)},
+      ${itemColumn(itemMetadata, ['ManSerNum'], 'SerialManaged', noValue)},
+      ${itemColumn(itemMetadata, ['CountryOrg'], 'ItemCountryOrg', emptyText)},
+      ${itemColumn(itemMetadata, ['SACEntry'], 'SACEntry')},
+      ${itemColumn(itemMetadata, ['VatGourpSa', 'VatGroupSa'], 'TaxCodeAR', emptyText)},
+      ${itemColumn(itemMetadata, ['GSTRelevnt', 'GSTRelevant'], 'GSTRelevant', emptyText)},
+      '' AS DistributionRule
+    FROM OITM T0
+    ${joins.join('\n    ')}
+    ${where.length ? `WHERE ${where.join('\n      AND ')}` : ''}
+    ORDER BY T0.${toSqlIdentifier(itemCodeField)}
+  `);
+
+  return (rows.recordset || []).map((item) => ({
+    ...item,
+    SalesUnit: item.SalesUomCode || item.SalesUnitFallback || '',
+    InventoryUOM: item.InventoryUomCode || item.InventoryUOMFallback || '',
+  }));
+};
+
+const getCoreItems = async () => {
+  try {
+    return await getSalesQuotationItems();
+  } catch (error) {
+    console.warn('[Sales Quotation DB] Enriched item query failed; using core item data:', error.message);
+    return safe(db.query(`
+      SELECT ItemCode, ItemName
+      FROM OITM
+      ORDER BY ItemCode
+    `));
+  }
+};
+
+const getItems = getCoreItems;
+const getItemsForModal = getCoreItems;
 
 const getFreightCharges = (docEntry) => {
   if (!docEntry) {
@@ -294,16 +375,7 @@ const getDistributionRules = () => safe(db.query(`
 
 const getTaxCodes = () => masterDataDbService.searchDocumentTaxCodes('', 'sales', 500, 0);
 
-const getUomGroups = () => safe(db.query(`
-  SELECT g.UgpEntry AS AbsEntry,
-         g.UgpCode  AS Name,
-         u.UomCode
-  FROM   OUGP g
-  LEFT JOIN UGP1 d ON d.UgpEntry = g.UgpEntry
-  LEFT JOIN OUOM u ON u.UomEntry = d.UomEntry
-  WHERE  g.Locked <> 'Y'
-  ORDER  BY g.UgpEntry, d.LineNum
-`));
+const getUomGroups = () => loadCompanyUomGroups(db);
 
 const getSalesEmployees = () => safe(db.query(`
   SELECT SlpCode, SlpName, Memo, Commission, Active
@@ -338,8 +410,8 @@ const SALES_QUOTATION_MATRIX_COLUMN_DEFS = [
   { key: 'itemNo', label: 'Item No.', minWidth: 160, sapField: 'ItemCode', sapColumnIds: ['1', 'ItemCode', 'Item No.', 'ItemNo'] },
   { key: 'itemDescription', label: 'Item Description', minWidth: 240, sapField: 'Dscription', sapColumnIds: ['3', 'Dscription', 'ItemDescription', 'Description', 'Item Description'] },
   { key: 'quantity', label: 'Quantity', minWidth: 95, numeric: true, sapField: 'Quantity', sapColumnIds: ['11', 'Quantity', 'Qty'] },
-  { key: 'uomName', label: 'UoM Name', minWidth: 120, sapField: 'unitMsr', alternativeFields: ['UomCode'], sapColumnIds: ['1470002145', 'unitMsr', 'UomName', 'UoM Name'] },
-  { key: 'uomCode', label: 'UoM Code', minWidth: 105, sapField: 'UomCode', alternativeFields: ['unitMsr', 'UomEntry'], sapColumnIds: ['1470002149', '1470002145', 'UomCode', 'unitMsr', 'UoM Code', 'UoM'] },
+  { key: 'uomName', label: 'UoM Name', minWidth: 120, sapField: 'unitMsr', alternativeFields: [], sapColumnIds: ['1470002145', 'unitMsr', 'UomName', 'UoM Name'] },
+  { key: 'uomCode', label: 'UoM Code', minWidth: 105, sapField: 'UomCode', alternativeFields: ['UomEntry'], sapColumnIds: ['1470002149', 'UomCode', 'UoMCode', 'UoM Code'] },
   { key: 'hsnCode', label: 'HSN', minWidth: 105, source: 'OITM', sapColumnIds: ['254000391', 'HsnEntry', 'HSN', 'HSN/SAC'] },
   { key: 'unitPrice', label: 'Unit Price', minWidth: 110, numeric: true, sapField: 'Price', alternativeFields: ['PriceBefDi'], sapColumnIds: ['14', 'Price', 'PriceBefDi', 'UnitPrice', 'Unit Price'] },
   { key: 'stdDiscount', label: 'Discount %', minWidth: 95, numeric: true, sapField: 'DiscPrcnt', sapColumnIds: ['15', 'DiscPrcnt', 'DiscountPercent', 'Discount %', 'Disc%'] },
@@ -699,7 +771,7 @@ const getStateFromAddress = async (cardCode, addressCode) => {
 const getReferenceData = async () => {
   const [
     customers, items, warehouses, paymentTerms,
-    shippingTypes, branches, states, countries, distributionRules, taxCodes, uomRaw, salesEmployees, owners, companyInfo,
+    shippingTypes, branches, states, countries, distributionRules, taxCodes, uom_groups, salesEmployees, owners, companyInfo,
     buyerQualityOptions, sellerQualityOptions, buyerPriceOptions, sellerPriceOptions, udfMetadata,
   ] = await Promise.all([
     getCustomers(), getItems(), getWarehouses(), getPaymentTerms(),
@@ -713,17 +785,6 @@ const getReferenceData = async () => {
   ]);
   const lineFieldMetadata = await getSalesQuotationLineUiMetadata();
   const company = companyInfo[0] || {};
-
-  const uomMap = {};
-  for (const row of uomRaw) {
-    if (!uomMap[row.AbsEntry]) {
-      uomMap[row.AbsEntry] = { AbsEntry: row.AbsEntry, Name: row.Name, uomCodes: [] };
-    }
-    if (row.UomCode && row.UomCode !== 'Manual' && !uomMap[row.AbsEntry].uomCodes.includes(row.UomCode)) {
-      uomMap[row.AbsEntry].uomCodes.push(row.UomCode);
-    }
-  }
-  const uom_groups = Object.values(uomMap);
 
   const mappedCustomers = customers.map(c => ({
     CardCode: c.CardCode, CardName: c.CardName,
@@ -748,9 +809,19 @@ const getReferenceData = async () => {
     items: items.map(i => ({
       ItemCode: i.ItemCode, ItemName: i.ItemName,
       SalesUnit: i.SalesUnit, InventoryUOM: i.InventoryUOM,
-      UoMGroupEntry: i.UoMGroupEntry, SWW: i.HSNCode || '',
+      UoMGroupEntry: i.UoMGroupEntry,
+      UoMEntry: i.UoMEntry,
+      HSNCode: i.HSNCode || '',
+      HSNEntry: i.HSNEntry,
+      SWW: i.HSNCode || '',
+      TaxCodeAR: i.TaxCodeAR || '',
+      GSTRelevant: i.GSTRelevant || '',
       DistributionRule: i.DistributionRule || '',
       DefaultWarehouse: i.DefaultWarehouse || '',
+      ItemCountryOrg: i.ItemCountryOrg || '',
+      SACEntry: i.SACEntry,
+      InStock: i.InStock,
+      BatchManaged: i.BatchManaged,
     })),
     warehouses: mappedWarehouses,
     warehouse_addresses: mappedWarehouses,
@@ -946,21 +1017,17 @@ const getSalesQuotation = async (docEntry) => {
     quoteIdentifier: sqlAlias,
     quoteAlias: sqlAlias,
   });
-  const lineField = (columnName, alias, fallback = "NULL") => (
-    hasTableField(lineFieldMetadata, columnName)
-      ? `T1.${columnName} AS ${sqlAlias(alias)}`
-      : `${fallback} AS ${sqlAlias(alias)}`
-  );
-  const lineUomCodeField = hasTableField(lineFieldMetadata, 'unitMsr')
-    ? `T1.unitMsr AS ${sqlAlias('UomCode')}`
-    : hasTableField(lineFieldMetadata, 'UomCode')
-      ? `T1.UomCode AS ${sqlAlias('UomCode')}`
-      : `'' AS ${sqlAlias('UomCode')}`;
-  const lineUomNameField = hasTableField(lineFieldMetadata, 'unitMsr')
-    ? `T1.unitMsr AS ${sqlAlias('UomName')}`
-    : hasTableField(lineFieldMetadata, 'UomCode')
-      ? `T1.UomCode AS ${sqlAlias('UomName')}`
-      : `'' AS ${sqlAlias('UomName')}`;
+  const lineField = (columnNames, alias, fallback = "NULL") => {
+    const resolvedColumn = (Array.isArray(columnNames) ? columnNames : [columnNames])
+      .map((columnName) => resolveTableColumnName(lineFieldMetadata, columnName))
+      .find(Boolean);
+    return resolvedColumn
+      ? `T1.${toSqlIdentifier(resolvedColumn)} AS ${sqlAlias(alias)}`
+      : `${fallback} AS ${sqlAlias(alias)}`;
+  };
+  const documentUom = await getDocumentUomSql(db, 'QUT1', 'T1', 'QUT_UOM');
+  const lineUomCodeField = `${documentUom.codeSql} AS ${sqlAlias('UomCode')}`;
+  const lineUomNameField = `${documentUom.nameSql} AS ${sqlAlias('UomName')}`;
 
   const rows = await safe(db.query(`
     SELECT
@@ -984,12 +1051,13 @@ const getSalesQuotation = async (docEntry) => {
       T1.LineNum,
       T1.ItemCode,
       COALESCE(NULLIF(LTRIM(RTRIM(T1.Dscription)), ''), ITM.ItemName, '') AS Dscription,
-      T1.Quantity, T1.Price,
-      ${lineField('RequiredDate', 'RequiredDate')},
+      T1.Quantity, T1.Price, ${await getDocumentUnitPriceSql(db, 'QUT1', 'T1')} AS UnitPrice,
+      ${lineField(['ReqDate', 'RequiredDate'], 'RequiredDate')},
+      ${lineField(['PackQty', 'PackageQuantity', 'Packages', 'NumOfPacks'], 'NoOfPackages', '0')},
       ${lineField('ShipDate', 'ShipDate')},
       T1.DiscPrcnt AS LineDiscPrcnt,
       ${buildLineTaxCodeSelect('T1', lineFieldMetadata, 'TaxCode')},
-      T1.WhsCode, ${lineUomCodeField}, ${lineUomNameField}, T1.LineTotal,
+      T1.WhsCode, ${documentUom.entrySql} AS ${sqlAlias('UomEntry')}, ${lineUomCodeField}, ${lineUomNameField}, T1.LineTotal,
       T1.OcrCode AS DistRule,
       T1.CogsOcrCod AS CogsDistRule,
       T1.CountryOrg AS CountryOfOrigin,
@@ -999,6 +1067,7 @@ const getSalesQuotation = async (docEntry) => {
     FROM OQUT T0
     LEFT JOIN QUT12 T12 ON T12.DocEntry = T0.DocEntry
     INNER JOIN QUT1 T1 ON T0.DocEntry = T1.DocEntry
+    ${documentUom.joinSql}
     LEFT JOIN OSLP SLP ON SLP.SlpCode = T0.SlpCode
     LEFT JOIN NNM1 NNM ON NNM.ObjectCode = '23' AND NNM.Series = T0.Series
     LEFT JOIN OHEM EMP ON EMP.empID = T0.OwnerCode
@@ -1134,13 +1203,15 @@ const getSalesQuotation = async (docEntry) => {
           itemNo: line.ItemCode,
           itemDescription: line.Dscription || '',
           requiredDate: firstUdfValue(lineUdf, ['U_Required_Date', 'U_ReqDate']) || formatSapDate(line.RequiredDate),
+          noOfPackages: line.NoOfPackages != null ? String(line.NoOfPackages) : '',
           quotedDate: firstUdfValue(lineUdf, ['U_Quoted_Date', 'U_QuoteDate']) || formatSapDate(line.ShipDate),
           requiredQty: firstUdfValue(lineUdf, ['U_Req_Qty', 'U_ReqQty']),
           hsnCode: firstUdfValue(lineUdf, ['U_HSNCode', 'U_HSN']) || line.HSNCode || '',
           sacCode: firstUdfValue(lineUdf, ['U_SACCode', 'U_SAC']),
           quantity: String(line.Quantity || 0),
-          unitPrice: String(line.Price || 0),
+          unitPrice: String(line.UnitPrice ?? line.Price ?? 0),
           unitPriceUdf: firstUdfValue(lineUdf, ['U_Unit_Price']),
+          uomEntry: line.UomEntry != null ? Number(line.UomEntry) : null,
           uomCode: line.UomCode || '',
           uomName: line.UomName || line.UomCode || '',
           stdDiscount: String(line.LineDiscPrcnt || ''),
@@ -1242,23 +1313,19 @@ const getSalesQuotationForCopy = async (docEntry) => {
   const placeOfSupplyExpression = hasTableField(headerFieldMetadata, 'U_PlaceOfSupply')
     ? "COALESCE(NULLIF(LTRIM(RTRIM(CAST(T0.U_PlaceOfSupply AS NVARCHAR(254)))), ''), ST.Name, '')"
     : "ISNULL(ST.Name, '')";
-  const lineField = (columnName, alias, fallback = "''") => (
-    hasTableField(lineFieldMetadata, columnName)
-      ? `T0.${columnName} AS ${sqlAlias(alias)}`
-      : `${fallback} AS ${sqlAlias(alias)}`
-  );
+  const lineField = (columnNames, alias, fallback = "''") => {
+    const resolvedColumn = (Array.isArray(columnNames) ? columnNames : [columnNames])
+      .map((columnName) => resolveTableColumnName(lineFieldMetadata, columnName))
+      .find(Boolean);
+    return resolvedColumn
+      ? `T0.${toSqlIdentifier(resolvedColumn)} AS ${sqlAlias(alias)}`
+      : `${fallback} AS ${sqlAlias(alias)}`;
+  };
   const lineTaxField = buildLineTaxCodeSelect('T0', lineFieldMetadata, 'TaxCode');
   const lineTaxExpression = buildLineTaxCodeExpression('T0', lineFieldMetadata);
-  const lineUomCodeField = hasTableField(lineFieldMetadata, 'unitMsr')
-    ? `T0.unitMsr AS ${sqlAlias('UomCode')}`
-    : hasTableField(lineFieldMetadata, 'UomCode')
-      ? `T0.UomCode AS ${sqlAlias('UomCode')}`
-      : `'' AS ${sqlAlias('UomCode')}`;
-  const lineUomNameField = hasTableField(lineFieldMetadata, 'unitMsr')
-    ? `T0.unitMsr AS ${sqlAlias('UomName')}`
-    : hasTableField(lineFieldMetadata, 'UomCode')
-      ? `T0.UomCode AS ${sqlAlias('UomName')}`
-      : `'' AS ${sqlAlias('UomName')}`;
+  const documentUom = await getDocumentUomSql(db, 'QUT1', 'T0', 'QUT_UOM');
+  const lineUomCodeField = `${documentUom.codeSql} AS ${sqlAlias('UomCode')}`;
+  const lineUomNameField = `${documentUom.nameSql} AS ${sqlAlias('UomName')}`;
 
   // ================= HEADER =================
   const headerResult = await db.query(`
@@ -1335,13 +1402,15 @@ const getSalesQuotationForCopy = async (docEntry) => {
 
       -- 🔥 IMPORTANT: USE OPEN QTY
       T0.OpenQty AS Quantity,
-      ${lineField('RequiredDate', 'RequiredDate')},
+      ${lineField(['ReqDate', 'RequiredDate'], 'RequiredDate')},
+      ${lineField(['PackQty', 'PackageQuantity', 'Packages', 'NumOfPacks'], 'NoOfPackages', '0')},
       ${lineField('ShipDate', 'ShipDate')},
 
-      COALESCE(T0.PriceBefDi, T0.Price) AS UnitPrice,
+      ${await getDocumentUnitPriceSql(db, 'QUT1')} AS UnitPrice,
       T0.DiscPrcnt AS DiscountPercent,
       T0.WhsCode AS WarehouseCode,
       ${lineTaxField},
+      ${documentUom.entrySql} AS ${sqlAlias('UomEntry')},
       ${lineUomCodeField},
       ${lineUomNameField},
       ${lineField('OcrCode', 'DistributionRule')},
@@ -1400,6 +1469,7 @@ const getSalesQuotationForCopy = async (docEntry) => {
       ${lineField('U_PackingType', 'U_PackingType')}
 
     FROM QUT1 T0
+    ${documentUom.joinSql}
     LEFT JOIN OITM ITM ON T0.ItemCode = ITM.ItemCode
     LEFT JOIN OCHP CHP ON ITM.ChapterID = CHP.AbsEntry
 
@@ -1428,6 +1498,8 @@ const getSalesQuotationForCopy = async (docEntry) => {
       taxCode: line.TaxCode || '',
       taxCodeRepeat: line.TaxCode || '',
       VatGroup: line.TaxCode || '',
+      requiredDate: formatSapDate(line.RequiredDate),
+      noOfPackages: line.NoOfPackages != null ? String(line.NoOfPackages) : '',
       packingType,
       U_PackingType: packingType,
       DocumentCreated: formatSapDate(header.DocumentCreated),

@@ -1,3 +1,6 @@
+import useConfirmationOnlyUpdate from '../../utils/useConfirmationOnlyUpdate';
+import { calculateDocumentRounding, getDocumentRoundingPolicy } from '../../utils/documentRounding';
+import useDocumentSeries from '../../hooks/useDocumentSeries';
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import './styles/Delivery.css';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -30,12 +33,13 @@ import { copyToDocument } from '../../services/documentCopyService';
 import { filterWarehousesByBranch, getWarehouseBranchId } from '../../utils/warehouseBranch';
 import { hydrateDocumentLineFromItem, mergeItemMaster } from '../../utils/documentItemHydration';
 import { FALLBACK_UOM, FALLBACK_WAREHOUSES } from '../../utils/fallbackReferenceData';
-import { getDefaultSeriesForCurrentYear, getSapVisibleDocumentSeries } from '../../utils/seriesDefaults';
+import { getSapVisibleDocumentSeries, pickDocumentSeries, canUseManualSeries } from '../../utils/seriesDefaults';
 import { readGeneralSettings } from '../../utils/generalSettingsStorage';
 import { useCompanyScopedFormSettings } from '../../utils/formSettingsStorage';
 import { buildVisibleEnteredRowUdfPayload } from '../../utils/rowUdfPayload';
 import { getStateCodeValue, getStateDisplayName } from '../../utils/stateDisplay';
 import { findTaxCode, getTaxComponentCodes } from '../../utils/taxCodeComponents';
+import { getDocumentLinePayableTax } from '../../utils/documentLineTax';
 import { isRouteStateForActiveCompany } from '../../utils/companyStorageScope';
 import {
   consumeCopyToState as consumePersistedCopyToState,
@@ -62,7 +66,6 @@ import {
   submitDelivery,
   updateDelivery,
   fetchDocumentSeries,
-  fetchNextNumber,
   fetchOpenSalesOrders,
   fetchSalesOrderForCopy,
   fetchOpenSalesQuotationsForDelivery,
@@ -206,7 +209,6 @@ const resolveCopiedBranchWarehouse = ({
   };
 };
 const fmtDec = (v, d) => { if (v === '' || v == null) return ''; const n = Number(v); return Number.isNaN(n) ? '' : n.toFixed(Math.max(d, 0)); };
-const calcRoundingAmount = (value, decimals) => roundTo(Math.round(value) - value, decimals);
 const TAX_SENSITIVE_LINE_FIELDS = new Set(['itemNo', 'quantity', 'unitPrice', 'discountAmount', 'stdDiscount', 'taxCode', 'uomCode']);
 const sanitize = (v, d) => {
   const c = String(v ?? '').replace(/[^\d.-]/g, '').replace(/(?!^)-/g, '').replace(/^(-?)\./, '$10.').replace(/(\..*)\./g, '$1');
@@ -579,7 +581,7 @@ const INIT_HEADER = {
   docNo: '', status: 'Open', series: '', nextNumber: '',
   postingDate: today(), deliveryDate: today(), documentDate: today(), contractDate: '',
   branchRegNo: '', shipTo: '', shipToCode: '', payTo: '', payToCode: '',
-  shippingType: '', confirmed: false, journalRemark: '', paymentTerms: '',
+  shippingType: '', confirmed: undefined, journalRemark: '', paymentTerms: '',
   paymentMethod: '', otherInstruction: '', discount: '', freight: '', tax: '',
   totalPaymentDue: '', rounding: false, owner: '', purchaser: '',
   placeOfSupply: '', currency: 'INR', useBillToForTax: false,
@@ -602,6 +604,8 @@ const INIT_ATTACH = Array.from({ length: 9 }, (_, i) => ({
 
 // â”€â”€â”€ Main Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function NCDelivery() {
+  const [seriesRevision, setSeriesRevision] = useState(0);
+
   const location = useLocation();
   const navigate = useNavigate();
   const { removeTask, upsertTask } = useSapWindowTaskbarActions();
@@ -737,40 +741,21 @@ function NCDelivery() {
     discount: Number(dec.PercentDec), freight: Number(dec.SumDec),
     tax: Number(dec.SumDec), totalPaymentDue: Number(dec.SumDec),
   };
-  const isDocumentEditable = !currentDocEntry || String(header.status || '').toLowerCase() === 'open';
+  const isDocumentEditable = !currentDocEntry || ['open', 'unapproved'].includes(String(header.status || '').toLowerCase());
   const documentBodyRef = useRef(null);
   useClosedDocumentViewMode(documentBodyRef, !isDocumentEditable, [activeTab]);
   const hasBuyerCode = Boolean(String(header.vendor || '').trim());
   const isUpdateMode = Boolean(currentDocEntry);
   const hasUnsavedChanges = Boolean(currentDocEntry && isDirty);
   const updateActionLabel = hasUnsavedChanges ? 'Update' : 'OK';
-  const resolvePreferredSeries = (seriesList, postingDateValue, selectedSeries = '') => {
-    if (!Array.isArray(seriesList) || !seriesList.length) return null;
-
-    const normalizedSeries = String(selectedSeries || '').trim();
-    const matchedSeries = normalizedSeries
-      ? seriesList.find((series) => String(series.Series) === normalizedSeries)
-      : null;
-
-    if (matchedSeries) return matchedSeries;
-
-    const preferredSeries = String(generalSettingsRef.current.ncDeliverySeries || '').trim();
-    const settingsSeries = preferredSeries
-      ? seriesList.find((series) => String(series.Series) === preferredSeries)
-      : null;
-
-    if (settingsSeries) return settingsSeries;
-
-    const seriesDate = postingDateValue ? new Date(`${postingDateValue}T00:00:00`) : new Date();
-    return getDefaultSeriesForCurrentYear(seriesList, seriesDate) || seriesList[0];
-  };
+  const resolvePreferredSeries = (seriesList, postingDateValue, selectedSeries = '') => pickDocumentSeries(seriesList, selectedSeries);
   const primaryActionLabel = pageState.posting
     ? 'Saving...'
     : isUpdateMode
       ? updateActionLabel
       : 'Add';
   const secondaryActionLabel = pageState.posting
-    ? 'Savingâ€¦'
+    ? 'Saving...'
     : currentDocEntry
       ? updateActionLabel
       : 'Add & New';
@@ -861,7 +846,7 @@ function NCDelivery() {
       uomCode: rawUomCode,
       stdDiscount: String(line?.stdDiscount ?? line?.DiscountPercent ?? line?.DiscPrcnt ?? ''),
       stcode: line?.stcode || line?.STCode || '',
-      taxCode: line?.taxCode || line?.TaxCode || '',
+      taxCode: line?.taxCode || line?.TaxCode || line?.VatGroup || '',
       total: String(line?.total ?? line?.LineTotal ?? ''),
       taxAmount: String(line?.taxAmount ?? line?.LineTaxAmount ?? line?.VatSum ?? ''),
       whse: line?.whse || line?.Warehouse || line?.WarehouseCode || line?.WhsCode || '',
@@ -958,51 +943,7 @@ function NCDelivery() {
     return () => { ignore = true; };
   }, []);
 
-  useEffect(() => {
-    if (currentDocEntry || requestedEditDocEntry || isHydratingDocumentRef.current) return;
 
-    const seriesDate = String(header.postingDate || '').trim();
-    if (!seriesDate) {
-      setRefData(prev => ({ ...prev, series: [] }));
-      setHeader(prev => ({ ...prev, series: '', nextNumber: '' }));
-      return;
-    }
-
-    let ignore = false;
-
-    const loadSeriesForPostingDate = async () => {
-      try {
-        const seriesResponse = await fetchDocumentSeries(seriesDate, { branch: header.branch || '' });
-        const availableSeries = seriesResponse.data?.series || [];
-
-        if (ignore || requestedEditDocEntry || isHydratingDocumentRef.current) return;
-
-        setRefData(prev => ({ ...prev, series: availableSeries }));
-
-        if (!availableSeries.length) {
-          setHeader(prev => ({ ...prev, series: '', nextNumber: '' }));
-          return;
-        }
-
-        const currentSeries = String(header.series || '');
-        const defaultSeries = resolvePreferredSeries(availableSeries, seriesDate, currentSeries);
-
-        if (!defaultSeries?.Series) return;
-
-        if (String(defaultSeries.Series) !== currentSeries || !String(header.nextNumber || '').trim()) {
-          handleSeriesChange(defaultSeries.Series);
-        }
-      } catch (e) {
-        if (!ignore) {
-          setPageState(p => ({ ...p, error: getErrMsg(e, 'Failed to load document series.') }));
-        }
-      }
-    };
-
-    loadSeriesForPostingDate();
-
-    return () => { ignore = true; };
-  }, [currentDocEntry, requestedEditDocEntry, header.branch, header.postingDate]);
 
   // â”€â”€ load existing order â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
@@ -1131,14 +1072,7 @@ function NCDelivery() {
   }, [hydrateLoadedLine, location.pathname, location.state, navigate]);
 
   useEffect(() => {
-    if (!currentDocEntry) {
-      setFreightModal(prev => (
-        prev.freightCharges.length || prev.loading
-          ? { ...prev, freightCharges: [], loading: false }
-          : prev
-      ));
-      return;
-    }
+    if (!currentDocEntry) return;
 
     let ignore = false;
     const loadSavedFreightCharges = async () => {
@@ -1221,7 +1155,7 @@ function NCDelivery() {
     setSnapshotPending(false);
     setIsDirty(false);
     setValErrors({ header: {}, lines: {}, form: '' });
-    setFreightModal({ open: false, freightCharges: [], loading: false });
+    setFreightModal({ open: false, freightCharges: Array.isArray(copyFrom.freightCharges) ? copyFrom.freightCharges : [], loading: false });
     setCopyFromModal(false);
 
     // Populate header for a new NC Delivery copied from the source document.
@@ -1539,7 +1473,6 @@ function NCDelivery() {
   };
 
   const calcTotals = () => {
-    const taxRateMap = new Map(effectiveTaxCodes.map(t => [String(t.Code || ''), parseNum(t.Rate)]));
     const subtotal = lines.reduce((s, l) => s + calcLineTotal(l), 0);
     const discPct = parseNum(header.discount);
     const discAmt = roundTo(subtotal * discPct / 100, numDec.total);
@@ -1552,12 +1485,11 @@ function NCDelivery() {
       lines.forEach(l => {
         const net = calcLineTotal(l);
         if (net <= 0 || !l.taxCode) return;
-        const rate = taxRateMap.get(String(l.taxCode || '')) || 0;
+        const tax = findTaxCode(effectiveTaxCodes, l.taxCode);
+        const rate = parseNum(tax?.Rate);
         const base = discSub * (net / subtotal);
-        const explicitTaxValue = String(l.taxAmount ?? '').trim() === '' ? null : Number(l.taxAmount);
-        const lineTax = Number.isFinite(explicitTaxValue)
-          ? roundTo(explicitTaxValue, numDec.tax)
-          : roundTo(base * rate / 100, numDec.tax);
+        const lineTax = roundTo(getDocumentLinePayableTax({ taxableAmount: base, tax,
+          savedTaxAmount: l.taxAmount }), numDec.tax);
         taxAmt += lineTax;
         const ex = taxMap.get(l.taxCode) || { taxCode: l.taxCode, taxRate: rate, taxableAmount: 0, taxAmount: 0 };
         ex.taxableAmount = roundTo(ex.taxableAmount + base, numDec.total);
@@ -1569,8 +1501,9 @@ function NCDelivery() {
     if (taxAmt === 0) { const lt = roundTo(parseNum(header.tax), numDec.tax); if (lt > 0) taxAmt = lt; }
     taxAmt = roundTo(taxAmt + freightTaxAmt, numDec.tax);
     const totalBeforeRounding = roundTo(discSub + freight + taxAmt, numDec.totalPaymentDue);
-    const roundingAmount = header.rounding ? calcRoundingAmount(totalBeforeRounding, numDec.totalPaymentDue) : 0;
-    const total = roundTo(totalBeforeRounding + roundingAmount, numDec.totalPaymentDue);
+    const { roundingAmount, total } = calculateDocumentRounding(
+      totalBeforeRounding, header.rounding, numDec.totalPaymentDue, currentDocEntry ? header : null, getDocumentRoundingPolicy(refData, header),
+    );
     return {
       subtotal,
       discAmt,
@@ -1981,22 +1914,13 @@ function NCDelivery() {
     }
   };
   
-  const handleSeriesChange = async (seriesValue) => {
-    if (!seriesValue) return;
-    
-    setPageState(p => ({ ...p, seriesLoading: true }));
-    setHeader(p => ({ ...p, series: seriesValue, nextNumber: '...' }));
-    
-    try {
-      const res = await fetchNextNumber(seriesValue);
-      setHeader(p => ({ ...p, nextNumber: String(res.data.nextNumber || '') }));
-    } catch (err) {
-      setHeader(p => ({ ...p, nextNumber: 'Error' }));
-      setPageState(p => ({ ...p, error: 'Failed to get next document number' }));
-    } finally {
-      setPageState(p => ({ ...p, seriesLoading: false }));
-    }
-  };
+  const handleSeriesChange = (seriesValue) => {
+      const manual = ['-1', 'manual', '__sap_manual__'].includes(String(seriesValue).toLowerCase());
+      if (manual && !canUseManualSeries(refData)) return;
+      const selected = (refData.series || []).find(row => String(row.Series) === String(seriesValue));
+      setHeader(prev => ({ ...prev, series: manual ? '-1' : selected ? String(selected.Series) : '', nextNumber: manual ? '' : String(selected?.NextNumber ?? ''), docNo: '' }));
+      setPageState(prev => ({ ...prev, error: '', success: '' }));
+    };
 
   const handleLineChange = async (i, e) => {
     const { name, value } = e.target;
@@ -3478,6 +3402,8 @@ function NCDelivery() {
 
   // â”€â”€ Copy From handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleCopyFrom = (data, sourceType) => {
+    setSeriesRevision(value => value + 1);
+
     const sourceDocument = data || {};
     const unwrappedDocument =
       sourceDocument.sales_order ||
@@ -3691,7 +3617,7 @@ function NCDelivery() {
       sourceDocEntry: currentDocEntry,
       sourceDocNo: header.docNo,
       sourcePath: location.pathname,
-      sourceSnapshot: { header, lines, headerUdfs },
+      sourceSnapshot: { header, lines, headerUdfs, freightCharges: freightModal.freightCharges },
       restoreState: { ncDeliveryDocEntry: currentDocEntry },
       navigate,
       upsertTask,
@@ -3703,6 +3629,8 @@ function NCDelivery() {
   };
 
   const handleDuplicate = () => {
+    setSeriesRevision(value => value + 1);
+
     const duplicated = duplicateDocumentInPlace({
       currentDocEntry,
       header,
@@ -3730,6 +3658,11 @@ function NCDelivery() {
   };
 
   // â”€â”€ submit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const narrowConfirmationUpdate = useConfirmationOnlyUpdate({
+    docEntry: currentDocEntry, isDirty,
+    state: { header, lines, headerUdfs, freightCharges: freightModal.freightCharges , company_id: SALES_ORDER_COMPANY_ID },
+  });
+
   const handleSubmit = async (ev) => {
     ev.preventDefault();
     if (!isDocumentEditable) {
@@ -3781,7 +3714,7 @@ function NCDelivery() {
         freightCharges: freightModal.freightCharges,
         header_udfs: normalizeUdfState(headerUdfDefinitions, headerUdfs),
       };
-      const r = currentDocEntry ? await updateDelivery(currentDocEntry, payload) : await submitDelivery(payload);
+      const r = currentDocEntry ? await updateDelivery(currentDocEntry, narrowConfirmationUpdate(payload)) : await submitDelivery(payload);
       const dn = r.data.doc_num ? ` Doc No: ${r.data.doc_num}.` : '';
       setSnapshotPending(false);
       setIsDirty(false);
@@ -3819,6 +3752,8 @@ function NCDelivery() {
   };
 
   const resetForm = () => {
+    setSeriesRevision(value => value + 1);
+
     setSnapshotPending(false);
     setIsDirty(false);
     defaultToVendorAppliedRef.current = '';
@@ -3869,12 +3804,14 @@ function NCDelivery() {
   // Continue in next part with render...
 
   // â”€â”€ render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  useDocumentSeries({ endpoint: '/nc-delivery', companyKey: refData.company, currentDocEntry, header: header, setHeader, setRefData, setPageState, ready: !pageState.loading && !pageState.posting , refreshKey: seriesRevision});
+
   return (
     <form ref={formRef} className={`del-page sap-document-page${isRightSidebarOpen ? ' del-page--sidebar-open' : ''}`} onSubmit={handleSubmit} onChangeCapture={markDirty}>
 
       {/* toolbar */}
       <div className="del-toolbar sap-document-toolbar">
-        <span className="del-toolbar__title">NC Delivery{currentDocEntry ? ` â€” #${header.docNo || currentDocEntry}` : ''}</span>
+        <span className="del-toolbar__title">NC Delivery{currentDocEntry ? ` - #${header.docNo || currentDocEntry}` : ''}</span>
         <button type="submit" className="del-btn del-btn--primary sap-document-toolbar__primary" disabled={pageState.posting || !isDocumentEditable} title={primaryActionLabel}>
           {primaryActionLabel}
         </button>
@@ -3927,7 +3864,7 @@ function NCDelivery() {
               if (!isActive) dropdown.classList.add('active');
             }}
           >
-            Copy From â–¼
+            Copy From ▼
           </button>
           <div className="del-dropdown-menu">
             {[
@@ -3967,7 +3904,7 @@ function NCDelivery() {
               if (!isActive) dropdown.classList.add('active');
             }}
           >
-            Copy To â–¼
+            Copy To ▼
           </button>
           <div className="del-dropdown-menu">
             {[
@@ -3998,7 +3935,7 @@ function NCDelivery() {
       </div>
 
       {/* alerts */}
-      {pageState.loading && <div className="del-alert del-alert--success" style={{ marginTop: 0 }}>Loadingâ€¦</div>}
+      {pageState.loading && <div className="del-alert del-alert--success" style={{ marginTop: 0 }}>Loading...</div>}
       {pageState.error && <div className="del-alert del-alert--error">{pageState.error}</div>}
       {pageState.success && <div className="del-alert del-alert--success">{pageState.success}</div>}
       {refData.warnings?.length > 0 && (
@@ -4182,9 +4119,9 @@ function NCDelivery() {
                         onChange={handleHeaderChange}
                         disabled={!!currentDocEntry || pageState.seriesLoading}
                       >
-                        <option value="">Select Series</option>
+                        <option value="">{pageState.seriesLoading ? 'Loading series...' : pageState.seriesError ? 'Series unavailable' : 'Select Series'}</option>
                         {getSapVisibleDocumentSeries(refData.series, {
-                          selectedSeries: header.series,
+                          selectedSeries: header.series, includeHistorical: Boolean(currentDocEntry),
                           postingDate: header.postingDate || header.documentDate,
                         }).map(s => (
                           <option key={s.Series} value={s.Series}>
@@ -4452,7 +4389,7 @@ function NCDelivery() {
                       if (!isActive) dropdown.classList.add('active');
                     }}
                   >
-                    Copy From â–¼
+                    Copy From ▼
                   </button>
                   <div className="del-dropdown-menu">
                     {[
@@ -4493,7 +4430,7 @@ function NCDelivery() {
                       if (!isActive) dropdown.classList.add('active');
                     }}
                   >
-                    Copy To â–¼
+                    Copy To ▼
                   </button>
                   <div className="del-dropdown-menu">
                     {[

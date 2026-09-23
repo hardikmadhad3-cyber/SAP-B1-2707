@@ -1,3 +1,4 @@
+const { getReportTableColumns } = require('../reportMetadataService');
 const db = require("../dbService");
 
 const normalizeText = (value) => String(value || "").trim();
@@ -6,36 +7,14 @@ const toNumber = (value) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
-const tableColumnsCache = new Map();
+
 
 const queryRows = async (sql, params = {}, options = {}) => {
   const result = await db.query(sql, params, options);
   return result.recordset || result || [];
 };
 
-const getTableColumns = async (tableName, options = {}) => {
-  const normalized = normalizeText(tableName).toUpperCase();
-  if (!normalized) return new Set();
-
-  const cacheKey = `${normalizeText(options.databaseName)}:${normalized}`;
-  if (tableColumnsCache.has(cacheKey)) {
-    return tableColumnsCache.get(cacheKey);
-  }
-
-  const rows = await queryRows(
-    `
-      SELECT COLUMN_NAME
-      FROM INFORMATION_SCHEMA.COLUMNS
-      WHERE TABLE_NAME = @tableName
-    `,
-    { tableName: normalized },
-    options,
-  );
-
-  const columns = new Set(rows.map((row) => normalizeText(row.COLUMN_NAME).toUpperCase()));
-  tableColumnsCache.set(cacheKey, columns);
-  return columns;
-};
+const getTableColumns = getReportTableColumns;
 
 const firstExistingColumn = async (tableName, candidates, options = {}) => {
   const columns = await getTableColumns(tableName, options);

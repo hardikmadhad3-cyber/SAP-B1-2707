@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import apiClient from "../../../api/client";
+import "../receiptFromProduction.css";
 
 const toQty = (value) => {
   const num = Number(value);
@@ -10,27 +11,38 @@ const emptyBatch = () => ({ batch_number: "", quantity: 0 });
 const emptySerial = () => ({ serial_number: "" });
 const emptyBin = () => ({ bin_abs: "", quantity: 0, serial_batch_base_line: "" });
 
-export default function ReceiptAllocationModal({ line, readOnly, onSave, onClose }) {
+export default function ReceiptAllocationModal({
+  line,
+  readOnly,
+  onSave,
+  onClose,
+  allocationEndpoint = "/receipt-from-production/allocation-options",
+  title = "Receipt Allocations",
+}) {
   const [loadingBins, setLoadingBins] = useState(false);
   const [binError, setBinError] = useState("");
   const [bins, setBins] = useState([]);
+  const [availableBatches, setAvailableBatches] = useState([]);
+  const [availableSerials, setAvailableSerials] = useState([]);
   const [batchRows, setBatchRows] = useState(line.batch_numbers?.length ? line.batch_numbers : [emptyBatch()]);
   const [serialRows, setSerialRows] = useState(line.serial_numbers?.length ? line.serial_numbers : [emptySerial()]);
   const [binRows, setBinRows] = useState(line.bin_allocations?.length ? line.bin_allocations : [emptyBin()]);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    if (!line.enable_bin_locations || !line.warehouse) return;
+    if (!line.warehouse || (!line.enable_bin_locations && !line.manage_batch && !line.manage_serial)) return;
 
     let active = true;
     setLoadingBins(true);
     setBinError("");
 
     apiClient
-      .get("/bin-locations", { params: { warehouse: line.warehouse } })
+      .get(allocationEndpoint, { params: { itemCode: line.item_code, warehouse: line.warehouse } })
       .then((response) => {
         if (!active) return;
-        setBins(response.data?.value || []);
+        setBins(response.data?.bins || []);
+        setAvailableBatches(response.data?.batches || []);
+        setAvailableSerials(response.data?.serials || []);
       })
       .catch((err) => {
         if (!active) return;
@@ -43,7 +55,7 @@ export default function ReceiptAllocationModal({ line, readOnly, onSave, onClose
     return () => {
       active = false;
     };
-  }, [line.enable_bin_locations, line.warehouse]);
+  }, [allocationEndpoint, line.enable_bin_locations, line.item_code, line.manage_batch, line.manage_serial, line.warehouse]);
 
   const requiredQty = toQty(line.quantity);
   const validBatchRows = batchRows.filter((row) => row.batch_number && toQty(row.quantity) > 0);
@@ -86,6 +98,9 @@ export default function ReceiptAllocationModal({ line, readOnly, onSave, onClose
     }
 
     if (line.manage_serial) {
+      if (!Number.isInteger(requiredQty)) {
+        return "Serial-managed quantity must be a whole number.";
+      }
       if (validSerialRows.length === 0) {
         return "Serial numbers are required.";
       }
@@ -133,7 +148,7 @@ export default function ReceiptAllocationModal({ line, readOnly, onSave, onClose
       <div className="rfp-alloc-modal" onClick={(e) => e.stopPropagation()}>
         <div className="rfp-alloc-modal__header">
           <div>
-            <div className="rfp-alloc-modal__title">Receipt Allocations</div>
+            <div className="rfp-alloc-modal__title">{title}</div>
             <div className="rfp-alloc-modal__subtitle">
               {line.item_code} - {line.item_name || "Item"}
             </div>
@@ -178,6 +193,7 @@ export default function ReceiptAllocationModal({ line, readOnly, onSave, onClose
                       <td>
                         <input
                           className="rfp-alloc-input"
+                          list="production-available-batches"
                           value={row.batch_number || ""}
                           readOnly={readOnly}
                           onChange={(e) => updateArrayRow(setBatchRows, index, "batch_number", e.target.value)}
@@ -205,6 +221,13 @@ export default function ReceiptAllocationModal({ line, readOnly, onSave, onClose
                   ))}
                 </tbody>
               </table>
+              <datalist id="production-available-batches">
+                {availableBatches.map((batch) => (
+                  <option key={batch.BatchNumber} value={batch.BatchNumber}>
+                    {batch.Quantity != null ? `Available: ${batch.Quantity}` : ""}
+                  </option>
+                ))}
+              </datalist>
               <div className="rfp-alloc-section__summary">Total: {batchTotal.toFixed(2)}</div>
             </section>
           )}
@@ -232,6 +255,7 @@ export default function ReceiptAllocationModal({ line, readOnly, onSave, onClose
                       <td>
                         <input
                           className="rfp-alloc-input"
+                          list="production-available-serials"
                           value={row.serial_number || ""}
                           readOnly={readOnly}
                           onChange={(e) => updateArrayRow(setSerialRows, index, "serial_number", e.target.value)}
@@ -248,6 +272,11 @@ export default function ReceiptAllocationModal({ line, readOnly, onSave, onClose
                   ))}
                 </tbody>
               </table>
+              <datalist id="production-available-serials">
+                {availableSerials.map((serial) => (
+                  <option key={serial.InternalSerialNumber} value={serial.InternalSerialNumber} />
+                ))}
+              </datalist>
               <div className="rfp-alloc-section__summary">Count: {validSerialRows.length}</div>
             </section>
           )}

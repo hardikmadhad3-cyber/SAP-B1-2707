@@ -1,6 +1,8 @@
 const db = require("./dbService");
 const { appendSapSearchCondition } = require("./documentListUtils");
-const { escapeLikeValue, LIKE_ESCAPE_SQL } = require('./salesDocumentDbCompatibility');
+const { escapeLikeValue, LIKE_ESCAPE_SQL, createTableFieldMetadataReader } = require('./salesDocumentDbCompatibility');
+const { aggregatePayableTaxRates } = require('./documentTaxUtils');
+const readTaxAuthorityMetadata = createTableFieldMetadataReader({ database: db });
 
 const toInt = (value, fallback) => {
   const parsed = Number.parseInt(value, 10);
@@ -800,12 +802,24 @@ const queryDocumentTaxCodes = async (query = "", documentType = "", top = 500, s
     componentParams[key] = code;
     return `@${key}`;
   });
+  const authorityFields = await readTaxAuthorityMetadata('OSTA');
+  const authorityColumn = name => Object.keys(authorityFields).find(field => field.toLowerCase() === name.toLowerCase());
+  const reverseColumn = authorityColumn('RvsCrgPrc');
+  const authorityCodeColumn = authorityColumn('Code');
+  const authorityTypeColumn = authorityColumn('Type');
+  const quoteAuthorityColumn = name => `[${name.replace(/]/g, ']]')}]`;
+  const canReadReverse = reverseColumn && authorityCodeColumn && authorityTypeColumn;
+  const authorityJoin = canReadReverse
+    ? `LEFT JOIN OSTA TA ON TA.${quoteAuthorityColumn(authorityCodeColumn)} = T0.STACode AND TA.${quoteAuthorityColumn(authorityTypeColumn)} = T0.STAType`
+    : '';
   const componentRows = await queryRows(`
     SELECT
       T0.STCCode AS Code,
       T0.STACode,
-      T0.EfctivRate
+      T0.EfctivRate,
+      ${canReadReverse ? `ISNULL(TA.${quoteAuthorityColumn(reverseColumn)}, 0)` : '0'} AS ReverseChargePercent
     FROM STC1 T0
+    ${authorityJoin}
     WHERE T0.STCCode IN (${componentPlaceholders.join(', ')})
       AND T0.STAType IN ('-100', '-110', '-120')
     ORDER BY T0.STCCode, T0.STACode
@@ -819,8 +833,10 @@ const queryDocumentTaxCodes = async (query = "", documentType = "", top = 500, s
     return acc;
   }, new Map());
 
+  const payableRates = aggregatePayableTaxRates(componentRows);
   return mappedRows.map((row) => ({
     ...row,
+    PayableRate: payableRates.get(row.Code) ?? Number(row.Rate || 0),
     Components: (componentsByCode.get(row.Code) || []).join(', '),
   }));
 };

@@ -1,3 +1,6 @@
+import useConfirmationOnlyUpdate from '../../utils/useConfirmationOnlyUpdate';
+import { calculateDocumentRounding, getDocumentRoundingPolicy } from '../../utils/documentRounding';
+import useDocumentSeries from '../../hooks/useDocumentSeries';
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import './styles/ARCreditMemo.css';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -31,7 +34,8 @@ import { useSapWindowTaskbarActions } from '../../components/SapWindowTaskbarCon
 import { determineTaxCode, recalculateAllTaxCodes, getGSTTypeLabel } from '../../utils/taxEngine';
 import { filterWarehousesByBranch, getWarehouseBranchId } from '../../utils/warehouseBranch';
 import { hydrateDocumentLineFromItem, mergeItemMaster } from '../../utils/documentItemHydration';
-import { getDefaultSeriesForCurrentYear, getSapVisibleDocumentSeries } from '../../utils/seriesDefaults';
+import { applyUomCodeSelection, getItemDefaultUom, getLineUomOptions } from '../../utils/documentUom';
+import { getSapVisibleDocumentSeries, canUseManualSeries } from '../../utils/seriesDefaults';
 import { readGeneralSettings } from '../../utils/generalSettingsStorage';
 import {
   convertDocumentAmountForDisplay,
@@ -40,17 +44,19 @@ import {
   resolveDocumentCurrency,
 } from '../../utils/documentCurrency';
 import { useCompanyScopedFormSettings } from '../../utils/formSettingsStorage';
+import { buildCompanyFormQueryContext } from '../../utils/companyFormQueryContext';
 import { updateFormSettingPreference } from '../../utils/formSettingsPreferences';
 import { buildVisibleEnteredRowUdfPayload } from '../../utils/rowUdfPayload';
 import { getStateCodeValue, getStateDisplayName } from '../../utils/stateDisplay';
 import { findTaxCode, getTaxComponentCodes } from '../../utils/taxCodeComponents';
+import { getDocumentLinePayableTax } from '../../utils/documentLineTax';
 import {
   buildCopyToState,
   consumeCopyToState,
   openCopyToDocument,
   replaceRouteStatePreservingWindow,
 } from '../../utils/copyToState';
-import { duplicateDocumentInPlace, refreshDuplicateSeries } from '../../utils/documentDuplicate';
+import { duplicateDocumentInPlace } from '../../utils/documentDuplicate';
 import useValidationHighlights from '../../utils/useValidationHighlights';
 import useSalesEmployeeSetup from '../../hooks/useSalesEmployeeSetup';
 import useDocumentDraftTask from '../../hooks/useDocumentDraftTask';
@@ -71,6 +77,7 @@ import {
   stripSalesDocumentTopLevelUdfs,
 } from '../../utils/salesDocumentLiveFields';
 import { hydrateWorkbookDocumentLine } from '../../utils/workbookLineHydration';
+import { applyDocumentTablePaste } from '../../utils/documentTableClipboard';
 import {
   fetchARCreditMemoReferenceData,
   fetchARCreditMemoCustomerDetails,
@@ -78,7 +85,6 @@ import {
   submitARCreditMemo,
   updateARCreditMemo,
   fetchDocumentSeries,
-  fetchNextNumber,
   fetchFreightCharges,
   fetchItemsForModal,
   fetchBatchesByItem,
@@ -116,7 +122,6 @@ const normalizeUdfState = (definitions = [], values = {}) => (
 const today = () => new Date().toISOString().split('T')[0];
 const parseNum = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const roundTo = (v, d) => { const f = 10 ** Math.max(d, 0); return Math.round((v + Number.EPSILON) * f) / f; };
-const calcRoundingAmount = (value, decimals) => roundTo(Math.round(value) - value, decimals);
 const fmtDec = (v, d) => { if (v === '' || v == null) return ''; const n = Number(v); return Number.isNaN(n) ? '' : n.toFixed(Math.max(d, 0)); };
 const firstEnteredValue = (...values) => values.find((value) => (
   value !== undefined
@@ -317,7 +322,7 @@ const INIT_HEADER = {
   postingDate: today(), deliveryDate: '', documentDate: today(), contractDate: '',
   transactionType: 'GST Tax Invoice',
   branchRegNo: '', shipTo: '', shipToCode: '', payTo: '', payToCode: '',
-  shippingType: '', confirmed: false, journalRemark: '', paymentTerms: '',
+  shippingType: '', confirmed: undefined, journalRemark: '', paymentTerms: '',
   paymentMethod: '', otherInstruction: '', discount: '', freight: '', tax: '',
   totalPaymentDue: '', rounding: false, roundingAmount: '', owner: '', purchaser: '', salesEmployee: '',
   placeOfSupply: '', currencyMode: 'BP', currency: '', exchangeRate: '', useBillToForTax: false,
@@ -345,6 +350,8 @@ const getARCreditMemoDocumentLines = (creditMemo = {}) => {
 };
 
 function ARCreditMemo() {
+  const [seriesRevision, setSeriesRevision] = useState(0);
+
   const location = useLocation();
   const navigate = useNavigate();
   const { company } = useAuth();
@@ -401,7 +408,7 @@ function ARCreditMemo() {
   useValidationHighlights(valErrors);
   const [snapshotPending, setSnapshotPending] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
-  const [seriesReloadToken, setSeriesReloadToken] = useState(0);
+  const [, setSeriesReloadToken] = useState(0);
   const [addressModal, setAddressModal] = useState(null);
   const [taxInfoModal, setTaxInfoModal] = useState(false);
   const [bpModal, setBpModal] = useState(false);
@@ -494,31 +501,6 @@ function ARCreditMemo() {
     ));
     return normalizeBranchSelection(getWarehouseBranchId(warehouse));
   }, [refData.warehouses]);
-  const resolvePreferredSeries = (seriesList, postingDateValue, selectedSeries = '') => {
-    if (!Array.isArray(seriesList) || !seriesList.length) return null;
-
-    const selectedBranchId = normalizeBranchSelection(header.branch);
-    const compatibleSeries = seriesList.filter((series) => {
-      const seriesBranchId = String(series?.BPLId ?? '').trim();
-      return !seriesBranchId || seriesBranchId === '0' || seriesBranchId === '-1'
-        || !selectedBranchId || seriesBranchId === selectedBranchId;
-    });
-
-    if (!compatibleSeries.length) return null;
-
-    const normalizedSeries = String(selectedSeries || '').trim();
-    const matchedSeries = normalizedSeries
-      ? compatibleSeries.find((series) => String(series.Series) === normalizedSeries)
-      : null;
-
-    if (matchedSeries) return matchedSeries;
-
-    const sapDefaultSeries = compatibleSeries.find((series) => series.IsDefault || series.isDefault);
-    if (sapDefaultSeries) return sapDefaultSeries;
-
-    const seriesDate = postingDateValue ? new Date(`${postingDateValue}T00:00:00`) : new Date();
-    return getDefaultSeriesForCurrentYear(compatibleSeries, seriesDate) || compatibleSeries[0];
-  };
   const primaryActionLabel = pageState.posting
     ? 'Saving...'
     : currentDocEntry
@@ -808,48 +790,7 @@ function ARCreditMemo() {
   }, [companyFormSettingsReady, formSettingsStatus.hasUnsavedChanges, formSettingsStorageKey, headerUdfDefinitions, matrixColumnDefinitions, replaceFormSettings, rowUdfDefinitions]);
 
   // â”€â”€ load existing order â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  useEffect(() => {
-    if (currentDocEntry || requestedEditDocEntry) return;
 
-    const seriesDate = String(header.postingDate || '').trim();
-    if (!seriesDate) {
-      setRefData(prev => ({ ...prev, series: [] }));
-      setHeader(prev => ({ ...prev, series: '', nextNumber: '' }));
-      return;
-    }
-
-    let ignore = false;
-
-    const loadSeriesForPostingDate = async () => {
-      try {
-        const seriesResponse = await fetchDocumentSeries(seriesDate, header.transactionType || 'GST Tax Invoice', header.branch);
-        const availableSeries = seriesResponse.data?.series || [];
-
-        if (ignore || requestedEditDocEntry) return;
-
-        setRefData(prev => ({ ...prev, series: availableSeries }));
-
-        if (!availableSeries.length) {
-          setHeader(prev => ({ ...prev, series: '', nextNumber: '' }));
-          return;
-        }
-
-        const currentSeries = String(header.series || '');
-        const defaultSeries = resolvePreferredSeries(availableSeries, seriesDate, currentSeries);
-
-        if (!defaultSeries?.Series) return;
-
-        if (String(defaultSeries.Series) !== currentSeries || !String(header.nextNumber || '').trim()) {
-          handleSeriesChange(defaultSeries.Series);
-        }
-      } catch (e) {
-        if (!ignore) setPageState(p => ({ ...p, error: getErrMsg(e, 'Failed to load document series.') }));
-      }
-    };
-
-    loadSeriesForPostingDate();
-    return () => { ignore = true; };
-  }, [currentDocEntry, requestedEditDocEntry, header.postingDate, header.transactionType, header.branch, seriesReloadToken]);
 
   useEffect(() => {
     const docEntry = requestedEditDocEntry;
@@ -984,14 +925,7 @@ function ARCreditMemo() {
   }, [loadedCreditMemo, rowUdfDefinitions, refData.items, isDirty]);
 
   useEffect(() => {
-    if (!currentDocEntry) {
-      setFreightModal(prev => (
-        prev.freightCharges.length || prev.loading
-          ? { ...prev, freightCharges: [], loading: false }
-          : prev
-      ));
-      return;
-    }
+    if (!currentDocEntry) return;
 
     let ignore = false;
     const loadSavedFreightCharges = async () => {
@@ -1134,6 +1068,7 @@ function ARCreditMemo() {
     }));
 
     setHeaderUdfs(normalizeUdfState(headerUdfDefinitions, srcHeaderUdfs));
+    setFreightModal({ open: false, freightCharges: Array.isArray(copyFrom.freightCharges) ? copyFrom.freightCharges : [], loading: false });
 
     if (Array.isArray(srcLines) && srcLines.length > 0) {
       setLines(srcLines.map((l, idx) => ({
@@ -1183,7 +1118,6 @@ function ARCreditMemo() {
   const firstLineWhse = String(lines[0]?.whse || '').trim();
   const selectedWhseAddr = refData.warehouse_addresses.find(w => String(w.WhsCode || '') === firstLineWhse);
   const defaultShipTo = fmtAddr(refData.company_address);
-  const uomGroupMap = (refData.uom_groups || []).reduce((acc, g) => { acc[g.AbsEntry] = g.uomCodes || []; return acc; }, {});
 
   const effectiveTaxCodes = refData.tax_codes || [];
   const effectiveWarehouses = refData.warehouses || [];
@@ -1217,14 +1151,8 @@ function ARCreditMemo() {
 
   const getUomOptions = useCallback((line) => {
     const item = refData.items.find(i => String(i.ItemCode || '') === String(line.itemNo || ''));
-    if (item) {
-      const codes = uomGroupMap[item.UoMGroupEntry];
-      if (codes && codes.length) return codes;
-      const fb = String(item.SalesUnit || item.InventoryUOM || '').trim();
-      if (fb) return [fb];
-    }
-    return [];
-  }, [refData.items, uomGroupMap]);
+    return getLineUomOptions(line, item, refData.uom_groups).map((uom) => uom.uomCode);
+  }, [refData.items, refData.uom_groups]);
 
   const lineItemOptions = lines.reduce((acc, line, i) => {
     const code = String(line.itemNo || '').trim();
@@ -1293,7 +1221,6 @@ function ARCreditMemo() {
   };
 
   const calcTotals = () => {
-    const taxRateMap = new Map(effectiveTaxCodes.map(t => [String(t.Code || ''), parseNum(t.Rate)]));
     const subtotal = lines.reduce((s, l) => s + calcLineTotal(l), 0);
     const discPct = parseNum(header.discount);
     const discAmt = roundTo(subtotal * discPct / 100, numDec.total);
@@ -1306,12 +1233,11 @@ function ARCreditMemo() {
       lines.forEach(l => {
         const net = calcLineTotal(l);
         if (net <= 0 || !l.taxCode) return;
-        const rate = taxRateMap.get(String(l.taxCode || '')) || 0;
+        const tax = findTaxCode(effectiveTaxCodes, l.taxCode);
+        const rate = parseNum(tax?.Rate);
         const base = discSub * (net / subtotal);
-        const explicitTaxValue = String(l.taxAmount ?? '').trim() === '' ? null : Number(l.taxAmount);
-        const lineTax = Number.isFinite(explicitTaxValue)
-          ? roundTo(explicitTaxValue, numDec.tax)
-          : roundTo(base * rate / 100, numDec.tax);
+        const lineTax = roundTo(getDocumentLinePayableTax({ taxableAmount: base, tax,
+          savedTaxAmount: l.taxAmount }), numDec.tax);
         taxAmt += lineTax;
         const ex = taxMap.get(l.taxCode) || { taxCode: l.taxCode, taxRate: rate, taxableAmount: 0, taxAmount: 0 };
         ex.taxableAmount = roundTo(ex.taxableAmount + base, numDec.total);
@@ -1323,8 +1249,9 @@ function ARCreditMemo() {
     if (taxAmt === 0) { const lt = roundTo(parseNum(header.tax), numDec.tax); if (lt > 0) taxAmt = lt; }
     taxAmt = roundTo(taxAmt + freightTaxAmt, numDec.tax);
     const totalBeforeRounding = roundTo(discSub + freight + taxAmt, numDec.totalPaymentDue);
-    const roundingAmount = header.rounding ? calcRoundingAmount(totalBeforeRounding, numDec.totalPaymentDue) : 0;
-    const total = roundTo(totalBeforeRounding + roundingAmount, numDec.totalPaymentDue);
+    const { roundingAmount, total } = calculateDocumentRounding(
+      totalBeforeRounding, header.rounding, numDec.totalPaymentDue, currentDocEntry ? header : null, getDocumentRoundingPolicy(refData, header),
+    );
     return {
       subtotal,
       discAmt,
@@ -1734,37 +1661,13 @@ function ARCreditMemo() {
     }
   };
   
-  const handleSeriesChange = async (seriesValue) => {
-    if (!seriesValue || seriesValue === SAP_MANUAL_SERIES_VALUE) {
-      setHeader(p => ({
-        ...p,
-        series: seriesValue,
-        nextNumber: '',
-      }));
-      setPageState(p => ({ ...p, seriesLoading: false, error: '', success: '' }));
-      return;
-    }
-    const selectedSeries = refData.series.find((series) => String(series.Series) === String(seriesValue));
-    const seriesBranchId = normalizeBranchSelection(selectedSeries?.BPLId);
-    
-    setPageState(p => ({ ...p, seriesLoading: true }));
-    setHeader(p => ({
-      ...p,
-      series: seriesValue,
-      nextNumber: '...',
-      branch: seriesBranchId || p.branch,
-    }));
-    
-    try {
-      const res = await fetchNextNumber(seriesValue);
-      setHeader(p => ({ ...p, nextNumber: String(res.data.nextNumber || '') }));
-    } catch (err) {
-      setHeader(p => ({ ...p, nextNumber: 'Error' }));
-      setPageState(p => ({ ...p, error: 'Failed to get next document number' }));
-    } finally {
-      setPageState(p => ({ ...p, seriesLoading: false }));
-    }
-  };
+  const handleSeriesChange = (seriesValue) => {
+      const manual = ['-1', 'manual', '__sap_manual__'].includes(String(seriesValue).toLowerCase());
+      if (manual && !canUseManualSeries(refData)) return;
+      const selected = (refData.series || []).find(row => String(row.Series) === String(seriesValue));
+      setHeader(prev => ({ ...prev, series: manual ? '-1' : selected ? String(selected.Series) : '', nextNumber: manual ? '' : String(selected?.NextNumber ?? ''), docNo: '' }));
+      setPageState(prev => ({ ...prev, error: '', success: '' }));
+    };
 
   const openLineLookup = (field, lineIndex, udfField = null) => {
     if (!isDocumentEditable) return;
@@ -1876,7 +1779,7 @@ function ARCreditMemo() {
             
             // Step 1: Set Item Details
             next.itemDescription = item.ItemName || next.itemDescription;
-            next.uomCode = String(item.SalesUnit || item.InventoryUOM || '').trim();
+            Object.assign(next, getItemDefaultUom(item, refData.uom_groups, 'sales'));
             next.glAccount = next.glAccount || item.SalesGLAccount || item.IncomeAccount || item.IncomeAcct || item.RevenuesAccount || item.RevenuesAc || '';
             next.distRule = next.distRule || item.DistributionRule || item.OcrCode || '';
             next.cogsDistRule = next.distRule || next.cogsDistRule || item.COGSDistributionRule || item.COGSCostingCode || item.CogsOcrCod || '';
@@ -1941,7 +1844,7 @@ function ARCreditMemo() {
           const item = refData.items.find(it => String(it.ItemCode || '') === String(value || ''));
           if (item) {
             next.itemDescription = item.ItemName || next.itemDescription;
-            next.uomCode = String(item.SalesUnit || item.InventoryUOM || '').trim();
+            Object.assign(next, getItemDefaultUom(item, refData.uom_groups, 'sales'));
             next.glAccount = next.glAccount || item.SalesGLAccount || item.IncomeAccount || item.IncomeAcct || item.RevenuesAccount || item.RevenuesAc || '';
             next.distRule = next.distRule || item.DistributionRule || item.OcrCode || '';
             next.cogsDistRule = next.distRule || next.cogsDistRule || item.COGSDistributionRule || item.COGSCostingCode || item.CogsOcrCod || '';
@@ -1992,7 +1895,8 @@ function ARCreditMemo() {
     if (name === 'uomCode' && value) {
       setLines(prev => prev.map((line, idx) => {
         if (idx !== i) return line;
-        const next = { ...line, uomCode: value };
+        const item = refData.items.find(candidate => String(candidate.ItemCode || '') === String(line.itemNo || ''));
+        const next = applyUomCodeSelection(line, value, getLineUomOptions(line, item, refData.uom_groups));
         
         // Fetch UoM conversion factor if item is selected
         if (next.itemNo) {
@@ -2028,8 +1932,11 @@ function ARCreditMemo() {
     setLines(prev => prev.map((line, idx) => {
       if (idx !== i) return line;
       const next = { ...line, [name]: numDec[name] !== undefined ? sanitize(value, numDec[name]) : value };
-                if (name === 'uomName') next.uomNameEdited = true;
-                if (name === 'uomCode') { next.uomName = value; next.uomNameEdited = false; }
+      if (name === 'uomName') next.uomNameEdited = true;
+      if (name === 'uomCode') {
+        const item = refData.items.find(candidate => String(candidate.ItemCode || '') === String(next.itemNo || ''));
+        Object.assign(next, applyUomCodeSelection(next, value, getLineUomOptions(next, item, refData.uom_groups)));
+      }
       if (name === 'distRule') {
         next.cogsDistRule = value;
       }
@@ -2049,9 +1956,56 @@ function ARCreditMemo() {
     setLines(p => p.map((l, idx) => idx === i ? { ...l, [field]: fmtDec(l[field], d) } : l));
   };
 
+  const handleTablePaste = ({ startRowIndex, patches }) => {
+    if (!isDocumentEditable) return;
+    markDirty();
+    setPageState(previous => ({ ...previous, error: '', success: '' }));
+    setValErrors(previous => ({ ...previous, form: '' }));
+    setLines(previous => applyDocumentTablePaste({
+      lines: previous,
+      patches,
+      startRowIndex,
+      createLine: () => ({
+        ...createLine(rowUdfDefinitions),
+        branch: header.branch || '',
+        whse: header.warehouse || '',
+      }),
+      transformLine: (pastedLine, _rowIndex, rowPatch) => {
+        const pastedKeys = new Set(rowPatch.cells.map(cell => cell.key));
+        const next = hydrateWorkbookDocumentLine({
+          line: pastedLine,
+          createLine,
+          rowUdfDefinitions,
+          normalizeUdfState,
+          items: refData.items,
+          fallbackWarehouse: header.warehouse,
+        });
+        if (pastedKeys.has('uomCode')) {
+          const item = refData.items.find(candidate => String(candidate.ItemCode || '') === String(next.itemNo || ''));
+          Object.assign(next, applyUomCodeSelection(next, next.uomCode, getLineUomOptions(next, item, refData.uom_groups)));
+        }
+        if (pastedKeys.has('taxCode')) {
+          next.taxCodeManuallyOverridden = Boolean(String(next.taxCode || '').trim());
+          next.taxCodeRepeat = next.taxCode;
+        }
+        if (pastedKeys.has('distRule')) next.cogsDistRule = next.distRule;
+        next.total = fmtDec(calcLineTotal(next), numDec.total);
+        return next;
+      },
+    }));
+  };
+
+  const handleTableClipboardFeedback = (message, type) => {
+    setPageState(previous => ({
+      ...previous,
+      error: type === 'error' ? message : '',
+      success: type === 'error' ? '' : message,
+    }));
+  };
+
   // â”€â”€ Freight Selection Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openFreightModal = async () => {
-    console.log('ðŸšš Opening freight modal, docEntry:', currentDocEntry);
+    console.log('... Opening freight modal, docEntry:', currentDocEntry);
     if (freightModal.freightCharges.length > 0) {
       setFreightModal(prev => ({ ...prev, open: true, loading: false }));
       return;
@@ -2085,7 +2039,7 @@ function ARCreditMemo() {
   };
 
   const handleFreightApply = (summary) => {
-    console.log('ðŸšš Applied freight charges:', summary);
+    console.log('... Applied freight charges:', summary);
     setFreightModal(prev => ({
       ...prev,
       open: false,
@@ -2474,6 +2428,7 @@ function ARCreditMemo() {
               syncUnitPriceUdf: false,
               calcLineTotal,
               formatTotal: (value) => fmtDec(value, numDec.total),
+              uomGroups: refData.uom_groups,
             }),
             uomCode: selectedUoM,
             batchManaged: itemIsBatchManaged,
@@ -2510,6 +2465,7 @@ function ARCreditMemo() {
             syncUnitPriceUdf: false,
             calcLineTotal,
             formatTotal: (value) => fmtDec(value, numDec.total),
+            uomGroups: refData.uom_groups,
           });
           return {
             ...nextLine,
@@ -2842,9 +2798,13 @@ function ARCreditMemo() {
 
   // â”€â”€ Copy From handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleCopyFrom = (data, sourceType) => {
+    setSeriesRevision(value => value + 1);
+
     console.log('ðŸ“¥ Copy From:', sourceType, data);
     
     const copySource = unwrapCopyFromDocument(data);
+    const copiedFreight = summarizeFreightRows(copySource.freightCharges, effectiveTaxCodes);
+    setFreightModal({ open: false, freightCharges: copiedFreight.rows, loading: false });
     const baseType = BASE_TYPE[sourceType] || 13;
     const normHeader = normaliseDocumentHeader(copySource.header);
     const firstSourceLine = Array.isArray(copySource.lines) && copySource.lines.length ? copySource.lines[0] : {};
@@ -2865,6 +2825,7 @@ function ARCreditMemo() {
       exchangeRate: copySource.header?.exchangeRate || copySource.header?.docRate || copySource.header?.DocRate || '',
       series: '',
       nextNumber: '',
+      freight: fmtDec(copiedFreight.totalNet, numDec.freight),
     }));
     setSeriesReloadToken((token) => token + 1);
 
@@ -2947,6 +2908,8 @@ function ARCreditMemo() {
   };
 
   const handleDuplicate = async () => {
+    setSeriesRevision(value => value + 1);
+
     const duplicateDate = today();
     const duplicated = duplicateDocumentInPlace({
       currentDocEntry,
@@ -2978,21 +2941,16 @@ function ARCreditMemo() {
         series: '',
         nextNumber: '',
       }));
-      try {
-        const seriesResponse = await fetchDocumentSeries(duplicateDate, header.transactionType || 'GST Tax Invoice', header.branch);
-        const duplicateSeries = seriesResponse.data?.series || [];
-        setRefData((prev) => ({ ...prev, series: duplicateSeries }));
-        const preferredSeries = resolvePreferredSeries(duplicateSeries, duplicateDate, '');
-        if (preferredSeries?.Series != null) {
-          handleSeriesChange(preferredSeries.Series);
-        }
-      } catch (_error) {
-        refreshDuplicateSeries(refData.series, '', handleSeriesChange);
-      }
+      
     }
   };
 
   // â”€â”€ submit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const narrowConfirmationUpdate = useConfirmationOnlyUpdate({
+    docEntry: currentDocEntry, isDirty,
+    state: { header, lines, headerUdfs, freightCharges: freightModal.freightCharges, companyDb: activeCompanyDb , company_id: activeCompanyId, companyKey: formSettingsStorageKey },
+  });
+
   const handleSubmit = async (ev) => {
     ev.preventDefault();
     if (!companyFormSettingsReady) {
@@ -3047,7 +3005,7 @@ function ARCreditMemo() {
         freightCharges: freightModal.freightCharges,
         header_udfs: normalizeUdfState(headerUdfDefinitions, headerUdfs),
       };
-      const r = currentDocEntry ? await updateARCreditMemo(currentDocEntry, payload) : await submitARCreditMemo(payload);
+      const r = currentDocEntry ? await updateARCreditMemo(currentDocEntry, narrowConfirmationUpdate(payload)) : await submitARCreditMemo(payload);
       const dn = r.data.doc_num ? ` Doc No: ${r.data.doc_num}.` : '';
       setSnapshotPending(false);
       setIsDirty(false);
@@ -3058,7 +3016,7 @@ function ARCreditMemo() {
       setValErrors({ header: {}, lines: {}, form: '' });
       
       if (Array.isArray(refData.series) && refData.series.length > 0) {
-        handleSeriesChange(refData.series[0].Series);
+        setHeader(prev => ({ ...prev, series: '', nextNumber: '', docNo: '' }));
       }
       
       setPageState(p => ({ ...p, success: `${r.data.message || 'AR Credit Memo saved.'}${dn}` }));
@@ -3071,6 +3029,8 @@ function ARCreditMemo() {
   };
 
   const resetForm = () => {
+    setSeriesRevision(value => value + 1);
+
     setSnapshotPending(false);
     setIsDirty(false);
     setLoadedCreditMemo(null);
@@ -3089,13 +3049,15 @@ function ARCreditMemo() {
   // Continue in next part with render...
 
   // â”€â”€ render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  useDocumentSeries({ endpoint: '/ar-credit-memo', companyKey: formSettingsStorageKey, currentDocEntry, header: header, setHeader, setRefData, setPageState, ready: !pageState.loading && !pageState.posting , refreshKey: seriesRevision});
+
   return (
     <form className={`del-page sap-document-page so-sales-order-page${isRightSidebarOpen ? ' del-page--sidebar-open' : ''}`} onSubmit={handleSubmit} onChangeCapture={markDirty}>
 
       {/* toolbar */}
       <div className="del-toolbar sap-document-toolbar">
-        <span className="del-toolbar__title">A/R Credit Memo{currentDocEntry ? ` â€” #${header.docNo || currentDocEntry}` : ''}</span>
-        <button type="submit" className="del-btn del-btn--primary sap-document-toolbar__primary" disabled={pageState.posting}>
+        <span className="del-toolbar__title">A/R Credit Memo{currentDocEntry ? ` - #${header.docNo || currentDocEntry}` : ''}</span>
+        <button type="submit" className="del-btn del-btn--primary sap-document-toolbar__primary" disabled={pageState.posting || formSettingsStatus.queryModeActive}>
           {primaryActionLabel}
         </button>
         <button type="button" className="del-btn sap-document-toolbar__cancel" onClick={resetForm}>
@@ -3109,7 +3071,7 @@ function ARCreditMemo() {
         >
           {sidebarOpen ? 'Hide UDFs' : 'Show UDFs'}
         </button>
-        <button type="button" className="del-btn sap-document-toolbar__settings" onClick={toggleFormSettings} disabled={!companyFormSettingsReady} title={companyFormSettingsReady ? 'Choose document-line fields' : 'Loading company Form Settings'}>
+        <button type="button" className="del-btn sap-document-toolbar__settings" onClick={toggleFormSettings} disabled={!companyFormSettingsReady || formSettingsStatus.queryModeActive} title={formSettingsStatus.queryModeActive ? 'Company SQL Content layout is active' : (companyFormSettingsReady ? 'Choose document-line fields' : 'Loading company Form Settings')}>
           Form Settings
         </button>
         <PrintLayoutToolbar
@@ -3133,7 +3095,7 @@ function ARCreditMemo() {
           <button
             type="button"
             className="del-btn"
-            disabled={!isDocumentEditable || !!currentDocEntry}
+            disabled={!isDocumentEditable || !!currentDocEntry || formSettingsStatus.queryModeActive}
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
@@ -3168,7 +3130,7 @@ function ARCreditMemo() {
           Copy To
         </button>
         {currentDocEntry && (
-          <button type="button" className="del-btn sap-document-toolbar__duplicate" onClick={handleDuplicate}>
+          <button type="button" className="del-btn sap-document-toolbar__duplicate" onClick={handleDuplicate} disabled={formSettingsStatus.queryModeActive}>
             Duplicate
           </button>
         )}
@@ -3335,10 +3297,10 @@ function ARCreditMemo() {
                         onChange={handleHeaderChange}
                         disabled={!!currentDocEntry || pageState.seriesLoading}
                       >
-                        <option value="">Select Series</option>
-                        <option value={SAP_MANUAL_SERIES_VALUE}>Manual</option>
+                        <option value="">{pageState.seriesLoading ? 'Loading series...' : pageState.seriesError ? 'Series unavailable' : 'Select Series'}</option>
+                        {(canUseManualSeries(refData) || (currentDocEntry && ['-1','manual','__sap_manual__'].includes(String(header.series)))) && (<option value={SAP_MANUAL_SERIES_VALUE}>Manual</option>)}
                         {getSapVisibleDocumentSeries(refData.series, {
-                          selectedSeries: header.series,
+                          selectedSeries: header.series, includeHistorical: Boolean(currentDocEntry),
                           postingDate: header.postingDate || header.documentDate,
                         }).map(s => (
                           <option key={s.Series} value={s.Series}>
@@ -3413,6 +3375,7 @@ function ARCreditMemo() {
             {/* â•â• TAB CONTENT â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
             {activeTab === 'Contents' && (
               <ContentsTab
+                companyQueryContext={buildCompanyFormQueryContext(currentDocEntry, header)}
                 lines={lines}
                 onLineChange={handleLineChange}
                 onNumBlur={handleNumBlur}
@@ -3435,6 +3398,9 @@ function ARCreditMemo() {
                 rowUdfFields={visibleRowUdfs}
                 onRowUdfChange={handleRowUdfChange}
                 onLoadLookupOptions={loadDynamicLineLookupOptions}
+                canPasteTable={isDocumentEditable}
+                onPasteTable={handleTablePaste}
+                onClipboardFeedback={handleTableClipboardFeedback}
               />
             )}
 
@@ -3549,7 +3515,7 @@ function ARCreditMemo() {
                               }}
                               title="Select Freight Charge"
                             >
-                              ðŸšš
+                              ...
                             </button>
                           </td>
                         </tr>

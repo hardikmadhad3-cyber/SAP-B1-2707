@@ -1,4 +1,4 @@
-const { applyUdfValues } = require('./udfPayloadUtils');
+const { buildDocumentLineUdfValues } = require('./documentLineUdfPayloadUtils');
 
 const hasValue = (value) => (
   value !== undefined &&
@@ -78,6 +78,8 @@ const setExactNumericUdf = ({
   values[targetKey] = numericValue;
 };
 
+// Superseded by buildDocumentLineUdfValues for payload building; kept because
+// it is still exported and covered by tests.
 const buildGRPOLineUdfs = (line = {}) => {
   const values = {
     ...(line.udf || {}),
@@ -127,11 +129,25 @@ const isTruthyFlag = (value) => (
   value === true || value === 1 || ['Y', 'YES', 'TRUE', '1'].includes(String(value ?? '').trim().toUpperCase())
 );
 
-const getEditableUomValue = (line = {}) => {
-  if (isTruthyFlag(line.uomNameEdited)) {
+const getEditableUomValue = (line = {}, manualUom = false) => {
+  if (manualUom || isTruthyFlag(line.uomNameEdited)) {
     return line.uomName ?? line.UoMName ?? line.UomName ?? line.UnitMsr ?? line.unitMsr;
   }
-  return line.uomName || line.UoMName || line.UomName || line.UnitMsr || line.unitMsr || line.uomCode;
+  return line.uomCode || line.UoMCode || line.UomCode || line.uomName || line.UoMName || line.UomName || line.UnitMsr || line.unitMsr;
+};
+
+const getPositiveUomEntry = (line = {}) => {
+  const entry = Number(line.uomEntry ?? line.UoMEntry);
+  return Number.isInteger(entry) && entry > 0 ? entry : null;
+};
+
+const usesManualUom = (line = {}) => {
+  const entry = Number(line.uomEntry ?? line.UoMEntry);
+  return (
+    isTruthyFlag(line.uomNameEdited) ||
+    (Number.isInteger(entry) && entry < 0) ||
+    (hasValue(line.uomName) && !hasValue(line.uomCode))
+  );
 };
 
 /**
@@ -147,7 +163,9 @@ const buildGRPODocumentLine = (
 ) => {
   const hasBaseDoc = hasBaseDocumentLink(line);
   const unitPrice = toNumber(line.unitPrice, 0);
-  const uomValue = getEditableUomValue(line);
+  const manualUom = usesManualUom(line);
+  const uomValue = getEditableUomValue(line, manualUom);
+  const uomEntry = getPositiveUomEntry(line);
   const documentLine = {
     ItemCode: String(line.itemNo || '').trim(),
     ItemDescription: String(line.itemDescription || ''),
@@ -159,7 +177,20 @@ const buildGRPODocumentLine = (
       : (hasBaseDoc ? 0 : undefined),
     TaxCode: hasValue(line.taxCode) ? String(line.taxCode).trim() : undefined,
     WarehouseCode: String(line.whse || '').trim(),
-    UoMCode: hasValue(uomValue) ? String(uomValue).trim() : undefined,
+    ...(hasValue(line.distRule) ? { CostingCode: String(line.distRule).trim() } : {}),
+    ...(hasValue(line.countryOfOrigin) ? { CountryOrg: String(line.countryOfOrigin).trim() } : {}),
+    ...(hasValue(line.loc) ? { LocationCode: toNumber(line.loc, 0) } : {}),
+    ...(hasValue(line.sac) ? { SACEntry: toNumber(line.sac, 0) } : {}),
+    ...(hasValue(line.blanketAgreementNo) ? { AgreementNo: toNumber(line.blanketAgreementNo, 0) } : {}),
+    ...(hasValue(line.requiredDate) ? { RequiredDate: String(line.requiredDate).split('T')[0] } : {}),
+    ...(hasValue(line.noOfPackages ?? line.NoOfPackages ?? line.PackageQuantity ?? line.PackQty)
+      ? { PackageQuantity: toNumber(line.noOfPackages ?? line.NoOfPackages ?? line.PackageQuantity ?? line.PackQty, 0) }
+      : {}),
+    ...(manualUom
+      ? { MeasureUnit: hasValue(uomValue) ? String(uomValue).trim() : undefined }
+      : (uomEntry
+        ? { UoMEntry: uomEntry }
+        : { UoMCode: hasValue(uomValue) ? String(uomValue).trim() : undefined })),
     CommissionPercent: hasValue(line.commPercent)
       ? toNumber(line.commPercent, 0)
       : (hasBaseDoc ? 0 : undefined),
@@ -185,16 +216,11 @@ const buildGRPODocumentLine = (
     });
   }
 
- const lineUdfValues = buildGRPOLineUdfs(line);
+  Object.assign(documentLine, buildDocumentLineUdfValues(line, {
+    definitions: lineUdfDefinitionsByKey,
+  }));
 
-applyUdfValues(
-  documentLine,
-  lineUdfValues,
-  null,
-  lineUdfDefinitionsByKey
-);
-
-return documentLine;
+  return documentLine;
 };
 
 module.exports = {

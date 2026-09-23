@@ -145,6 +145,9 @@ const getUdfDefinitions = async (tableId) => {
   `, { tableId: normalizedTableId }));
 
   const physicalKeyByNormalized = getPhysicalUdfKeyMap(physicalColumns);
+  const physicalColumnByKey = new Map(
+    physicalColumns.map((column) => [normalizeUdfKey(column.columnName).toUpperCase(), column]),
+  );
   const liveRows = filterUdfMetadataRowsByPhysicalColumns(rows, physicalColumns);
   const byKey = new Map();
   const normalizedKeys = new Set();
@@ -156,10 +159,17 @@ const getUdfDefinitions = async (tableId) => {
 
     if (!byKey.has(key)) {
       normalizedKeys.add(key.toUpperCase());
+      const physicalColumn = physicalColumnByKey.get(key.toUpperCase());
+      // SAP's own CUFD type decides this. Typing every user-defined field as
+      // text made normalizeUdfValue apply a character-length check, using
+      // CUFD.EditSize, to numeric and date fields — which silently dropped a
+      // value such as 1250.750000 from the payload.
+      const resolvedType = mapType(row, [])
+        || (physicalColumn ? mapSqlType(physicalColumn.dataType, physicalColumn.maxLength) : 'text');
       byKey.set(key, {
         key,
         label: row.Descr || key,
-        type: 'text',
+        type: resolvedType,
         defaultValue: '',
         required: [row.Mandatory, row.MandatoryAlt].some((value) => String(value || '').toUpperCase() === 'Y'),
         readOnly: String(row.Editable || '').toUpperCase() === 'N',
@@ -173,10 +183,14 @@ const getUdfDefinitions = async (tableId) => {
     }
 
     if (row.FldValue != null && String(row.FldValue).trim() !== '') {
-      byKey.get(key).options.push({
+      const definition = byKey.get(key);
+      definition.options.push({
         value: String(row.FldValue),
         label: row.ValueDescr || String(row.FldValue),
       });
+      // A numeric or date field with valid values keeps its own type, so it
+      // stays exempt from the text length check.
+      if (['text', 'textarea'].includes(definition.type)) definition.type = 'select';
     }
   });
 

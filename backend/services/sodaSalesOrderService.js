@@ -189,8 +189,8 @@ const submitSalesOrder = async (...args) => {
 };
 
 const updateSalesOrder = async (...args) => {
-  await ensureSODASalesOrderLineUdfs();
-  await ensureSODAPriceUdfsFreeText();
+  if (args[1]?.confirmation_only !== true) await ensureSODASalesOrderLineUdfs();
+  if (args[1]?.confirmation_only !== true) await ensureSODAPriceUdfsFreeText();
   return salesOrderService.updateSalesOrder(...args);
 };
 

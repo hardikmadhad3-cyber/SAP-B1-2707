@@ -1,7 +1,11 @@
 import apiClient from './client';
 
-export const fetchIssueReferenceData = () =>
-  apiClient.get('/issue-for-production/reference-data').then((r) => r.data);
+export const fetchIssueReferenceData = (params = {}) =>
+  apiClient.get('/issue-for-production/reference-data', { params }).then((r) => r.data);
+export const fetchIssueSeries = (date, branch = '') =>
+  apiClient.get('/issue-for-production/series', { params: { date, branch } }).then((r) => r.data);
+export const fetchIssueAllocationOptions = (itemCode, warehouse) =>
+  apiClient.get('/issue-for-production/allocation-options', { params: { itemCode, warehouse } }).then((r) => r.data);
 
 export const fetchProductionOrderForIssue = (docEntry) =>
   apiClient.get(`/issue-for-production/production-order/${encodeURIComponent(docEntry)}`).then((r) => r.data);

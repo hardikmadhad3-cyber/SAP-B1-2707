@@ -1,4 +1,8 @@
+const { getMarketingDocumentSeries: getSharedDocumentSeries, withSeriesContext } = require('./documentSeriesDbUtils');
 const db = require('./dbService');
+const { createPhysicalColumnSetReader, selectPhysicalOptionalColumn } = require('./salesDocumentDbCompatibility');
+const { getDocumentUnitPriceSql } = require('./documentUnitPriceDbUtils');
+const { getDocumentUomSql, loadCompanyUomGroups } = require('./documentUomDbUtils');
 const { loadBusinessPartnerAddresses } = require('./businessPartnerAddressDbUtils');
 const masterDataDbService = require('./masterDataDbService');
 const { buildMarketingDocumentListFilterQuery } = require('./documentListUtils');
@@ -14,19 +18,10 @@ const safe = async (promise) => {
   }
 };
 
-const getTableColumns = async (tableName) => {
-  const rows = await safe(db.query(`
-    SELECT COLUMN_NAME
-    FROM INFORMATION_SCHEMA.COLUMNS
-    WHERE TABLE_NAME = @tableName
-  `, { tableName }));
-  return new Set(rows.map((row) => String(row.COLUMN_NAME || '').trim()));
-};
+const getTableColumns = createPhysicalColumnSetReader(db);
 
 const optionalColumn = (columns, tableAlias, columnName, alias, fallback = 'NULL') => (
-  columns.has(columnName)
-    ? `${tableAlias}.${columnName} AS ${alias}`
-    : `${fallback} AS ${alias}`
+  selectPhysicalOptionalColumn(columns, tableAlias, columnName, alias, fallback)
 );
 
 const parseSeriesDate = (value) => {
@@ -130,105 +125,7 @@ const isDateBetween = (date, fromDate, toDate) => {
   return date >= from && date <= to;
 };
 
-const getMarketingDocumentSeries = async ({ objectCode, date = null, branch = '', transactionType = '' } = {}) => {
-  const docDate = parseSeriesDate(date);
-  const branchId = String(branch || '').trim() === '' ? null : Number.parseInt(branch, 10);
-  const normalizedBranchId = Number.isInteger(branchId) ? branchId : null;
-  const fyTokens = getFinancialYearTokens(docDate);
-  const nnm1Columns = await getTableColumns('NNM1');
-  const hasBranchColumn = nnm1Columns.has('BPLId');
-  const branchSelect = hasBranchColumn ? 'T0.BPLId,' : 'NULL AS BPLId,';
-  const docSubTypeSelect = nnm1Columns.has('DocSubType') ? 'T0.DocSubType,' : "'' AS DocSubType,";
-  const beginStrSelect = nnm1Columns.has('BeginStr') ? 'T0.BeginStr,' : "'' AS BeginStr,";
-  const branchFilter = hasBranchColumn && normalizedBranchId != null
-    ? 'AND (T0.BPLId IS NULL OR T0.BPLId IN (-1, 0, @branchId))'
-    : '';
-
-  const rows = await safe(db.query(`
-    SELECT
-      T0.Series,
-      T0.SeriesName,
-      T0.Indicator,
-      T0.NextNumber,
-      ${docSubTypeSelect}
-      ${beginStrSelect}
-      ${branchSelect}
-      FY.FinancialYear,
-      FY.FromDate,
-      FY.ToDate,
-      CASE WHEN DEF.DfltSeries = T0.Series THEN 1 ELSE 0 END AS IsDefault
-    FROM NNM1 T0
-    LEFT JOIN ONNM DEF ON DEF.ObjectCode = T0.ObjectCode
-    LEFT JOIN (
-      SELECT
-        Indicator,
-        MAX(Name) AS FinancialYear,
-        MIN(F_RefDate) AS FromDate,
-        MAX(T_RefDate) AS ToDate
-      FROM OFPR
-      GROUP BY Indicator
-    ) FY ON FY.Indicator = T0.Indicator
-    WHERE T0.ObjectCode = @objectCode
-      AND COALESCE(T0.Locked, 'N') <> 'Y'
-      ${branchFilter}
-  `, {
-    objectCode,
-    branchId: normalizedBranchId,
-  }));
-
-  const ranked = rows.map((row) => {
-    const rowText = normalizeSeriesText(`${row.SeriesName || ''} ${row.Indicator || ''}`);
-    return {
-      ...row,
-      IsManual: Number(row.Series) === -1 || String(row.SeriesName || '').trim().toUpperCase() === 'MANUAL' ? 1 : 0,
-      IsDateMatch: isDateBetween(docDate, row.FromDate, row.ToDate) ? 1 : 0,
-      IsYearNameMatch: fyTokens.some((token) => rowText.includes(token)) ? 1 : 0,
-      BranchPreference: hasBranchColumn && normalizedBranchId != null && Number(row.BPLId) === normalizedBranchId ? 0 : 1,
-    };
-  });
-
-  const hasYearMatchedRows = ranked.some((row) => row.IsYearNameMatch === 1);
-  const hasExactBranchRows = hasBranchColumn && normalizedBranchId != null
-    ? ranked.some((row) => Number(row.BPLId) === normalizedBranchId)
-    : false;
-  const bySeriesNameAndIndicator = new Map();
-
-  [...ranked]
-    .sort((left, right) =>
-      left.BranchPreference - right.BranchPreference ||
-      Number(right.IsDefault || 0) - Number(left.IsDefault || 0) ||
-      Number(left.Series || 0) - Number(right.Series || 0))
-    .forEach((row) => {
-      const key = `${String(row.SeriesName || '').trim().toUpperCase()}|${String(row.Indicator || '').trim().toUpperCase()}`;
-      if (!bySeriesNameAndIndicator.has(key)) bySeriesNameAndIndicator.set(key, row);
-    });
-
-  const series = [...bySeriesNameAndIndicator.values()]
-    .filter((row) => (
-      row.IsManual === 1 ||
-      row.IsDateMatch === 1 ||
-      row.IsYearNameMatch === 1
-    ))
-    .filter((row) => (
-      !hasBranchColumn ||
-      normalizedBranchId == null ||
-      !hasExactBranchRows ||
-      Number(row.BPLId) === normalizedBranchId ||
-      row.IsManual === 1
-    ))
-    .sort((left, right) =>
-      left.IsManual - right.IsManual ||
-      Number(right.IsDefault || 0) - Number(left.IsDefault || 0) ||
-      String(left.SeriesName || '').localeCompare(String(right.SeriesName || '')));
-
-  const transactionMatchedSeries = filterSeriesByTransactionType(series, transactionType);
-  return {
-    series: selectSapEligibleSeries(
-      String(transactionType || '').trim() ? transactionMatchedSeries : series,
-      date,
-    ),
-  };
-};
+const getMarketingDocumentSeries = async ({ objectCode, date, branch, docSubType, transactionType } = {}) => withSeriesContext(await getSharedDocumentSeries({ db, objectCode, targetDate: date, branch, docSubType, transactionType }));
 
 const getVendors = () => safe(db.query(`
   SELECT CardCode, CardName, CardType, Currency,
@@ -243,10 +140,15 @@ const getItems = () => safe(db.query(`
   SELECT T0.ItemCode, T0.ItemName,
          T0.BuyUnitMsr  AS PurchaseUnit,
          T0.InvntryUom  AS InventoryUOM,
-         T0.PUoMEntry   AS UoMGroupEntry,
+         T0.UgpEntry    AS UoMGroupEntry,
+         T0.PUoMEntry   AS PurchaseUomEntry,
+         PU.UomCode     AS PurchaseUomCode,
+         PU.UomName     AS PurchaseUomName,
          T0.DfltWH      AS DefaultWarehouse,
+         CAST(COALESCE(NULLIF(T0.LastPurPrc, 0), NULLIF(T0.AvgPrice, 0), 0) AS DECIMAL(19,6)) AS UnitPrice,
          CHP.ChapterID  AS HSNCode
   FROM   OITM T0
+  LEFT JOIN OUOM PU ON PU.UomEntry = T0.PUoMEntry
   LEFT JOIN OCHP CHP ON CHP.AbsEntry = T0.ChapterID
   WHERE  T0.PrchseItem = 'Y'
     AND  T0.validFor  <> 'N'
@@ -262,13 +164,18 @@ const getItemsForModal = () => safe(db.query(`
     CAST(T0.OnHand AS DECIMAL(19,2)) AS InStock,
     T0.BuyUnitMsr      AS PurchaseUnit,
     T0.InvntryUom      AS InventoryUOM,
-    T0.PUoMEntry       AS UoMGroupEntry,
+    T0.UgpEntry        AS UoMGroupEntry,
+    T0.PUoMEntry       AS PurchaseUomEntry,
+    PU.UomCode         AS PurchaseUomCode,
+    PU.UomName         AS PurchaseUomName,
     T0.DfltWH          AS DefaultWarehouse,
+    CAST(COALESCE(NULLIF(T0.LastPurPrc, 0), NULLIF(T0.AvgPrice, 0), 0) AS DECIMAL(19,6)) AS UnitPrice,
     CHP.ChapterID      AS HSNCode,
     T0.ManBtchNum      AS BatchManaged,
     T0.ManSerNum       AS SerialManaged
   FROM OITM T0
   LEFT JOIN OITB T1  ON T1.ItmsGrpCod = T0.ItmsGrpCod
+  LEFT JOIN OUOM PU  ON PU.UomEntry = T0.PUoMEntry
   LEFT JOIN OCHP CHP ON CHP.AbsEntry  = T0.ChapterID
   WHERE T0.PrchseItem = 'Y'
     AND T0.validFor  <> 'N'
@@ -321,16 +228,7 @@ const getTaxCodes = () => masterDataDbService.searchDocumentTaxCodes('', 'purcha
 
 const getGLAccounts = () => masterDataDbService.lookupGLAccounts('', 5000);
 
-const getUomGroups = () => safe(db.query(`
-  SELECT g.UgpEntry AS AbsEntry,
-         g.UgpCode  AS Name,
-         u.UomCode
-  FROM   OUGP g
-  LEFT JOIN UGP1 d ON d.UgpEntry = g.UgpEntry
-  LEFT JOIN OUOM u ON u.UomEntry = d.UomEntry
-  WHERE  g.Locked <> 'Y'
-  ORDER  BY g.UgpEntry, d.LineNum
-`));
+const getUomGroups = () => loadCompanyUomGroups(db);
 
 const getDecimalSettings = () => safe(db.query(`
   SELECT TOP 1
@@ -431,7 +329,7 @@ const getGRPOForCopy = async (docEntry) => {
       T0.DocDate AS PostingDate,
       T0.DocDueDate AS DeliveryDate,
       T0.TaxDate AS DocumentDate,
-      T0.BPLId AS Branch,
+      ${selectPhysicalOptionalColumn(await getTableColumns('OPDN'), 'T0', 'BPLId', 'Branch')},
       T0.DocCur AS Currency,
       T0.DocRate AS ExchangeRate,
       T0.GroupNum AS PaymentTerms,
@@ -445,6 +343,7 @@ const getGRPOForCopy = async (docEntry) => {
       T0.VatSum AS Tax,
       T0.DocTotal AS TotalPaymentDue
     FROM OPDN T0
+    LEFT JOIN OSLP T1 ON T1.SlpCode = T0.SlpCode
     WHERE T0.DocEntry = @docEntry
   `, { docEntry }));
 
@@ -453,35 +352,40 @@ const getGRPOForCopy = async (docEntry) => {
   }
 
   const header = headerRows[0];
-
-  const lineRows = await safe(db.query(`
+  const copyLineColumns = await getTableColumns('PDN1');
+  const documentUom = await getDocumentUomSql(db, 'PDN1');
+  const copyLineResult = await db.query(`
     SELECT 
       T0.LineNum,
       T0.ItemCode,
       T0.Dscription AS ItemDescription,
       T0.Quantity,
       T0.OpenQty,
-      T0.Price AS UnitPrice,
+      ${await getDocumentUnitPriceSql(db, 'PDN1', 'T0')} AS UnitPrice,
       T0.DiscPrcnt AS DiscountPercent,
       T0.TaxCode,
-      T0.WTLiable,
+      ${optionalColumn(copyLineColumns, 'T0', 'WTLiable', 'WTLiable', "'N'")},
       T0.LineTotal,
       T0.WhsCode AS Warehouse,
-      T0.AcctCode AS GLAccount,
-      T0.unitMsr AS UoMCode,
-      T0.StockPrice AS ItemCost,
-      T0.OcrCode AS DistributionRule,
-      T0.CountryOrg AS CountryOfOrigin,
-      T0.LocCode AS LocationCode,
-      T0.SACEntry AS SACCode,
-      T0.NoInvtryMv AS WithoutQtyPosting,
-      T0.AgrNo AS BlanketAgreementNo
+      ${optionalColumn(copyLineColumns, 'T0', 'AcctCode', 'GLAccount', "''")},
+      ${documentUom.entrySql} AS UoMEntry,
+      ${documentUom.codeSql} AS UoMCode,
+      ${documentUom.nameSql} AS UoMName,
+      ${optionalColumn(copyLineColumns, 'T0', 'StockPrice', 'ItemCost', '0')},
+      ${optionalColumn(copyLineColumns, 'T0', 'OcrCode', 'DistributionRule', "''")},
+      ${optionalColumn(copyLineColumns, 'T0', 'CountryOrg', 'CountryOfOrigin', "''")},
+      ${optionalColumn(copyLineColumns, 'T0', 'LocCode', 'LocationCode', "''")},
+      ${optionalColumn(copyLineColumns, 'T0', 'SACEntry', 'SACCode', "''")},
+      ${optionalColumn(copyLineColumns, 'T0', 'NoInvtryMv', 'WithoutQtyPosting', "'N'")},
+      ${optionalColumn(copyLineColumns, 'T0', 'AgrNo', 'BlanketAgreementNo', "''")}
     FROM PDN1 T0
+    ${documentUom.joinSql}
     WHERE T0.DocEntry = @docEntry
       AND T0.LineStatus = 'O'
       AND T0.OpenQty > 0
     ORDER BY T0.LineNum
-  `, { docEntry }));
+  `, { docEntry });
+  const lineRows = copyLineResult.recordset || [];
 
   const itemCodes = lineRows.map((l) => l.ItemCode).filter(Boolean);
   let itemInfoMap = {};
@@ -536,7 +440,9 @@ const getGRPOForCopy = async (docEntry) => {
         total: l.LineTotal != null ? String(l.LineTotal) : '',
         whse: l.Warehouse || '',
         glAccount: l.GLAccount || '',
+        uomEntry: l.UoMEntry != null ? Number(l.UoMEntry) : null,
         uomCode: l.UoMCode || '',
+        uomName: l.UoMName || l.UoMCode || '',
         distRule: l.DistributionRule || '',
         countryOfOrigin: l.CountryOfOrigin || '',
         loc: l.LocationCode != null ? String(l.LocationCode) : '',
@@ -645,6 +551,7 @@ const getAPCreditMemoList = async ({
 };
 
 const getAPCreditMemo = async (docEntry) => {
+  const headerColumns = await getTableColumns('ORPC');
   const headerRows = await safe(db.query(`
     SELECT 
       T0.DocEntry,
@@ -657,7 +564,7 @@ const getAPCreditMemo = async (docEntry) => {
       T0.DocDate AS PostingDate,
       T0.DocDueDate AS DeliveryDate,
       T0.TaxDate AS DocumentDate,
-      T0.BPLId AS Branch,
+      ${selectPhysicalOptionalColumn(headerColumns, 'T0', 'BPLId', 'Branch')},
       T0.DocCur AS Currency,
       T0.DocRate AS ExchangeRate,
       T0.GroupNum AS PaymentTerms,
@@ -668,6 +575,10 @@ const getAPCreditMemo = async (docEntry) => {
       T0.TotalExpns AS Freight,
       T0.VatSum AS Tax,
       T0.DocTotal AS TotalPaymentDue,
+      ${optionalColumn(headerColumns, 'T0', 'ShipToCode', 'ShipToCode', "''")},
+      ${optionalColumn(headerColumns, 'T0', 'PayToCode', 'PayToCode', "''")},
+      ${optionalColumn(headerColumns, 'T0', 'Address', 'BillToAddress', "''")},
+      ${optionalColumn(headerColumns, 'T0', 'Address2', 'PayToAddress', "''")},
       CASE T0.DocStatus
         WHEN 'O' THEN 'Open'
         WHEN 'C' THEN 'Closed'
@@ -689,19 +600,22 @@ const getAPCreditMemo = async (docEntry) => {
   ]);
 
   const lineColumns = await getTableColumns('RPC1');
-  const lineRows = await safe(db.query(`
+  const documentUom = await getDocumentUomSql(db, 'RPC1');
+  const lineResult = await db.query(`
     SELECT 
       T0.LineNum,
       T0.ItemCode,
       T0.Dscription AS ItemDescription,
       T0.Quantity,
-      T0.Price AS UnitPrice,
+      ${await getDocumentUnitPriceSql(db, 'RPC1', 'T0')} AS UnitPrice,
       T0.DiscPrcnt AS DiscountPercent,
       T0.TaxCode,
       ${optionalColumn(lineColumns, 'T0', 'WTLiable', 'WTLiable', "'N'")},
       T0.LineTotal,
       T0.WhsCode AS Warehouse,
-      ${optionalColumn(lineColumns, 'T0', 'unitMsr', 'UoMCode', "''")},
+      ${documentUom.entrySql} AS UoMEntry,
+      ${documentUom.codeSql} AS UoMCode,
+      ${documentUom.nameSql} AS UoMName,
       ${optionalColumn(lineColumns, 'T0', 'AcctCode', 'GLAccount', "''")},
       ${optionalColumn(lineColumns, 'T0', 'StockPrice', 'ItemCost', '0')},
       ${optionalColumn(lineColumns, 'T0', 'OcrCode', 'DistributionRule', "''")},
@@ -714,9 +628,14 @@ const getAPCreditMemo = async (docEntry) => {
       T0.BaseType,
       T0.BaseLine
     FROM RPC1 T0
+    ${documentUom.joinSql}
     WHERE T0.DocEntry = @docEntry
     ORDER BY T0.LineNum
-  `, { docEntry }));
+  `, { docEntry });
+  const lineRows = lineResult.recordset || [];
+  if (!lineRows.length) {
+    throw new Error(`A/P Credit Memo ${docEntry} exists but its content lines could not be loaded.`);
+  }
 
   const itemCodes = lineRows.map((l) => l.ItemCode).filter(Boolean);
   let itemInfoMap = {};
@@ -770,6 +689,12 @@ const getAPCreditMemo = async (docEntry) => {
         freight: header.Freight != null ? String(header.Freight) : '',
         tax: header.Tax != null ? String(header.Tax) : '',
         totalPaymentDue: header.TotalPaymentDue != null ? String(header.TotalPaymentDue) : '',
+        billToCode: header.ShipToCode || '',
+        billTo: header.BillToAddress || '',
+        billToAddress: header.BillToAddress || '',
+        payToCode: header.PayToCode || '',
+        payTo: header.PayToAddress || '',
+        payToAddress: header.PayToAddress || '',
       },
       lines: lineRows.map((l) => {
         const itemInfo = itemInfoMap[l.ItemCode] || { hsnCode: '', batchManaged: false };
@@ -788,7 +713,9 @@ const getAPCreditMemo = async (docEntry) => {
           total: l.LineTotal != null ? String(l.LineTotal) : '',
           whse: l.Warehouse || '',
           glAccount: l.GLAccount || '',
+          uomEntry: l.UoMEntry != null ? Number(l.UoMEntry) : null,
           uomCode: l.UoMCode || '',
+          uomName: l.UoMName || l.UoMCode || '',
           itemCost: l.ItemCost != null ? String(l.ItemCost) : '',
           distRule: l.DistributionRule || '',
           countryOfOrigin: l.CountryOfOrigin || '',
@@ -806,8 +733,8 @@ const getAPCreditMemo = async (docEntry) => {
   };
 };
 
-const getDocumentSeries = async ({ date = null, branch = '', transactionType = '' } = {}) => {
-  return getMarketingDocumentSeries({ objectCode: '19', date, branch, transactionType });
+const getDocumentSeries = async ({ date = null, branch = '', transactionType = '', docSubType } = {}) => {
+  return getMarketingDocumentSeries({ objectCode: '19', date, branch, transactionType, docSubType });
 };
 
 const getNextNumber = async (series) => {
@@ -887,15 +814,7 @@ const getReferenceData = async () => {
     loadReferencePart('Business partners', () => masterDataDbService.searchBP('', '', 5000, 0), [], warnings),
   ]);
 
-  const uomGroupMap = {};
-  uomGroupsRaw.forEach((row) => {
-    if (!uomGroupMap[row.AbsEntry]) {
-      uomGroupMap[row.AbsEntry] = { AbsEntry: row.AbsEntry, Name: row.Name, uomCodes: [] };
-    }
-    if (row.UomCode) {
-      uomGroupMap[row.AbsEntry].uomCodes.push(row.UomCode);
-    }
-  });
+  const uomGroupMap = Object.fromEntries(uomGroupsRaw.map((group) => [group.AbsEntry, group]));
 
   const decimalSettings = decimalRows.length > 0 ? {
     QtyDec: decimalRows[0].QtyDec || 2,
@@ -935,7 +854,7 @@ const getReferenceData = async () => {
     items,
     warehouses,
     warehouse_addresses: warehouses,
-    company_address: { State: companyInfo.state },
+    company_address: { Address: companyInfo.address, State: companyInfo.state },
     tax_codes: taxCodes,
     payment_terms: paymentTerms,
     sales_employees: salesEmployees.map((e) => ({ SlpCode: e.SlpCode, SlpName: e.SlpName, Memo: e.Memo, Commission: e.Commission, Active: e.Active })),

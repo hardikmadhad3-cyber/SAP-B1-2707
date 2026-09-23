@@ -304,6 +304,11 @@ const withAuthenticatedUserStamp = async (config, companyDb) => {
   }
 
   const entity = getServiceLayerEntity(config.url);
+  // Keep a confirmation-only PATCH narrow: automatic audit UDF stamping would
+  // otherwise write unrelated document fields despite the caller's intent.
+  if (method === 'PATCH' && USER_STAMP_ENDPOINT_TABLES.has(entity)
+    && Object.keys(config.data).length === 1
+    && ['tYES', 'tNO'].includes(config.data.Confirmed)) return config.data;
   const tableName = USER_STAMP_ENDPOINT_TABLES.get(entity);
   if (!tableName) {
     return config.data;
@@ -461,6 +466,7 @@ const rawRequest = (method, fullUrl, headers, body, rejectUnauthorized, requestO
   });
 
 const request = async (config, retryOnAuth = true, retryOnTransientRead = true) => {
+  await require('./documentSeriesWriteValidation').validateMarketingSeriesWrite(config);
   const serviceLayerConfig = await resolveServiceLayerConfig(config);
   const companyDb = serviceLayerConfig.companyDb;
   await ensureSession(companyDb);

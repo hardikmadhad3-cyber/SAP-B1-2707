@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import SapLookupModal from "../../../components/common/SapLookupModal";
-import BatchSerialModal from "./BatchSerialModal";
+import ReceiptAllocationModal from "../../receipt-from-production/components/ReceiptAllocationModal";
 
 const numeric = (value, decimals = 2) => {
   if (value === "" || value == null) return "";
@@ -20,14 +20,18 @@ export default function IssueLines({
   const handleBatchSerialSave = (lineId, data) => {
     onChange(lineId, "batch_numbers", data.batch_numbers);
     onChange(lineId, "serial_numbers", data.serial_numbers);
+    onChange(lineId, "bin_allocations", data.bin_allocations);
     setBatchSerialModal(null);
   };
 
   return (
     <>
       {batchSerialModal && (
-        <BatchSerialModal
-          line={batchSerialModal}
+        <ReceiptAllocationModal
+          line={{ ...batchSerialModal, quantity: batchSerialModal.issue_qty }}
+          readOnly={readOnly}
+          title="Issue Allocations"
+          allocationEndpoint="/issue-for-production/allocation-options"
           onSave={(data) => handleBatchSerialSave(batchSerialModal._id, data)}
           onClose={() => setBatchSerialModal(null)}
         />
@@ -115,12 +119,12 @@ export default function IssueLines({
                           disabled={readOnly || fullyIssued}
                           onChange={(event) => onChange(line._id, "issue_qty", event.target.value)}
                         />
-                        {(line.manage_batch || line.manage_serial) && (
+                        {(line.manage_batch || line.manage_serial || line.enable_bin_locations) && (
                           <button
                             className={`ifp-allocation-btn${hasAllocation ? " is-selected" : ""}`}
                             disabled={readOnly || fullyIssued || !line.warehouse || Number(line.issue_qty) <= 0}
                             onClick={() => setBatchSerialModal(line)}
-                            title={line.manage_batch ? "Select Batch Numbers" : "Select Serial Numbers"}
+                            title="Select batch, serial, and bin allocations"
                           >
                             ...
                           </button>

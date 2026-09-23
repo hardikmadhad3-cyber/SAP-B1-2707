@@ -96,7 +96,8 @@ test('serializes edited UoM Name on manual A/P Invoice lines', () => {
     uomName: 'Mtr.',
   });
 
-  assert.equal(documentLine.UoMCode, 'Mtr.');
+  assert.equal(documentLine.MeasureUnit, 'Mtr.');
+  assert.equal(documentLine.UoMCode, undefined);
 });
 test('does not restore UoMCode after A/P Invoice UoM Name is cleared', () => {
   const documentLine = buildAPInvoiceDocumentLine({
@@ -109,6 +110,36 @@ test('does not restore UoMCode after A/P Invoice UoM Name is cleared', () => {
   });
 
   assert.equal(documentLine.UoMCode, undefined);
+  assert.equal(documentLine.MeasureUnit, undefined);
+});
+
+test('uses MeasureUnit rather than the SAP manual marker on duplicated A/P Invoice lines', () => {
+  const documentLine = buildAPInvoiceDocumentLine({
+    itemNo: 'RM-007',
+    quantity: 2,
+    unitPrice: 50,
+    uomEntry: -1,
+    uomCode: 'Manual',
+    uomName: 'KGS',
+  });
+
+  assert.equal(documentLine.MeasureUnit, 'KGS');
+  assert.equal(documentLine.UoMCode, undefined);
+});
+
+test('uses the numeric SAP UoM entry when a standard purchase UoM is auto-loaded', () => {
+  const documentLine = buildAPInvoiceDocumentLine({
+    itemNo: 'RM-BOX',
+    quantity: 2,
+    unitPrice: 50,
+    uomEntry: 9,
+    uomCode: 'Box',
+    uomName: 'BOX',
+  });
+
+  assert.equal(documentLine.UoMEntry, 9);
+  assert.equal(documentLine.UoMCode, undefined);
+  assert.equal(documentLine.MeasureUnit, undefined);
 });
 test('continues filtering line UDFs with the allowed SAP field set', () => {
   const documentLine = buildAPInvoiceDocumentLine(
@@ -126,4 +157,42 @@ test('continues filtering line UDFs with the allowed SAP field set', () => {
 
   assert.equal(documentLine.U_Allowed, 'Yes');
   assert.equal(documentLine.U_NotAllowed, undefined);
+});
+
+test('adds incoming batches to a direct Purchase Order based A/P Invoice line', () => {
+  const documentLine = buildAPInvoiceDocumentLine({
+    itemNo: 'BATCH-PO',
+    quantity: 2,
+    unitPrice: 50,
+    whse: 'WH-01',
+    baseEntry: 300,
+    baseType: 22,
+    baseLine: 0,
+    batchManaged: true,
+    batches: [
+      { batchNumber: 'LOT-001', quantity: 2, supplierLotNo: 'SUP-9' },
+    ],
+  });
+
+  assert.deepEqual(documentLine.BatchNumbers, [{
+    BatchNumber: 'LOT-001',
+    Quantity: 2,
+    ManufacturerSerialNumber: 'SUP-9',
+  }]);
+});
+
+test('does not reassign batches on a GRPO based A/P Invoice line', () => {
+  const documentLine = buildAPInvoiceDocumentLine({
+    itemNo: 'BATCH-GRPO',
+    quantity: 2,
+    unitPrice: 50,
+    whse: 'WH-01',
+    baseEntry: 301,
+    baseType: 20,
+    baseLine: 0,
+    batchManaged: true,
+    batches: [{ batchNumber: 'LOT-EXISTING', quantity: 2 }],
+  });
+
+  assert.equal(documentLine.BatchNumbers, undefined);
 });

@@ -44,6 +44,7 @@ function ProductionOpenItemsReportPage() {
     taskTitle: "Open Items List",
     taskPath: "/reports/production/open-items-list",
     bounds: "parent",
+    allowPersistedMaximized: false,
   });
 
   const loadReport = async (nextCriteria = criteria) => {

@@ -537,6 +537,124 @@
   }
 }
 
+/* Match the compact, balanced Sales document header grid when the UDF pane is open. */
+.service-ar-invoice-page .service-ar-header-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 4px 14px !important;
+}
+
+.service-ar-invoice-page .service-ar-header-grid .del-field__label {
+  flex-basis: 100px !important;
+  width: 100px !important;
+  min-width: 100px !important;
+}
+
+/*
+ * Service documents use the same document-line rhythm as Sales Order.  The
+ * original Delivery-derived del-* rules compacted the panel and matrix after
+ * the live SAP layout arrived, which made column controls look misaligned.
+ */
+.service-ar-invoice-page .del-tab-panel,
+.service-ar-credit-memo-page .del-tab-panel,
+.service-ap-invoice-page .del-tab-panel,
+.service-ap-credit-memo-page .del-tab-panel {
+  display: flex !important;
+  flex-direction: column;
+  box-sizing: border-box;
+  min-height: 260px;
+  margin: 0 12px 12px !important;
+  padding: 14px !important;
+  overflow: hidden !important;
+  background: #fff;
+  border: 1px solid #c8d0da;
+  border-top: 0;
+  border-radius: 0 0 3px 3px;
+}
+
+.service-ar-invoice-page .service-ar-content-toolbar,
+.service-ar-credit-memo-page .service-ar-content-toolbar,
+.service-ap-invoice-page .service-ap-content-toolbar,
+.service-ap-credit-memo-page .service-ap-content-toolbar {
+  flex: 0 0 auto;
+  margin-bottom: 10px !important;
+}
+
+.service-ar-invoice-page .del-grid-wrap--contents,
+.service-ar-credit-memo-page .del-grid-wrap--contents,
+.service-ap-invoice-page .del-grid-wrap--contents,
+.service-ap-credit-memo-page .del-grid-wrap--contents {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0 !important;
+  overflow: visible !important;
+  border: 1px solid #d7dde5;
+  box-sizing: border-box;
+}
+
+.service-ar-invoice-page .del-grid-wrap__scroller--contents,
+.service-ar-credit-memo-page .del-grid-wrap__scroller--contents,
+.service-ap-invoice-page .del-grid-wrap__scroller--contents,
+.service-ap-credit-memo-page .del-grid-wrap__scroller--contents {
+  flex: 1 1 auto;
+  max-height: none !important;
+  overflow: auto !important;
+}
+
+.service-ar-invoice-page .del-grid th,
+.service-ar-credit-memo-page .del-grid th,
+.service-ap-invoice-page .del-grid th,
+.service-ap-credit-memo-page .del-grid th {
+  height: auto;
+  padding: 3px 6px;
+  background: #e8edf2;
+  border-color: #c8d0da;
+}
+
+.service-ar-invoice-page .del-grid td,
+.service-ar-credit-memo-page .del-grid td,
+.service-ap-invoice-page .del-grid td,
+.service-ap-credit-memo-page .del-grid td {
+  height: auto;
+  padding: 2px 6px;
+  border-color: #e0e6ed;
+  vertical-align: middle;
+}
+
+.service-ar-invoice-page .del-grid__input,
+.service-ar-credit-memo-page .del-grid__input,
+.service-ap-invoice-page .del-grid__input,
+.service-ap-credit-memo-page .del-grid__input {
+  height: 20px;
+  min-height: 20px;
+  padding: 0 3px;
+}
+
+/* A service document starts with one line; do not reserve Sales Order's
+   multi-row workspace height. Readable column widths provide the spacing. */
+.service-ar-invoice-page .del-tab-panel,
+.service-ar-credit-memo-page .del-tab-panel,
+.service-ap-invoice-page .del-tab-panel,
+.service-ap-credit-memo-page .del-tab-panel {
+  min-height: 0;
+}
+
+.service-ar-invoice-page .del-grid-wrap--contents,
+.service-ar-credit-memo-page .del-grid-wrap--contents,
+.service-ap-invoice-page .del-grid-wrap--contents,
+.service-ap-credit-memo-page .del-grid-wrap--contents {
+  flex: 0 0 auto;
+  min-height: 82px !important;
+}
+
+.service-ar-invoice-page .del-grid-wrap__scroller--contents,
+.service-ar-credit-memo-page .del-grid-wrap__scroller--contents,
+.service-ap-invoice-page .del-grid-wrap__scroller--contents,
+.service-ap-credit-memo-page .del-grid-wrap__scroller--contents {
+  flex: 0 0 auto;
+  max-height: 130px !important;
+}
+
 @media (max-width: 1024px) {
   .service-ar-invoice-page .so-layout {
     padding-inline: 6px;

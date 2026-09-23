@@ -1,3 +1,6 @@
+import useConfirmationOnlyUpdate from '../../utils/useConfirmationOnlyUpdate';
+import { isManualDocumentSeries, isValidManualDocumentNumber } from '../../utils/documentSeries';
+import useDocumentSeries from '../../hooks/useDocumentSeries';
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import './styles/PurchaseQuatation.css';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -16,6 +19,7 @@ import TaxInfoModal from './components/TaxInfoModal';
 import StateSelectionModal from '../../components/common/StateSelectionModal';
 import BusinessPartnerModal from './components/BusinessPartnerModal';
 import HSNCodeModal from '../../components/common/HSNCodeModal';
+import ItemSelectionModal from '../../components/common/ItemSelectionModal';
 import CopyFromModal from '../../components/document/CopyFromModal';
 import FreightChargesModal from '../../components/freight/FreightChargesModal';
 import PurchasePrintLayoutActions from '../../components/print-layout/PurchasePrintLayoutActions';
@@ -27,13 +31,16 @@ import { copyToDocument } from '../../services/documentCopyService';
 import { duplicateDocumentInPlace } from '../../utils/documentDuplicate';
 import { filterWarehousesByBranch } from '../../utils/warehouseBranch';
 import { hydrateDocumentLineFromItem, mergeItemMaster } from '../../utils/documentItemHydration';
+import { applyUomCodeSelection, getLineUomOptions } from '../../utils/documentUom';
+import { applyDocumentTablePaste } from '../../utils/documentTableClipboard';
 import { mapAddressToModalForm, resolveAddressForModal } from '../../utils/documentAddress';
-import { getDefaultSeriesForCurrentYear, getSapVisibleDocumentSeries } from '../../utils/seriesDefaults';
+import { getDefaultSeriesForCurrentYear, getSapVisibleDocumentSeries, canUseManualSeries } from '../../utils/seriesDefaults';
 import { useCompanyScopedFormSettings } from '../../utils/formSettingsStorage';
+import { normalizePurchaseQuotationMatrixColumns } from '../../utils/purchaseDocumentFormSettings';
 import { readGeneralSettings } from '../../utils/generalSettingsStorage';
 import { buildVisibleEnteredRowUdfPayload } from '../../utils/rowUdfPayload';
 import { getStateCodeValue, getStateDisplayName } from '../../utils/stateDisplay';
-import { calculateDocumentRounding } from '../../utils/documentRounding';
+import { calculateDocumentRounding, getDocumentRoundingPolicy } from '../../utils/documentRounding';
 import useSalesEmployeeSetup from '../../hooks/useSalesEmployeeSetup';
 import useValidationHighlights from '../../utils/useValidationHighlights';
 import useClosedDocumentViewMode from '../../hooks/useClosedDocumentViewMode';
@@ -47,8 +54,6 @@ import {
   fetchPurchaseQuotationVendorDetails,
   submitPurchaseQuotation,
   updatePurchaseQuotation,
-  fetchDocumentSeries,
-  fetchNextNumber,
   fetchFreightCharges,
 } from '../../api/purchaseQuotationApi';
 import {
@@ -237,7 +242,7 @@ const INIT_HEADER = {
   notifyPartyAddress: '',
   language: '',
   splitPurchaseOrder: false,
-  confirmed: false,
+  confirmed: undefined,
   journalRemark: '',
   paymentTerms: '',
   paymentMethod: '',
@@ -307,9 +312,9 @@ const PURCHASE_QUOTATION_COPY_BASE_TYPE = {
 };
 
 // â”€â”€â”€ Main Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-const FALLBACK_UOM = ['EA', 'PCS', 'KG', 'LTR', 'MTR', 'BOX', 'SET', 'NOS', 'PKT', 'DZN'];
-
 function PurchaseOrder() {
+  const [seriesRevision, setSeriesRevision] = useState(0);
+
   const { company } = useAuth();
   const activeCompanyId = company?.companyId || '';
   const location = useLocation();
@@ -322,14 +327,18 @@ function PurchaseOrder() {
   const [rowUdfDefinitions, setRowUdfDefinitions] = useState(ROW_UDF_DEFINITIONS);
   const [matrixColumnDefinitions, setMatrixColumnDefinitions] = useState(BASE_MATRIX_COLUMNS);
   const [lines, setLines] = useState([createLine(ROW_UDF_DEFINITIONS)]);
+  const [itemModal, setItemModal] = useState({ open: false, lineIndex: -1, query: '' });
+  useEffect(() => {
+    setItemModal({ open: false, lineIndex: -1, query: '' });
+  }, [activeCompanyId]);
   const [attachments] = useState(INIT_ATTACH);
   const [activeTab, setActiveTab] = useState('Contents');
   const [headerUdfs, setHeaderUdfs] = useState(() => createUdfState(HEADER_UDF_DEFINITIONS));
-  const [formSettings, setFormSettings, formSettingsStorageKey, , formSettingsStatus] = useCompanyScopedFormSettings(
+  const [formSettings, setFormSettings, formSettingsStorageKey, replaceFormSettings, formSettingsStatus] = useCompanyScopedFormSettings(
     FORM_SETTINGS_STORAGE_KEY,
     readSavedFormSettings,
     [headerUdfDefinitions, rowUdfDefinitions, matrixColumnDefinitions],
-    { saveMode: 'explicit' },
+    { saveMode: 'explicit', followPublishedVersion: true },
   );
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [formSettingsOpen, setFormSettingsOpen] = useState(false);
@@ -339,6 +348,7 @@ function PurchaseOrder() {
     local_currency: '',
     system_currency: '',
     currencies: [],
+    rounding_settings: { method: '', currencies: [] },
     vendors: [],
     contacts: [],
     pay_to_addresses: [],
@@ -504,12 +514,12 @@ function PurchaseOrder() {
   const hasUnsavedChanges = Boolean(currentDocEntry && isDirty);
   const updateActionLabel = hasUnsavedChanges ? 'Update' : 'OK';
   const primaryActionLabel = pageState.posting
-    ? 'Savingâ€¦'
+    ? 'Saving...'
     : currentDocEntry
       ? updateActionLabel
       : 'Add';
   const secondaryActionLabel = pageState.posting
-    ? 'Savingâ€¦'
+    ? 'Saving...'
     : currentDocEntry
       ? updateActionLabel
       : 'Add & New';
@@ -533,9 +543,12 @@ function PurchaseOrder() {
         setHeaderUdfDefinitions([]);
         setRowUdfDefinitions([]);
         setMatrixColumnDefinitions([]);
-        setHeaderUdfs({});
-        setLines([createLine([])]);
-        if (!activeCompanyId) return;
+        // Loading schema/settings must preserve loaded, copied and draft lines.
+        if (!activeCompanyId) {
+          setHeaderUdfs({});
+          setLines([createLine([])]);
+          return;
+        }
         const [refDataRes, hsnRes, layoutRes, schema] = await Promise.all([
           fetchPurchaseQuotationReferenceData(activeCompanyId),
           fetchHSNCodes(),
@@ -575,7 +588,7 @@ function PurchaseOrder() {
             ? liveFields.rowUdfFields
             : (refDataRes.data.udf_metadata?.rows || []);
           const nextMatrixColumns = liveFields.matrixColumns?.length
-            ? liveFields.matrixColumns
+            ? normalizePurchaseQuotationMatrixColumns(liveFields.matrixColumns)
             : BASE_MATRIX_COLUMNS;
           const hasSapMatrixPreferences = Boolean(
             liveFields.usedSapLayout ||
@@ -590,7 +603,7 @@ function PurchaseOrder() {
             udf: createUdfState(nextRowUdfs, line.udf || {}),
           })));
           const nextDefaults = readSavedFormSettings(nextHeaderUdfs, nextRowUdfs, nextMatrixColumns, formSettingsStorageKey);
-          setFormSettings((prev) => mergeLiveMatrixSettings(nextDefaults, prev, hasSapMatrixPreferences));
+          replaceFormSettings((prev) => mergeLiveMatrixSettings(nextDefaults, prev, hasSapMatrixPreferences));
 
           setRefData({
             company: refDataRes.data.company || '',
@@ -598,6 +611,7 @@ function PurchaseOrder() {
             local_currency: refDataRes.data.local_currency || refDataRes.data.company_currency || '',
             system_currency: refDataRes.data.system_currency || refDataRes.data.company_currency || '',
             currencies: refDataRes.data.currencies || [],
+            rounding_settings: refDataRes.data.rounding_settings || { method: '', currencies: [] },
             vendors: refDataRes.data.vendors || [],
             contacts: refDataRes.data.contacts || [],
             pay_to_addresses: refDataRes.data.pay_to_addresses || [],
@@ -627,7 +641,7 @@ function PurchaseOrder() {
             series: [],
           });
 
-          await loadSeriesOptions('', header.postingDate || today(), header.series || '');
+          setSeriesRevision(value => value + 1);
         }
         console.log("FULL REF DATA:", refDataRes.data);
       } catch (e) {
@@ -684,14 +698,7 @@ function PurchaseOrder() {
   }, [location.pathname, location.state, navigate, headerUdfDefinitions, rowUdfDefinitions]);
 
   useEffect(() => {
-    if (!currentDocEntry) {
-      setFreightModal(prev => (
-        prev.freightCharges.length || prev.loading
-          ? { ...prev, freightCharges: [], loading: false }
-          : prev
-      ));
-      return;
-    }
+    if (!currentDocEntry) return;
 
     let ignore = false;
     const loadSavedFreightCharges = async () => {
@@ -747,18 +754,10 @@ function PurchaseOrder() {
     return acc;
   }, {});
 
-  const uomGroupMap = (refData.uom_groups || []).reduce((acc, g) => { acc[g.AbsEntry] = g.uomCodes || []; return acc; }, {});
-
   const getUomOptions = useCallback((line) => {
     const item = refData.items.find(i => String(i.ItemCode || '') === String(line.itemNo || ''));
-    if (item) {
-      const codes = uomGroupMap[item.UoMGroupEntry];
-      if (codes && codes.length) return codes;
-      const fb = String(item.PurchaseUnit || item.InventoryUOM || '').trim();
-      if (fb) return [fb];
-    }
-    return FALLBACK_UOM;
-  }, [refData.items, uomGroupMap]);
+    return getLineUomOptions(line, item, refData.uom_groups).map((uom) => uom.uomCode);
+  }, [refData.items, refData.uom_groups]);
   const effectiveTaxCodes = refData.tax_codes || [];
   const effectiveWarehouses = refData.warehouses.length ? refData.warehouses : [];
   const branchFilteredWarehouses = filterWarehousesByBranch(effectiveWarehouses, header.branch);
@@ -832,8 +831,7 @@ function PurchaseOrder() {
     const rounding = calculateDocumentRounding(
       discSub + freight + taxAmt,
       header.rounding,
-      numDec.totalPaymentDue,
-    );
+      numDec.totalPaymentDue, currentDocEntry ? header : null, getDocumentRoundingPolicy(refData, header));
     return { subtotal, discAmt, discSub, freight, freightTaxAmt, taxAmt, ...rounding, taxBreakdown: Array.from(taxMap.values()) };
   };
 
@@ -1092,7 +1090,7 @@ function PurchaseOrder() {
     if (name === 'branch') {
       setHeader((prev) => ({ ...prev, branch: value }));
       if (!currentDocEntry) {
-        loadSeriesOptions(value, header.postingDate || today(), '');
+        setSeriesRevision(value => value + 1);
       }
       return;
     }
@@ -1156,8 +1154,7 @@ function PurchaseOrder() {
     setLines(prev => prev.map((line, idx) => {
       if (idx !== i) return line;
       const next = { ...line, [name]: numDec[name] !== undefined ? sanitize(value, numDec[name]) : value };
-                if (name === 'uomName') next.uomNameEdited = true;
-                if (name === 'uomCode') { next.uomName = value; next.uomNameEdited = false; }
+      if (name === 'uomName') next.uomNameEdited = true;
 
       if (name === 'taxCode') {
         next.taxCodeManuallyOverridden = true;
@@ -1175,6 +1172,7 @@ function PurchaseOrder() {
             side: 'purchase',
             hsnCode: item.HSNCode || next.hsnCode || '',
             fallbackWarehouse: header.warehouse,
+            uomGroups: refData.uom_groups,
             calcLineTotal,
             formatTotal: (lineTotal) => fmtDec(lineTotal, numDec.total),
           }));
@@ -1194,6 +1192,10 @@ function PurchaseOrder() {
           next.price = next.unitPrice || '';
         }
       }
+      if (name === 'uomCode') {
+        const item = refData.items.find(it => String(it.ItemCode || '') === String(next.itemNo || ''));
+        Object.assign(next, applyUomCodeSelection(next, value, getLineUomOptions(next, item, refData.uom_groups)));
+      }
       
       next.total = fmtDec(calcLineTotal(next), numDec.total);
       return next;
@@ -1205,6 +1207,66 @@ function PurchaseOrder() {
     if (d === undefined) return;
     if (target === 'header') { setHeader(p => ({ ...p, [field]: fmtDec(p[field], d) })); return; }
     setLines(p => p.map((l, idx) => idx === i ? { ...l, [field]: fmtDec(l[field], d) } : l));
+  };
+
+  const handleTablePaste = ({ startRowIndex, patches }) => {
+    if (!isDocumentEditable) return;
+    markDirty();
+    setPageState(previous => ({ ...previous, error: '', success: '' }));
+    setValErrors(previous => ({ ...previous, form: '' }));
+    setLines(previous => applyDocumentTablePaste({
+      lines: previous,
+      patches,
+      startRowIndex,
+      createLine: () => ({
+        ...createLine(rowUdfDefinitions),
+        branch: header.branch || '',
+        whse: header.warehouse || '',
+      }),
+      transformLine: (pastedLine, _rowIndex, rowPatch) => {
+        let next = { ...pastedLine };
+        const pastedKeys = new Set(rowPatch.cells.map(cell => cell.key));
+        if (pastedKeys.has('itemNo')) {
+          const item = refData.items.find(candidate => String(candidate.ItemCode || '') === String(next.itemNo || ''));
+          if (item) {
+            const pastedValues = { ...next, udf: { ...(next.udf || {}) } };
+            next = hydrateDocumentLineFromItem(next, mergeItemMaster(item, refData.items), {
+              side: 'purchase',
+              hsnCode: item.HSNCode || next.hsnCode || '',
+              fallbackWarehouse: header.warehouse,
+              uomGroups: refData.uom_groups,
+              calcLineTotal,
+              formatTotal: lineTotal => fmtDec(lineTotal, numDec.total),
+            });
+            rowPatch.cells.forEach((cell) => {
+              if (cell.isUdf) next.udf = { ...(next.udf || {}), [cell.key]: cell.value };
+              else next[cell.key] = pastedValues[cell.key];
+            });
+          }
+          if (!next.taxCodeManuallyOverridden) next.taxCode = getPreferredLineTaxCode(next.taxCode) || next.taxCode;
+          next.taxCodeRepeat = next.taxCodeRepeat || next.taxCode || '';
+          next.price = next.price || next.unitPrice || '';
+        }
+        if (pastedKeys.has('uomCode')) {
+          const item = refData.items.find(candidate => String(candidate.ItemCode || '') === String(next.itemNo || ''));
+          Object.assign(next, applyUomCodeSelection(next, next.uomCode, getLineUomOptions(next, item, refData.uom_groups)));
+        }
+        if (pastedKeys.has('taxCode')) {
+          next.taxCodeManuallyOverridden = true;
+          next.taxCodeRepeat = next.taxCode;
+        }
+        next.total = fmtDec(calcLineTotal(next), numDec.total);
+        return next;
+      },
+    }));
+  };
+
+  const handleTableClipboardFeedback = (message, type) => {
+    setPageState(previous => ({
+      ...previous,
+      error: type === 'error' ? message : '',
+      success: type === 'error' ? '' : message,
+    }));
   };
 
   const openFreightModal = async () => {
@@ -1316,54 +1378,14 @@ function PurchaseOrder() {
   };
 
   // â”€â”€ Series and Auto-Numbering handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  const handleSeriesChange = async (seriesValue) => {
-    if (!seriesValue) return;
+  const handleSeriesChange = (seriesValue) => {
+      const manual = ['-1', 'manual', '__sap_manual__'].includes(String(seriesValue).toLowerCase());
+      if (manual && !canUseManualSeries(refData)) return;
+      const selected = (refData.series || []).find(row => String(row.Series) === String(seriesValue));
+      setHeader(prev => ({ ...prev, series: manual ? '-1' : selected ? String(selected.Series) : '', nextNumber: manual ? '' : String(selected?.NextNumber ?? ''), docNo: '' }));
+      setPageState(prev => ({ ...prev, error: '', success: '' }));
+    };
 
-    setPageState(p => ({ ...p, seriesLoading: true }));
-    setHeader(p => ({ ...p, series: seriesValue, nextNumber: '...' }));
-
-    try {
-      const res = await fetchNextNumber(seriesValue);
-      setHeader(p => ({ ...p, nextNumber: String(res.data.nextNumber || '') }));
-    } catch (err) {
-      setHeader(p => ({ ...p, nextNumber: 'Error' }));
-      setPageState(p => ({ ...p, error: 'Failed to get next document number' }));
-    } finally {
-      setPageState(p => ({ ...p, seriesLoading: false }));
-    }
-  };
-
-  const loadSeriesOptions = async (branchValue, targetDate, preferredSeries = '') => {
-    const seriesRes = await fetchDocumentSeries({
-      branch: branchValue || undefined,
-      targetDate: targetDate || undefined,
-    });
-    const seriesList = seriesRes.data.series || [];
-
-    setRefData((prev) => ({ ...prev, series: seriesList }));
-
-    if (currentDocEntry) {
-      return seriesList;
-    }
-
-    const keepSeries = preferredSeries || header.series;
-    if (keepSeries && seriesList.some((series) => String(series.Series) === String(keepSeries))) {
-      if (String(header.series || '') !== String(keepSeries)) {
-        setHeader((prev) => ({ ...prev, series: String(keepSeries) }));
-      }
-      await handleSeriesChange(keepSeries);
-      return seriesList;
-    }
-
-    const defaultSeries = getDefaultSeriesForCurrentYear(seriesList);
-    if (defaultSeries?.Series != null) {
-      await handleSeriesChange(defaultSeries.Series);
-    } else {
-      setHeader((prev) => ({ ...prev, series: '', nextNumber: '' }));
-    }
-
-    return seriesList;
-  };
 
   const handleShipToChange = (addressCode) => {
     if (!addressCode) {
@@ -1520,6 +1542,8 @@ function PurchaseOrder() {
 
   // â”€â”€ validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleCopyFrom = (data, docType) => {
+    setSeriesRevision(value => value + 1);
+
     const copySource = unwrapCopyFromDocument(data);
     const baseType = PURCHASE_QUOTATION_COPY_BASE_TYPE[docType] || 1470000113;
     const normalizedHeader = normaliseDocumentHeader(copySource.header);
@@ -1527,7 +1551,6 @@ function PurchaseOrder() {
     const copiedLines = rawLines.map((line, index) => ({
       ...createLine(rowUdfDefinitions),
       ...normaliseDocumentLine(line, index, copySource.docEntry, baseType, normalizedHeader.branch),
-      taxCodeManuallyOverridden: false,
     }));
 
     setHeader((prev) => ({ ...prev, ...normalizedHeader }));
@@ -1582,7 +1605,7 @@ function PurchaseOrder() {
       sourceDocEntry: currentDocEntry,
       sourceDocNo: header.docNo,
       sourcePath: location.pathname,
-      sourceSnapshot: { header, lines },
+      sourceSnapshot: { header, lines, freightCharges: freightModal.freightCharges },
       restoreState: { purchaseQuotationDocEntry: currentDocEntry },
       navigate,
       upsertTask,
@@ -1593,6 +1616,8 @@ function PurchaseOrder() {
   };
 
   const handleDuplicate = () => {
+    setSeriesRevision(value => value + 1);
+
     const duplicateDate = today();
     const duplicated = duplicateDocumentInPlace({
       currentDocEntry,
@@ -1624,8 +1649,7 @@ function PurchaseOrder() {
         series: '',
         nextNumber: '',
       }));
-      const defaultSeries = getDefaultSeriesForCurrentYear(refData.series, new Date(`${duplicateDate}T00:00:00`))
-        || refData.series[0];
+      const defaultSeries = getDefaultSeriesForCurrentYear(refData.series, new Date(`${duplicateDate}T00:00:00`));
       if (defaultSeries?.Series != null) {
         handleSeriesChange(defaultSeries.Series);
       }
@@ -1635,6 +1659,11 @@ function PurchaseOrder() {
   const validate = () => {
     const isUpdate = !!currentDocEntry;
     const e = { header: {}, lines: {}, form: '' };
+    if (!isUpdate && isManualDocumentSeries(header.series) && !isValidManualDocumentNumber(header.nextNumber)) {
+      e.header.nextNumber = 'Enter a positive whole document number for Manual series.';
+      e.form = e.header.nextNumber;
+      return e;
+    }
 
     if (!isUpdate) {
       const vc = String(header.vendor || '').trim();
@@ -1701,6 +1730,11 @@ function PurchaseOrder() {
   };
 
   // â”€â”€ submit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const narrowConfirmationUpdate = useConfirmationOnlyUpdate({
+    docEntry: currentDocEntry, isDirty,
+    state: { header, lines, headerUdfs, freightCharges: freightModal.freightCharges , company_id: activeCompanyId, companyKey: formSettingsStorageKey },
+  });
+
   const handleSubmit = async (ev) => {
     ev.preventDefault();
     if (!isDocumentEditable) {
@@ -1721,6 +1755,7 @@ function PurchaseOrder() {
         ...header,
         deliveryDate: header.deliveryDate || header.postingDate || header.documentDate,
         requiredDate: header.requiredDate || header.deliveryDate || header.postingDate || header.documentDate,
+        roundingAmount: totals.roundingAmount,
         series: header.series ? Number(header.series) : undefined,
       };
 
@@ -1729,7 +1764,7 @@ function PurchaseOrder() {
         udf: buildVisibleEnteredRowUdfPayload(rowUdfDefinitions, line.udf || {}, formSettings),
       }));
       const payload = { company_id: activeCompanyId, header: prep, lines: payloadLines, freightCharges: freightModal.freightCharges, header_udfs: headerUdfs };
-      const r = currentDocEntry ? await updatePurchaseQuotation(currentDocEntry, payload) : await submitPurchaseQuotation(payload);
+      const r = currentDocEntry ? await updatePurchaseQuotation(currentDocEntry, narrowConfirmationUpdate(payload)) : await submitPurchaseQuotation(payload);
       const dn = r.data.doc_num ? ` Doc No: ${r.data.doc_num}.` : '';
       setSnapshotPending(false);
       setIsDirty(false);
@@ -1738,7 +1773,7 @@ function PurchaseOrder() {
       setRefData(p => ({ ...p, contacts: [], pay_to_addresses: [] }));
       setValErrors({ header: {}, lines: {}, form: '' });
 
-      await loadSeriesOptions(prep.branch || '', prep.postingDate || today(), '');
+      setSeriesRevision(value => value + 1);
 
       setPageState(p => ({ ...p, success: `${r.data.message || 'Purchase quotation saved.'}${dn}` }));
     } catch (e) {
@@ -1749,6 +1784,8 @@ function PurchaseOrder() {
   };
 
   const resetForm = () => {
+    setSeriesRevision(value => value + 1);
+
     setSnapshotPending(false);
     setIsDirty(false);
     setCurrentDocEntry(null); setHeader(INIT_HEADER); setLines([createLine(rowUdfDefinitions)]);
@@ -1763,12 +1800,14 @@ function PurchaseOrder() {
   const isRightSidebarOpen = sidebarOpen || formSettingsOpen;
 
   // â”€â”€ render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  useDocumentSeries({ endpoint: '/purchase-quotation', companyKey: formSettingsStorageKey, currentDocEntry, header: header, setHeader, setRefData, setPageState, ready: !pageState.loading && !pageState.posting , refreshKey: seriesRevision});
+
   return (
     <form className={`po-page sap-document-page${isRightSidebarOpen ? ' po-page--sidebar-open' : ''}`} onSubmit={handleSubmit} onChangeCapture={markDirty}>
 
       {/* toolbar */}
       <div className="po-toolbar sap-document-toolbar">
-        <span className="po-toolbar__title">Purchase Quotation{currentDocEntry ? ` â€” #${header.docNo || currentDocEntry}` : ''}</span>
+        <span className="po-toolbar__title">Purchase Quotation{currentDocEntry ? ` - #${header.docNo || currentDocEntry}` : ''}</span>
         <button type="submit" className="po-btn po-btn--primary sap-document-toolbar__primary" disabled={pageState.posting}>
           {primaryActionLabel}
         </button>
@@ -1795,7 +1834,7 @@ function PurchaseOrder() {
               if (!isActive) dropdown.classList.add('active');
             }}
           >
-            Copy From â–¼
+            Copy From ▼
           </button>
           <div className="po-dropdown-menu">
             <button
@@ -1833,7 +1872,7 @@ function PurchaseOrder() {
               if (!isActive) dropdown.classList.add('active');
             }}
           >
-            Copy To â–¼
+            Copy To ▼
           </button>
           <div className="po-dropdown-menu">
             <button
@@ -1859,7 +1898,7 @@ function PurchaseOrder() {
       </div>
 
       {/* alerts */}
-      {pageState.loading && <div className="po-alert po-alert--success" style={{ marginTop: 0 }}>Loadingâ€¦</div>}
+      {pageState.loading && <div className="po-alert po-alert--success" style={{ marginTop: 0 }}>Loading...</div>}
       {pageState.error && <div className="po-alert po-alert--error">{pageState.error}</div>}
       {pageState.success && <div className="po-alert po-alert--success">{pageState.success}</div>}
       {refData.warnings?.length > 0 && (
@@ -2051,9 +2090,10 @@ function PurchaseOrder() {
                         onChange={handleHeaderChange}
                         disabled={!!currentDocEntry || pageState.seriesLoading}
                       >
-                        <option value="">Select Series</option>
+                        <option value="">{pageState.seriesLoading ? 'Loading series...' : pageState.seriesError ? 'Series unavailable' : 'Select Series'}</option>
+                        {(canUseManualSeries(refData) || (currentDocEntry && isManualDocumentSeries(header.series))) && <option value="-1">Manual</option>}
                         {getSapVisibleDocumentSeries(refData.series, {
-                          selectedSeries: header.series,
+                          selectedSeries: header.series, includeHistorical: Boolean(currentDocEntry),
                           postingDate: header.postingDate || header.documentDate,
                         }).map(s => (
                           <option key={s.Series} value={s.Series}>
@@ -2070,8 +2110,9 @@ function PurchaseOrder() {
                         name="nextNumber" 
                         className="po-field__input" 
                         value={header.nextNumber || ''} 
-                        readOnly 
-                        style={{ background: '#f0f2f5' }}
+                        onChange={handleHeaderChange}
+                        readOnly={!!currentDocEntry || !isManualDocumentSeries(header.series)}
+                        style={{ background: isManualDocumentSeries(header.series) && !currentDocEntry ? '#fff' : '#f0f2f5' }}
                       />
                     </div>
 
@@ -2143,6 +2184,7 @@ function PurchaseOrder() {
                 onAddLine={addLine}
                 onRemoveLine={removeLine}
                 onOpenHSNModal={openHSNModal}
+                onOpenItemModal={(lineIndex, query = '') => setItemModal({ open: true, lineIndex, query })}
                 lineItemOptions={lineItemOptions}
                 getUomOptions={getUomOptions}
                 effectiveTaxCodes={effectiveTaxCodes}
@@ -2156,6 +2198,9 @@ function PurchaseOrder() {
                 rowUdfFields={rowUdfDefinitions}
                 onRowUdfChange={handleRowUdfChange}
                 valErrors={valErrors}
+                canPasteTable={isDocumentEditable}
+                onPasteTable={handleTablePaste}
+                onClipboardFeedback={handleTableClipboardFeedback}
               />
             )}
 
@@ -2304,7 +2349,7 @@ function PurchaseOrder() {
                       if (!isActive) dropdown.classList.add('active');
                     }}
                   >
-                    Copy From â–¼
+                    Copy From ▼
                   </button>
                   <div className="po-dropdown-menu">
                     <button
@@ -2334,7 +2379,7 @@ function PurchaseOrder() {
                       if (!isActive) dropdown.classList.add('active');
                     }}
                   >
-                    Copy To â–¼
+                    Copy To ▼
                   </button>
                   <div className="po-dropdown-menu">
                     <button
@@ -2435,6 +2480,18 @@ function PurchaseOrder() {
       />
 
       {/* State Selection Modal */}
+      <ItemSelectionModal
+        isOpen={itemModal.open}
+        onClose={() => setItemModal({ open: false, lineIndex: -1, query: '' })}
+        initialQuery={itemModal.query}
+        items={refData.items}
+        onSelect={(item) => {
+          if (itemModal.lineIndex < 0 || !lines[itemModal.lineIndex]) return;
+          return handleLineChange(itemModal.lineIndex, {
+            target: { name: 'itemNo', value: item.ItemCode },
+          });
+        }}
+      />
       <StateSelectionModal
         isOpen={stateModal}
         onClose={closeStateModal}

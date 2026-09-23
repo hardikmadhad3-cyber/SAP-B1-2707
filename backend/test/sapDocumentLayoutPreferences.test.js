@@ -149,6 +149,26 @@ test('purchase CPRF profiles retain item matrix semantics', () => {
   }
 });
 
+test('purchase request CPRF profile resolves requester-line semantics', () => {
+  const definitions = getSalesDocumentCprfDefinitions('PURCHASE_REQUEST');
+  assert.equal(findCprfStandardDefinition({
+    row: { Caption: 'Vendor' },
+    preferredDefinitions: definitions,
+  })?.fieldName, 'LineVendor');
+  assert.equal(findCprfStandardDefinition({
+    row: { Caption: 'Required Date' },
+    preferredDefinitions: definitions,
+  })?.fieldName, 'ReqDate');
+  assert.equal(findCprfStandardDefinition({
+    row: { Caption: 'Required Qty.' },
+    preferredDefinitions: definitions,
+  })?.fieldName, 'Quantity');
+  assert.equal(findCprfStandardDefinition({
+    row: { Caption: 'Info Price' },
+    preferredDefinitions: definitions,
+  })?.fieldName, 'Price');
+});
+
 test('numeric CPRF ColID never matches an unrelated CUFD FieldID ordinal', () => {
   const udfDefinitions = [
     { key: 'U_MillName', aliasId: 'MillName', fieldId: 10, label: 'Mill-Name' },

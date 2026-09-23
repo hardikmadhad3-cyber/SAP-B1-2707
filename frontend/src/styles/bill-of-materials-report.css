@@ -59,6 +59,46 @@
   cursor: default;
 }
 
+.bom-report-window__controls button {
+  position: relative;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-xs, 4px);
+  background: linear-gradient(180deg, #ffffff 0%, #edf3f9 100%);
+  color: transparent;
+  font-size: 0;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.bom-report-window__controls button:hover {
+  background: linear-gradient(180deg, #ffffff 0%, #dfe8f1 100%);
+}
+
+.bom-report-window__controls button::before {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--sap-text, #223548);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.bom-report-window__controls button[aria-label="Minimize"]::before {
+  content: "-";
+}
+
+.bom-report-window__controls button[aria-label="Restore"]::before,
+.bom-report-window__controls button[aria-label="Maximize"]::before {
+  content: "[]";
+}
+
+.bom-report-window__controls button[aria-label="Close"]::before {
+  content: "x";
+}
+
 
 .bom-report-window__accent {
   height: 3px;
@@ -112,31 +152,50 @@
 
 .bom-report-criteria__lookup-wrap {
   display: grid;
-  grid-template-columns: 1fr 22px;
-  gap: 2px;
+  grid-template-columns: 1fr 24px;
+  gap: 4px;
 }
 
 .bom-report-criteria input,
 .bom-report-criteria select {
   width: 100%;
-  height: 20px;
-  padding: 1px 4px;
+  height: 24px;
+  padding: 0 6px;
   border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-xs, 4px);
   background: var(--sap-surface, #ffffff);
+  color: var(--sap-text, #223548);
   font-size: 12px;
+  box-sizing: border-box;
+}
+
+.bom-report-criteria input:focus,
+.bom-report-criteria select:focus {
+  outline: none;
+  border-color: var(--sap-primary, #0a6ed1);
+  box-shadow: 0 0 0 2px var(--sap-primary-soft, rgba(10, 110, 209, 0.13));
 }
 
 .bom-report-criteria input[readonly] {
   background: var(--sap-surface-muted, #edf1f5);
+  color: var(--sap-text-muted, #64748b);
 }
 
 .bom-report-criteria__lookup-wrap button {
-  height: 20px;
+  width: 24px;
+  height: 24px;
   padding: 0;
   border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-xs, 4px);
   background: linear-gradient(180deg, #ffffff 0%, var(--sap-toolbar-bg, #eef2f7) 100%);
   color: var(--sap-text, #223548);
-  font-size: 10px;
+  font-size: 11px;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.bom-report-criteria__lookup-wrap button:hover {
+  background: linear-gradient(180deg, #ffffff 0%, #dfe8f1 100%);
+  border-color: var(--sap-primary, #0a6ed1);
 }
 
 .bom-report-btn {
@@ -259,6 +318,19 @@
 }
 
 .bom-report-grid tr.is-selected td {
+  background: #e7f2fb;
+}
+
+.bom-report-grid tr.is-child-row td {
+  background: var(--sap-surface-soft, #f7fafc);
+  color: var(--sap-text-muted, #64748b);
+}
+
+.bom-report-grid tr.is-child-row td.is-item {
+  padding-left: 22px;
+}
+
+.bom-report-grid tr.is-child-row.is-selected td {
   background: #e7f2fb;
 }
 

@@ -1,4 +1,5 @@
 const db = require('./dbService');
+const { createTableFieldMetadataReader } = require('./salesDocumentDbCompatibility');
 
 const safe = async (promise) => {
   try {
@@ -15,6 +16,9 @@ const LOOKUP_UDF_CONFIG = {
   U_Buyer_Price: { aliasId: 'Buyer_Price', columnName: 'U_Buyer_Price' },
   U_Seller_Price: { aliasId: 'Seller_Price', columnName: 'U_Seller_Price' },
 };
+
+const getTableFieldMetadata = createTableFieldMetadataReader({ database: db });
+const quoteSqlIdentifier = (identifier) => `[${String(identifier || '').replace(/]/g, ']]')}]`;
 
 const normalizeLookupAlias = (aliasId) => {
   const normalized = String(aliasId || '').trim();
@@ -81,15 +85,22 @@ const getUdfValidValues = (lineTable, aliasId) => safe(db.query(`
 
 const getExistingLookupValues = async (lineTable, aliasId) => {
   const normalizedAlias = normalizeLookupAlias(aliasId);
-  const columnName = LOOKUP_UDF_CONFIG[normalizedAlias]?.columnName;
+  const config = LOOKUP_UDF_CONFIG[normalizedAlias];
+  if (!config) return [];
+
+  const fieldMetadata = await getTableFieldMetadata(lineTable);
+  const columnName = Object.keys(fieldMetadata || {}).find(
+    (fieldName) => fieldName.toLowerCase() === config.columnName.toLowerCase()
+  );
   if (!columnName) return [];
+  const quotedColumnName = quoteSqlIdentifier(columnName);
 
   return safe(db.query(`
     SELECT DISTINCT
-      LTRIM(RTRIM(CAST(${columnName} AS NVARCHAR(254)))) AS Value,
+      LTRIM(RTRIM(CAST(${quotedColumnName} AS NVARCHAR(254)))) AS Value,
       '' AS Description
-    FROM ${lineTable}
-    WHERE NULLIF(LTRIM(RTRIM(CAST(${columnName} AS NVARCHAR(254)))), '') IS NOT NULL
+    FROM ${quoteSqlIdentifier(lineTable)}
+    WHERE NULLIF(LTRIM(RTRIM(CAST(${quotedColumnName} AS NVARCHAR(254)))), '') IS NOT NULL
     ORDER BY Value
   `));
 };

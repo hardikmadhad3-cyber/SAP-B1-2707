@@ -1,4 +1,7 @@
+const { buildDocumentConfirmationPayload, updateDocumentConfirmationOnly } = require('./documentConfirmationUtils');
+const { buildDocumentSeriesPayload } = require('./documentSeriesPayloadUtils');
 const sapService = require('./sapService');
+const { buildDocumentRoundingPayload } = require('./documentRoundingPayloadUtils');
 const arCreditMemoDb = require('./arCreditMemoDbService');
 const salesOrderDb = require('./salesOrderDbService');
 const { buildDocumentAdditionalExpenses } = require('./freightPayloadUtils');
@@ -37,69 +40,13 @@ const getSapErrorMessage = (error, fallback = '') => {
 const isNumberingSeriesError = (error) => String(getSapErrorMessage(error)).includes('10000521');
 const isManualSeriesSelection = (series) => String(series || '').trim().toLowerCase() === '__sap_manual__';
 
-const resolveARCreditMemoSeries = async (header = {}, lines = [], options = {}) => {
-  const selectedSeries = Number(header.series);
-  const preferSubmittedSeries = options.preferSubmittedSeries !== false;
-  let requestedBranchId = normalizeBranchId(header.branch);
-
-  if (!requestedBranchId) {
-    const firstLine = Array.isArray(lines) ? lines[0] || {} : {};
-    const warehouseCode = String(
-      header.warehouse || firstLine.whse || firstLine.warehouse || firstLine.WarehouseCode || '',
-    ).trim();
-    if (warehouseCode) {
-      const warehouseBranch = await arCreditMemoDb.getWarehouseBranch(warehouseCode);
-      requestedBranchId = normalizeBranchId(warehouseBranch?.branchId);
-    }
-  }
-
-  if (isManualSeriesSelection(header.series)) {
-    return {
-      series: undefined,
-      branchId: requestedBranchId,
-    };
-  }
-
-  try {
-    const seriesRows = await arCreditMemoDb.getDocumentSeries(
-      header.postingDate || header.documentDate || null,
-      header.transactionType || 'GST Tax Invoice',
-      requestedBranchId || '',
-    );
-
-    if (!Array.isArray(seriesRows) || !seriesRows.length) {
-      return {
-        series: Number.isFinite(selectedSeries) && selectedSeries > 0 ? selectedSeries : undefined,
-        branchId: requestedBranchId,
-      };
-    }
-
-    const selectedRow = preferSubmittedSeries && Number.isFinite(selectedSeries) && selectedSeries > 0
-      ? seriesRows.find((row) => Number(row.Series) === selectedSeries)
-      : null;
-    const defaultRow = seriesRows.find((row) => row.IsDefault) || seriesRows[0];
-    const resolvedRow = selectedRow || defaultRow;
-    const resolved = Number(resolvedRow?.Series);
-    const seriesBranchId = normalizeBranchId(resolvedRow?.BPLId);
-
-    if (requestedBranchId && seriesBranchId && requestedBranchId !== seriesBranchId) {
-      const mismatchError = new Error('The selected A/R Credit Memo numbering series belongs to a different branch. Select a matching series or branch.');
-      mismatchError.code = 'AR_CREDIT_MEMO_SERIES_BRANCH_MISMATCH';
-      throw mismatchError;
-    }
-
-    return {
-      series: Number.isFinite(resolved) && resolved > 0 ? resolved : undefined,
-      branchId: requestedBranchId || seriesBranchId,
-    };
-  } catch (error) {
-    if (error.code === 'AR_CREDIT_MEMO_SERIES_BRANCH_MISMATCH') throw error;
-    console.warn('[ARCreditMemoService] Could not validate credit memo series; using submitted value.', error.message);
-    return {
-      series: Number.isFinite(selectedSeries) && selectedSeries > 0 ? selectedSeries : undefined,
-      branchId: requestedBranchId,
-    };
-  }
+const resolveARCreditMemoSeries = async (header = {}, lines = []) => {
+ const branchId = normalizeBranchId(header.branch);
+ if (['-1','manual','__sap_manual__'].includes(String(header.series).toLowerCase())) return { series: -1, branchId };
+ const rows = await arCreditMemoDb.getDocumentSeries(header.postingDate || header.documentDate, header.transactionType || '', branchId || '');
+ const selected = rows.find(row => Number(row.Series) === Number(header.series));
+ if (!selected) throw new Error('Select an eligible numbering series for the posting date and branch.');
+ return { series: Number(selected.Series), branchId };
 };
 
 const getAllowedUdfKeys = async (tableId) => {
@@ -273,6 +220,14 @@ const buildARCreditMemoStandardLine = async ({
 
   const batchNumbers = buildBatchNumbersForCreditQuantity(sourceLine, documentLineIndex);
   if (batchNumbers.length > 0) line.BatchNumbers = batchNumbers;
+
+  // SAP derives TaxOnly from the base document for copied A/R Credit Memo
+  // lines. Sending either value back is treated as an attempted override and,
+  // in particular, SAP rejects an attempted tNO for a tax-only source line.
+  // Keep the base link and let Service Layer inherit the source calculation.
+  const isBasedLine = ['BaseType', 'BaseEntry', 'BaseLine']
+    .every((field) => Object.prototype.hasOwnProperty.call(line, field));
+  if (isBasedLine) delete line.TaxOnly;
 
   const physicalUdfKeys = intersectPhysicalUdfKeys(allowedLineUdfs, fieldMetadata);
   const udfValues = filterMetadataValidatedUdfs(
@@ -524,7 +479,7 @@ const submitARCreditMemo = async (payload) => {
       CardCode: String(customerCode).trim(),
 
       // Series for auto-numbering - only include if explicitly provided and valid
-      ...(resolvedSeries.series ? { Series: resolvedSeries.series } : {}),
+      ...buildDocumentSeriesPayload(payload.header),
 
       DocDate: payload.header.postingDate || payload.header.documentDate,
       DocDueDate: payload.header.deliveryDate || payload.header.dueDate,
@@ -553,12 +508,17 @@ const submitARCreditMemo = async (payload) => {
       // Comments
       Comments: payload.header.otherInstruction || payload.header.comments || undefined,
       DocumentAdditionalExpenses: documentAdditionalExpenses,
-      Rounding: yesNo(payload.header.rounding),
+      ...buildDocumentRoundingPayload(payload.header),
+      ...buildDocumentConfirmationPayload(payload.header),
       ...buildMarketingDocumentAddressPayload(payload.header),
 
       DocumentLines: documentLines,
     };
-    applySapDocumentCurrency(sapPayload, payload.header, currencyReferenceData);
+    applySapDocumentCurrency(
+      sapPayload,
+      payload.header,
+      await loadDocumentCurrencyReferenceData(payload.header),
+    );
     lastSapPayload = sapPayload;
 
     console.log("🔥 [ARCreditMemoService] SAP AR CREDIT MEMO PAYLOAD:", JSON.stringify(sapPayload, null, 2));
@@ -579,36 +539,7 @@ const submitARCreditMemo = async (payload) => {
         url: '/CreditNotes',
         data: sapPayload,
       });
-    } catch (postError) {
-      if (!isNumberingSeriesError(postError)) throw postError;
-
-      const fallbackSeries = await resolveARCreditMemoSeries(
-        { ...payload.header, series: '' },
-        submittedLines,
-        { preferSubmittedSeries: false },
-      );
-
-      if (!fallbackSeries.series || fallbackSeries.series === sapPayload.Series) throw postError;
-
-      sapPayload.Series = fallbackSeries.series;
-      if (fallbackSeries.branchId) {
-        sapPayload.BPLId = fallbackSeries.branchId;
-        sapPayload.BPL_IDAssignedToInvoice = fallbackSeries.branchId;
-      } else {
-        delete sapPayload.BPLId;
-        delete sapPayload.BPL_IDAssignedToInvoice;
-      }
-      lastSapPayload = sapPayload;
-      console.warn(
-        '[ARCreditMemoService] Retrying A/R Credit Memo with default numbering series after SAP rejected submitted series.',
-        { series: sapPayload.Series, branchId: sapPayload.BPLId || '' },
-      );
-      response = await sapService.request({
-        method: 'post',
-        url: '/CreditNotes',
-        data: sapPayload,
-      });
-    }
+    } catch (postError) { throw postError; }
 
     console.log("✅ [ARCreditMemoService] SAP AR CREDIT MEMO RESPONSE:", JSON.stringify(response.data, null, 2));
 
@@ -663,6 +594,8 @@ const submitARCreditMemo = async (payload) => {
 // ───────── UPDATE CREDIT MEMO (USING SERVICE LAYER) ─────────
 
 const updateARCreditMemo = async (docEntry, payload) => {
+  const confirmationResult = await updateDocumentConfirmationOnly(docEntry, payload, 'CreditNotes', sapService);
+  if (confirmationResult) return confirmationResult;
   try {
     console.log("🔥 [ARCreditMemoService] UPDATING AR CREDIT MEMO:", docEntry, JSON.stringify(payload, null, 2));
 
@@ -716,12 +649,17 @@ const updateARCreditMemo = async (docEntry, payload) => {
       NumAtCard: payload.header.salesContractNo || payload.header.customerRefNo || undefined,
       Comments: payload.header.otherInstruction || payload.header.comments || undefined,
       DocumentAdditionalExpenses: documentAdditionalExpenses,
-      Rounding: yesNo(payload.header.rounding),
+      ...buildDocumentRoundingPayload(payload.header),
+      ...buildDocumentConfirmationPayload(payload.header),
       ...buildMarketingDocumentAddressPayload(payload.header),
 
       DocumentLines: documentLines,
     };
-    applySapDocumentCurrency(sapPayload, payload.header, currencyReferenceData);
+    applySapDocumentCurrency(
+      sapPayload,
+      payload.header,
+      await loadDocumentCurrencyReferenceData(payload.header),
+    );
 
     const placeOfSupplyKey = resolveMetadataUdfKey(
       physicalHeaderUdfDefinitions,
@@ -761,7 +699,7 @@ const getDocumentSeries = async (targetDate = null, transactionType = '', branch
     return { series: result };
   } catch (error) {
     console.error('[AR Credit Memo Service] Failed to load document series:', error);
-    return { series: [] };
+    throw error;
   }
 };
 
@@ -868,6 +806,7 @@ module.exports = {
   getARInvoiceForCopy:     async (d) => normalizeCopyDocumentRateForCompany(await arCreditMemoDb.getARInvoiceForCopy(d)),
   getARCreditMemoForCopy:  async (d) => normalizeCopyDocumentRateForCompany(await arCreditMemoDb.getARCreditMemoForCopy(d)),
   _buildLineUdfPayload: buildLineUdfPayload,
+  _buildARCreditMemoStandardLine: buildARCreditMemoStandardLine,
   _getLineDiscountPercent: getLineDiscountPercent,
   // getOpenSalesOrders:      async () => ({ documents: await arCreditMemoDb.getOpenSalesOrders() }),
   // getSalesOrderForCopy:    (d) => arCreditMemoDb.getSalesOrderForCopy(d),

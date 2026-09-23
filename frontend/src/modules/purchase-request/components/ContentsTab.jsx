@@ -2,8 +2,10 @@ import React from 'react';
 import TaxCodeLookup from '../../../components/TaxCodeLookup';
 import { getLineTotalsForDisplay } from '../../../utils/lineTotals';
 import { useSapItemCodeTab } from '../../../utils/sapTabNavigation';
-import { BASE_MATRIX_COLUMNS } from '../../../config/purchaseOrderForm';
+import { BASE_MATRIX_COLUMNS } from '../../../config/purchaseRequestForm';
 import { getOrderedVisibleMatrixColumns } from '../../../utils/formSettingsColumns';
+import { getReadableDocumentLineColumnWidth } from '../../../utils/documentLineColumnWidth';
+import { isBaseDocumentLine } from '../../../utils/documentUom';
 
 const DEFAULT_MATRIX_COLS = [
   { key: 'itemNo', label: 'Item No.', minWidth: 160 },
@@ -12,6 +14,7 @@ const DEFAULT_MATRIX_COLS = [
   { key: 'quantity', label: 'Qty', minWidth: 80 },
   { key: 'unitPrice', label: 'Price', minWidth: 95 },
   { key: 'uomCode', label: 'UoM', minWidth: 85 },
+  { key: 'uomName', label: 'UoM Name', minWidth: 120 },
   { key: 'stdDiscount', label: 'Disc%', minWidth: 85 },
   { key: 'taxCode', label: 'Tax Code', minWidth: 115 },
   { key: 'totalBeforeTax', label: 'Total Before Tax', minWidth: 135 },
@@ -23,6 +26,7 @@ const DEFAULT_MATRIX_COLS = [
 
 const INDEX_COL_WIDTH = 42;
 const ACTION_COL_WIDTH = 48;
+const DEFAULT_MATRIX_COLUMN_BY_KEY = new Map(DEFAULT_MATRIX_COLS.map((column) => [column.key, column]));
 const pickerButtonStyle = {
   padding: '0 6px',
   fontSize: 11,
@@ -34,12 +38,18 @@ const pickerButtonStyle = {
   borderRadius: '2px',
 };
 
-const withWidths = (columns = []) => columns.map((column) => ({
-  ...column,
-  minWidth: Number(column.minWidth || column.width) ||
-    DEFAULT_MATRIX_COLS.find((entry) => entry.key === column.key)?.minWidth ||
-  125,
-}));
+const getColumnWidth = (column = {}) => getReadableDocumentLineColumnWidth(
+  column,
+  {
+    ...(DEFAULT_MATRIX_COLUMN_BY_KEY.get(column.rendererKey || column.valueKey || column.key) || {}),
+    ...(column.field || {}),
+  },
+);
+
+const withWidths = (columns = []) => columns.map((column) => {
+  const width = getColumnWidth(column);
+  return { ...column, width, minWidth: width };
+});
 
 const normalizeUdfKey = (value) =>
   String(value || '').trim().toUpperCase().replace(/^U_/, '').replace(/[^A-Z0-9]/g, '');
@@ -68,6 +78,9 @@ export default function ContentsTab({
   matrixFields = BASE_MATRIX_COLUMNS,
   rowUdfFields = [],
   onRowUdfChange,
+  documentType = 'Item',
+  onOpenVendorModal,
+  serviceAccounts = [],
 }) {
   const sapItemTab = useSapItemCodeTab({ lineItemOptions, onLineChange, onOpenItemModal });
   const rowUdfFieldMap = React.useMemo(() => {
@@ -78,8 +91,14 @@ export default function ContentsTab({
     });
     return map;
   }, [rowUdfFields]);
-  const sourceColumns = withWidths(Array.isArray(matrixFields) && matrixFields.length ? matrixFields : DEFAULT_MATRIX_COLS);
+  const sourceColumns = withWidths(Array.isArray(matrixFields) && matrixFields.length ? matrixFields : DEFAULT_MATRIX_COLS)
+    .map((column) => (
+      documentType === 'Service' && column.key === 'itemNo'
+        ? { ...column, label: 'G/L Account' }
+        : column
+    ));
   const liveColumns = sourceColumns
+    .filter((column) => documentType !== 'Service' || !['uomCode', 'uomName'].includes(column.key))
     .map((column) => {
       if (!isUdfColumn(column)) return column;
       const field = column.field || rowUdfFieldMap.get(column.key) || rowUdfFieldMap.get(normalizeUdfKey(column.key));
@@ -151,7 +170,7 @@ export default function ContentsTab({
           border: valErrors.lines[index]?.[key] ? '1px solid #c00' : undefined,
           ...options.style,
         }}
-        name={key}
+        name={options.inputName || key}
         value={options.value ?? line[key] ?? ''}
         readOnly={options.readOnly}
         disabled={options.disabled}
@@ -171,6 +190,25 @@ export default function ContentsTab({
     }
 
     if (column.key === 'itemNo') {
+      if (documentType === 'Service') {
+        return (
+          <td key={column.key}>
+            <input
+              className="so-grid__input"
+              name="accountCode"
+              list={`purchase-request-accounts-${index}`}
+              value={line.accountCode || ''}
+              onChange={(event) => onLineChange(index, event)}
+              style={{ border: valErrors.lines[index]?.itemNo ? '1px solid #c00' : undefined }}
+            />
+            <datalist id={`purchase-request-accounts-${index}`}>
+              {serviceAccounts.map((account) => (
+                <option key={account.code} value={account.code}>{account.name}</option>
+              ))}
+            </datalist>
+          </td>
+        );
+      }
       return (
         <td key={column.key}>
           <div style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
@@ -189,6 +227,50 @@ export default function ContentsTab({
           </div>
           {valErrors.lines[index]?.itemNo && (
             <div style={{ color: '#c00', fontSize: 10, marginTop: 2 }}>{valErrors.lines[index].itemNo}</div>
+          )}
+        </td>
+      );
+    }
+
+    if (column.key === 'vendor') {
+      return (
+        <td key={column.key}>
+          <div className="pr-line-lookup">
+            <input
+              className="so-grid__input"
+              name="vendor"
+              value={line.vendor || ''}
+              onChange={(event) => onLineChange(index, event)}
+              placeholder="Vendor Code"
+              data-sap-lookup="vendor"
+              data-sap-row-index={index}
+            />
+            <button
+              type="button"
+              onClick={() => onOpenVendorModal?.(index)}
+              style={pickerButtonStyle}
+              title="Select Vendor"
+            >
+              ...
+            </button>
+          </div>
+        </td>
+      );
+    }
+
+    if (column.key === 'requiredDate') {
+      return (
+        <td key={column.key}>
+          <input
+            type="date"
+            className="so-grid__input"
+            name="requiredDate"
+            value={line.requiredDate || ''}
+            onChange={(event) => onLineChange(index, event)}
+            style={{ border: valErrors.lines[index]?.requiredDate ? '1px solid #c00' : undefined }}
+          />
+          {valErrors.lines[index]?.requiredDate && (
+            <div style={{ color: '#c00', fontSize: 10 }}>{valErrors.lines[index].requiredDate}</div>
           )}
         </td>
       );
@@ -218,11 +300,25 @@ export default function ContentsTab({
     if (column.key === 'uomCode') {
       return (
         <td key={column.key}>
-          <select className="so-grid__input" style={{ width: '100%', textAlign: 'left' }} name="uomCode" value={line.uomCode || ''} onChange={(event) => onLineChange(index, event)}>
+          <select className="so-grid__input" style={{ width: '100%', textAlign: 'left' }} name="uomCode" value={line.uomCode || ''} onChange={(event) => onLineChange(index, event)} disabled={documentType === 'Service' || isBaseDocumentLine(line) || Number(line.uomEntry) < 0 || String(line.uomCode || '').toUpperCase() === 'MANUAL'}>
             <option value=""></option>
             {uomOpts.map((uom) => <option key={uom} value={uom}>{uom}</option>)}
             {line.uomCode && !uomOpts.includes(line.uomCode) && <option value={line.uomCode}>{line.uomCode}</option>}
           </select>
+        </td>
+      );
+    }
+
+    if (column.key === 'uomName') {
+      return (
+        <td key={column.key}>
+          <input
+            className="so-grid__input"
+            name="uomName"
+            value={line.uomNameEdited ? (line.uomName ?? '') : (line.uomName || line.uomCode || '')}
+            onChange={(event) => onLineChange(index, event)}
+            disabled={documentType === 'Service' || isBaseDocumentLine(line) || !(Number(line.uomEntry) < 0 || String(line.uomCode || '').toUpperCase() === 'MANUAL')}
+          />
         </td>
       );
     }
@@ -251,6 +347,7 @@ export default function ContentsTab({
             name="whse"
             value={line.whse || ''}
             onChange={(event) => onLineChange(index, event)}
+            disabled={documentType === 'Service'}
           >
             <option value="">Select</option>
             {effectiveWarehouses.map((warehouse) => <option key={warehouse.WhsCode} value={warehouse.WhsCode}>{warehouse.WhsCode}</option>)}
@@ -271,23 +368,34 @@ export default function ContentsTab({
       return renderTextInput(column.key, line, index, { value: lineTotals.total, readOnly: true });
     }
 
-    if (column.key === 'loc' || column.key === 'branch') {
+    if (column.key === 'branch') {
       return renderTextInput(column.key, line, index, {
-        value: getBranchName ? getBranchName(line.branch) : line[column.key],
+        value: getBranchName ? getBranchName(line.branch) : line.branch,
+        readOnly: true,
+        disabled: true,
+      });
+    }
+
+    if (column.key === 'loc') {
+      return renderTextInput(column.key, line, index, {
+        value: line.loc,
         readOnly: true,
         disabled: true,
       });
     }
 
     return renderTextInput(column.key, line, index, {
-      numeric: ['quantity', 'unitPrice', 'stdDiscount'].includes(column.key),
+      numeric: column.type === 'number' || ['quantity', 'unitPrice', 'stdDiscount'].includes(column.key),
+      readOnly: Boolean(column.readOnly || column.displayOnly),
+      disabled: column.active === false
+        || (documentType === 'Service' && ['quantity', 'uomCode', 'whse'].includes(column.key)),
       style: column.key === 'itemDescription' ? { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } : undefined,
     });
   };
 
   return (
-    <div className="so-tab-panel" style={{ overflow: 'visible', minWidth: 0, maxWidth: 'none' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+    <div className="so-tab-panel pr-contents-panel" style={{ overflow: 'visible', minWidth: 0, maxWidth: 'none' }}>
+      <div className="pr-document-lines-header">
         <div className="so-section-title">Document Lines</div>
         <button type="button" className="so-btn so-btn--primary" onClick={onAddLine}>+ Add Line</button>
       </div>

@@ -451,7 +451,10 @@ function ActivityOverviewReportPage() {
               <button type="button" onClick={() => setBpTarget("bpFrom")}>...</button>
             </div>
             <span className="activity-overview-to">To</span>
-            <input value={form.bpTo} onChange={(event) => updateField("bpTo", event.target.value)} />
+            <div className="activity-overview-lookup-input">
+              <input value={form.bpTo} onChange={(event) => updateField("bpTo", event.target.value)} />
+              <button type="button" onClick={() => setBpTarget("bpTo")}>...</button>
+            </div>
 
             <label>Handled By:</label>
             <span>User</span>

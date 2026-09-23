@@ -67,6 +67,7 @@ function BillOfMaterialsReportPage() {
   const [showProperties, setShowProperties] = useState(false);
   const [selectedRowIndex, setSelectedRowIndex] = useState(0);
   const [findText, setFindText] = useState("");
+  const [isTreeExpanded, setIsTreeExpanded] = useState(false);
 
   const criteriaWindow = useFloatingWindow({
     isOpen: true,
@@ -120,22 +121,39 @@ function BillOfMaterialsReportPage() {
   const filteredRows = useMemo(() => {
     const rows = reportResult?.rows || [];
     const query = findText.trim();
-    if (!query) return rows;
+    const matchedRows = !query
+      ? rows
+      : rows.filter((row) =>
+        [
+          row.itemCode,
+          row.itemDescription,
+          row.uom,
+          row.whse,
+          row.warehouseName,
+          row.bomType,
+          row.routeSequence,
+          row.routeStage,
+          row.stageDescription,
+        ].some((value) => matchesSapSearchText(value, query)),
+      );
 
-    return rows.filter((row) =>
-      [
-        row.itemCode,
-        row.itemDescription,
-        row.uom,
-        row.whse,
-        row.warehouseName,
-        row.bomType,
-        row.routeSequence,
-        row.routeStage,
-        row.stageDescription,
-      ].some((value) => matchesSapSearchText(value, query)),
-    );
-  }, [findText, reportResult?.rows]);
+    if (!isTreeExpanded) return matchedRows;
+
+    return matchedRows.flatMap((row) => {
+      const children = Array.isArray(row.children) ? row.children : [];
+      if (!children.length) return [row];
+
+      return [
+        row,
+        ...children.map((child, childIndex) => ({
+          ...child,
+          isChildRow: true,
+          depth: 2,
+          rowKey: `${row.itemCode}-child-${childIndex}`,
+        })),
+      ];
+    });
+  }, [findText, isTreeExpanded, reportResult?.rows]);
 
   const propertyModeLabel = formState.propertyFilter.ignoreProperties
     ? "Ignore"
@@ -286,34 +304,40 @@ function BillOfMaterialsReportPage() {
                 ) : (
                   filteredRows.map((row, index) => (
                     <tr
-                      key={`${row.itemCode || "bom"}-${index}`}
-                      className={selectedRowIndex === index ? "is-selected" : ""}
+                      key={row.rowKey || `${row.itemCode || "bom"}-${index}`}
+                      className={`${selectedRowIndex === index ? "is-selected" : ""}${row.isChildRow ? " is-child-row" : ""}`.trim()}
                       onClick={() => setSelectedRowIndex(index)}
                     >
-                      <td className="is-row-indicator">&gt;</td>
-                      <td className="is-item">
-                        <button
-                          type="button"
-                          className="bom-report-link-arrow"
-                          aria-label={`Open Bill of Materials for ${row.itemCode}`}
-                          title="Open Bill of Materials"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            openLinkedBOM(row);
-                          }}
-                        >
-                          &gt;
-                        </button>
-                        <button
-                          type="button"
-                          className="bom-report-cell-link"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            openLinkedBOM(row);
-                          }}
-                        >
-                          {row.itemCode}
-                        </button>
+                      <td className="is-row-indicator">{row.isChildRow ? "" : "›"}</td>
+                      <td className="is-item" style={row.isChildRow ? { paddingLeft: 10 + Math.max(0, (row.depth || 2) - 2) * 16 } : undefined}>
+                        {row.isChildRow ? (
+                          <span className="bom-report-cell-link">{row.itemCode}</span>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              className="bom-report-link-arrow"
+                              aria-label={`Open Bill of Materials for ${row.itemCode}`}
+                              title="Open Bill of Materials"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openLinkedBOM(row);
+                              }}
+                            >
+                              &gt;
+                            </button>
+                            <button
+                              type="button"
+                              className="bom-report-cell-link"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openLinkedBOM(row);
+                              }}
+                            >
+                              {row.itemCode}
+                            </button>
+                          </>
+                        )}
                       </td>
                       <td className="is-description">{row.itemDescription}</td>
                       <td className="is-uom">{row.uom}</td>
@@ -370,8 +394,8 @@ function BillOfMaterialsReportPage() {
             </button>
             <span>{company?.companyName || company?.dbName || "SAP Business One"}</span>
             <div className="bom-report-footer__actions">
-              <button type="button" className="bom-report-btn" onClick={() => {}}>Expand</button>
-              <button type="button" className="bom-report-btn" onClick={() => {}}>Collapse</button>
+              <button type="button" className="bom-report-btn" onClick={() => setIsTreeExpanded(true)} disabled={isTreeExpanded}>Expand</button>
+              <button type="button" className="bom-report-btn" onClick={() => setIsTreeExpanded(false)} disabled={!isTreeExpanded}>Collapse</button>
             </div>
           </div>
         </div>

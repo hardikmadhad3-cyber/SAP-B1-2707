@@ -29,4 +29,19 @@ describe('buildCopyToState', () => {
       openQty: '122',
     });
   });
+
+  test('retains target-supported copy extras such as freight rows', () => {
+    const freightCharges = [{ expenseCode: '1', netAmount: '125.00' }];
+    const state = buildCopyToState({
+      sourceDocType: 'delivery',
+      sourceLabel: 'Delivery',
+      sourceDocEntry: 15,
+      baseType: 15,
+      header: {},
+      lines: [],
+      extraCopyFrom: { freightCharges },
+    });
+
+    expect(state.copyFrom.freightCharges).toEqual(freightCharges);
+  });
 });

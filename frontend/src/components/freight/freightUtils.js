@@ -46,7 +46,7 @@ export const calculateFreightAmounts = (row, taxCodes = []) => {
 };
 
 export const normalizeFreightChargeRow = (charge = {}, index = 0, taxCodes = []) => {
-  const netAmount = toNumber(charge.netAmount ?? charge.LineTotal ?? charge.NetAmount ?? charge.DefaultAmount);
+  const netAmount = toNumber(charge.netAmount ?? charge.LineTotal ?? charge.NetAmount);
   const taxCode = charge.taxCode || charge.TaxCode || '';
   const computedAmounts = calculateFreightAmounts({ netAmount, taxCode }, taxCodes);
   const explicitTaxAmount = charge.taxAmount ?? charge.TaxAmount;
@@ -62,7 +62,7 @@ export const normalizeFreightChargeRow = (charge = {}, index = 0, taxCodes = [])
 
   return {
     id: charge.id || `${charge.ExpnsCode || 'FRT'}-${index}`,
-    expnsCode: charge.expnsCode || charge.ExpnsCode || '',
+    expnsCode: charge.expnsCode ?? charge.ExpnsCode ?? charge.ExpenseCode ?? '',
     expnsName: charge.expnsName || charge.ExpnsName || '',
     remarks: charge.remarks || charge.Comments || '',
     taxCode,

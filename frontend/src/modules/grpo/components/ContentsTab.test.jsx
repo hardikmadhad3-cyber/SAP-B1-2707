@@ -127,3 +127,17 @@ test('hides a live GRPO UDF column when Form Settings clears visibility', () => 
 
   expect(screen.queryByText('Inspection')).not.toBeInTheDocument();
 });
+
+test('uses one purchase tab panel and shared readable column widths', () => {
+  const { container } = render(
+    <ContentsTab
+      {...baseProps}
+      lines={[{ itemDescription: 'Test item' }]}
+      visibleColumns={[{ key: 'itemDescription', label: 'Item Description', width: 40 }]}
+    />
+  );
+
+  expect(container.querySelector('.so-tab-panel')).not.toBeInTheDocument();
+  expect(screen.getByRole('columnheader', { name: 'Item Description' })).toHaveStyle({ minWidth: '240px' });
+  expect(container.querySelector('colgroup col:nth-child(2)')).toHaveStyle({ width: '240px' });
+});

@@ -3,6 +3,10 @@
  * Reads data directly from SAP B1 SQL Server database
  */
 const db = require('./dbService');
+const { getDocumentUnitPriceSql } = require('./documentUnitPriceDbUtils');
+const { getDocumentUomSql, loadCompanyUomGroups } = require('./documentUomDbUtils');
+const { getDocumentReferences } = require('./documentReferencesDbUtils');
+const { createPhysicalColumnSetReader, selectPhysicalOptionalColumn } = require('./salesDocumentDbCompatibility');
 const { loadBusinessPartnerAddresses } = require('./businessPartnerAddressDbUtils');
 const masterDataDbService = require('./masterDataDbService');
 const { getHeaderUdfValues, getLineUdfValues, getMarketingDocumentUdfs } = require('./udfMetadataService');
@@ -40,20 +44,10 @@ const getUdfValue = (udfs = {}, aliases = []) => {
   return match ? match[1] : '';
 };
 
-const getTableColumnSet = async (tableName) => {
-  const rows = await safe(db.query(`
-    SELECT COLUMN_NAME
-    FROM INFORMATION_SCHEMA.COLUMNS
-    WHERE TABLE_NAME = @tableName
-  `, { tableName }));
+const getTableColumnSet = createPhysicalColumnSetReader(db);
 
-  return new Set(rows.map((row) => String(row.COLUMN_NAME || '').trim().toUpperCase()).filter(Boolean));
-};
-
-const selectColumnOrBlank = (columns, columnName, alias = columnName) =>
-  columns.has(String(columnName || '').toUpperCase())
-    ? `${columnName} AS ${alias}`
-    : `CAST('' AS NVARCHAR(254)) AS ${alias}`;
+const selectColumnOrBlank = (columns, columnName, alias = columnName, tableAlias = '') =>
+  selectPhysicalOptionalColumn(columns, tableAlias, columnName, alias, "CAST('' AS NVARCHAR(254))");
 
 const formatCompanyAddress = (address = {}) => {
   const directAddress = String(address.Address || '').trim();
@@ -119,11 +113,14 @@ const getItems = () => safe(db.query(`
   SELECT
     T0.ItemCode,
     T0.ItemName,
+    T0.CardCode     AS PreferredVendor,
     T0.BuyUnitMsr  AS PurchaseUnit,
     T0.InvntryUom  AS InventoryUOM,
     T0.UgpEntry    AS UoMGroupEntry,
     T0.PUoMEntry   AS PurchaseUomEntry,
     T0.IUoMEntry   AS InventoryUomEntry,
+    PU.UomCode     AS PurchaseUomCode,
+    PU.UomName     AS PurchaseUomName,
     T0.DfltWH      AS DefaultWarehouse,
     T0.DfltWH      AS WarehouseCode,
     T0.DfltWH      AS WhsCode,
@@ -135,6 +132,7 @@ const getItems = () => safe(db.query(`
     CAST(T0.AvgPrice AS DECIMAL(19,6)) AS AvgStdPrice,
     CHP.ChapterID  AS HSNCode
   FROM OITM T0
+  LEFT JOIN OUOM PU ON PU.UomEntry = T0.PUoMEntry
   LEFT JOIN OCHP CHP ON CHP.AbsEntry = T0.ChapterID
   WHERE T0.PrchseItem = 'Y'
     AND ISNULL(T0.validFor, 'Y') <> 'N'
@@ -146,6 +144,7 @@ const getItemsForModal = () => safe(db.query(`
   SELECT
     T0.ItemCode,
     T0.ItemName,
+    T0.CardCode         AS PreferredVendor,
     T0.FrgnName        AS ForeignName,
     T1.ItmsGrpNam      AS ItemGroup,
     CAST(T0.OnHand AS DECIMAL(19,2)) AS InStock,
@@ -154,6 +153,8 @@ const getItemsForModal = () => safe(db.query(`
     T0.UgpEntry        AS UoMGroupEntry,
     T0.PUoMEntry       AS PurchaseUomEntry,
     T0.IUoMEntry       AS InventoryUomEntry,
+    PU.UomCode         AS PurchaseUomCode,
+    PU.UomName         AS PurchaseUomName,
     T0.DfltWH          AS DefaultWarehouse,
     T0.DfltWH          AS WarehouseCode,
     T0.DfltWH          AS WhsCode,
@@ -168,6 +169,7 @@ const getItemsForModal = () => safe(db.query(`
     T0.ManSerNum       AS SerialManaged
   FROM OITM T0
   LEFT JOIN OITB T1  ON T1.ItmsGrpCod = T0.ItmsGrpCod
+  LEFT JOIN OUOM PU ON PU.UomEntry = T0.PUoMEntry
   LEFT JOIN OCHP CHP ON CHP.AbsEntry  = T0.ChapterID
   WHERE T0.PrchseItem = 'Y'
     AND ISNULL(T0.validFor, 'Y') <> 'N'
@@ -176,7 +178,7 @@ const getItemsForModal = () => safe(db.query(`
 `));
 
 const getWarehouses = () => safe(db.query(`
-  SELECT WhsCode, WhsName, Street, Block,
+  SELECT WhsCode, WhsName, Street, Block, [Location] AS LocationCode,
          City, County, State, ZipCode, Country, BPLid AS BranchID
   FROM   OWHS
   WHERE  Inactive <> 'Y'
@@ -218,25 +220,20 @@ const getStates = () => safe(db.query(`
 
 const getTaxCodes = () => masterDataDbService.searchDocumentTaxCodes('', 'purchase', 500, 0);
 
-const getUomGroups = () => safe(db.query(`
-  SELECT g.UgpEntry AS AbsEntry,
-         g.UgpCode  AS Name,
-         u.UomCode
-  FROM   OUGP g
-  LEFT JOIN UGP1 d ON d.UgpEntry = g.UgpEntry
-  LEFT JOIN OUOM u ON u.UomEntry = d.UomEntry
-  WHERE  g.Locked <> 'Y'
-  ORDER  BY g.UgpEntry, d.LineNum
-`));
+const getUomGroups = () => loadCompanyUomGroups(db);
 
 const itemUomContextCache = new Map();
 
 const getItemUomContext = async (itemCode) => {
   const normalizedItemCode = String(itemCode || '').trim();
   if (!normalizedItemCode) return null;
+  const companyScope = typeof db.resolveDatabaseName === 'function'
+    ? String(await db.resolveDatabaseName() || '').trim().toUpperCase()
+    : '';
+  const cacheKey = `${companyScope}:${normalizedItemCode.toUpperCase()}`;
 
-  if (!itemUomContextCache.has(normalizedItemCode)) {
-    itemUomContextCache.set(normalizedItemCode, safe(db.query(`
+  if (!itemUomContextCache.has(cacheKey)) {
+    itemUomContextCache.set(cacheKey, safe(db.query(`
       SELECT TOP 1
         T0.ItemCode,
         T0.UgpEntry,
@@ -253,7 +250,7 @@ const getItemUomContext = async (itemCode) => {
     `, { itemCode: normalizedItemCode })).then((rows) => rows[0] || null));
   }
 
-  return itemUomContextCache.get(normalizedItemCode);
+  return itemUomContextCache.get(cacheKey);
 };
 
 const resolvePurchaseOrderLineUomEntry = async (itemCode, uomValue) => {
@@ -268,6 +265,10 @@ const resolvePurchaseOrderLineUomEntry = async (itemCode, uomValue) => {
   const inventoryUomEntry = Number(item.IUoMEntry);
 
   const isUsableEntry = (value) => Number.isInteger(value) && value !== 0;
+
+  // The embedded SAP Manual UoM group stores the line's typed UoM name as
+  // MeasureUnit; it must not be resolved to an OUOM entry.
+  if (ugpEntry <= 0) return rawValue ? -1 : null;
 
   if (isUsableEntry(requestedUomEntry)) {
     if (ugpEntry > 0) {
@@ -385,18 +386,28 @@ const PURCHASE_ORDER_MATRIX_ITEM_ID = '38';
 
 const PURCHASE_ORDER_LINE_COLUMNS = [
   { key: 'itemNo', label: 'Item No.', sapField: 'ItemCode', sapColumnIds: ['1', 'ItemCode', 'Item No.', 'ItemNo'], minWidth: 160 },
-  { key: 'itemDescription', label: 'Description', sapField: 'Dscription', sapColumnIds: ['3', 'Dscription', 'ItemDescription', 'Item Description'], minWidth: 220 },
-  { key: 'hsnCode', label: 'HSN', sapField: 'ChapterID', source: 'item-master', sapColumnIds: ['HSN', 'HSN/SAC', 'ChapterID', 'U_HSNCode', 'U_HSN'], minWidth: 115 },
-  { key: 'quantity', label: 'Qty', sapField: 'Quantity', sapColumnIds: ['11', 'Quantity', 'Qty'], minWidth: 80 },
-  { key: 'unitPrice', label: 'Price', sapField: 'Price', sapColumnIds: ['14', 'Price', 'UnitPrice', 'Unit Price'], minWidth: 95 },
-  { key: 'uomCode', label: 'UoM', sapField: 'unitMsr', alternativeFields: ['UomCode', 'UomEntry'], sapColumnIds: ['1470002145', 'unitMsr', 'UomCode', 'UoMCode', 'UoM'], minWidth: 85 },
-  { key: 'stdDiscount', label: 'Disc%', sapField: 'DiscPrcnt', sapColumnIds: ['15', 'DiscPrcnt', 'DiscountPercent', 'Discount %', 'Disc%'], minWidth: 85 },
+  { key: 'itemDescription', label: 'Item Description', sapField: 'Dscription', sapColumnIds: ['3', 'Dscription', 'ItemDescription', 'Item Description'], minWidth: 220 },
+  { key: 'hsnCode', label: 'HSN', sapField: 'ChapterID', source: 'item-master', sapColumnIds: ['254000391', 'HSN', 'HSN/SAC', 'ChapterID', 'HsnEntry', 'U_HSNCode', 'U_HSN'], minWidth: 115 },
+  { key: 'quantity', label: 'Quantity', sapField: 'Quantity', sapColumnIds: ['11', 'Quantity', 'Qty'], minWidth: 90 },
+  { key: 'unitPrice', label: 'Unit Price', sapField: 'Price', alternativeFields: ['PriceBefDi'], sapColumnIds: ['14', 'Price', 'PriceBefDi', 'UnitPrice', 'Unit Price'], minWidth: 110 },
+  { key: 'uomCode', label: 'UoM Code', sapField: 'UomCode', alternativeFields: ['UomEntry'], sapColumnIds: ['1470002149', 'UomCode', 'UoMCode', 'UoM Code'], minWidth: 105 },
+  { key: 'uomName', label: 'UoM Name', sapField: 'unitMsr', alternativeFields: [], sapColumnIds: ['1470002145', 'unitMsr', 'UomName', 'UoM Name'], minWidth: 120 },
+  { key: 'stdDiscount', label: 'Discount %', sapField: 'DiscPrcnt', sapColumnIds: ['15', 'DiscPrcnt', 'DiscountPercent', 'Discount %', 'Disc%'], minWidth: 95 },
   { key: 'taxCode', label: 'Tax Code', sapField: 'TaxCode', sapColumnIds: ['160', 'TaxCode', 'Tax Code'], minWidth: 115 },
   { key: 'totalBeforeTax', label: 'Total Before Tax', sapField: 'LineTotal', calculated: true, sapColumnIds: ['21', 'LineTotal', 'Total Before Tax'], minWidth: 135 },
-  { key: 'total', label: 'Total', sapField: 'LineTotal', calculated: true, sapColumnIds: ['17', 'GTotal', 'Total', 'Total (LC)', 'LineTotal'], minWidth: 105 },
+  { key: 'total', label: 'Total (LC)', sapField: 'LineTotal', calculated: true, sapColumnIds: ['17', 'GTotal', 'Total', 'Total (LC)', 'LineTotal'], minWidth: 115 },
+  { key: 'countryOfOrigin', label: 'Country/Region of Origin', sapField: 'CountryOrg', sapColumnIds: ['10002037', 'CountryOrg', 'Country/Region of Origin'], minWidth: 185 },
+  { key: 'distRule', label: 'Distr. Rule', sapField: 'OcrCode', sapColumnIds: ['21', 'OcrCode', 'DistributionRule', 'Distr. Rule'], minWidth: 105 },
+  { key: 'loc', label: 'Loc.', source: 'branch', sapField: 'LocCode', sapColumnIds: ['10002047', 'LocCode', 'Location', 'Loc.'], minWidth: 115 },
+  { key: 'sac', label: 'SAC', sapField: 'SacEntry', source: 'item-master', sapColumnIds: ['254000393', 'SacEntry', 'SAC'], minWidth: 105 },
+  { key: 'blanketAgreementNo', label: 'Blanket Agreement No.', sapField: 'AgrNo', sapColumnIds: ['1000', 'AgrNo', 'Blanket Agreement No.'], minWidth: 170 },
+  { key: 'costSheet', label: 'Cost-Sheet', sapField: 'U_Cost_Sheet', sapColumnIds: ['U_Cost_Sheet', 'Cost-Sheet'], minWidth: 130 },
+  { key: 'packingType', label: 'Packing-Type', sapField: 'U_PackingType', sapColumnIds: ['U_PackingType', 'Packing-Type'], minWidth: 140 },
+  { key: 'containerType', label: 'Container Type', sapField: 'U_ContainerType', sapColumnIds: ['U_ContainerType', 'Container Type'], minWidth: 145 },
+  { key: 'grossWt', label: 'GrossWt', sapField: 'U_GrossWt', sapColumnIds: ['U_GrossWt', 'GrossWt'], minWidth: 110 },
+  { key: 'totalPackage', label: 'Total-Package', sapField: 'U_TotalPackage', sapColumnIds: ['U_TotalPackage', 'Total-Package'], minWidth: 130 },
   { key: 'whse', label: 'Whse', sapField: 'WhsCode', sapColumnIds: ['24', 'WhsCode', 'WarehouseCode', 'Warehouse', 'Whse'], minWidth: 90 },
   { key: 'commPercent', label: 'Comm. %', sapField: 'Commission', sapColumnIds: ['28', 'Commission', 'CommissionPercent', 'Commission Percentage', 'Comm. %'], minWidth: 95 },
-  { key: 'loc', label: 'LOC', source: 'branch', sapColumnIds: ['LocCode', 'Location', 'LOC'], minWidth: 115 },
   { key: 'branch', label: 'Branch', source: 'branch', sapColumnIds: ['BPLId', 'Branch'], minWidth: 115 },
 ];
 
@@ -783,7 +794,7 @@ const getPurchaseOrder = async (docEntry) => {
       T0.DocDate AS PostingDate,
       T0.DocDueDate AS DeliveryDate,
       T0.TaxDate AS DocumentDate,
-      T0.BPLId AS Branch,
+      ${selectPhysicalOptionalColumn(await getTableColumnSet('OPOR'), 'T0', 'BPLId', 'Branch')},
       T0.DocCur AS Currency,
       T0.DocRate AS ExchangeRate,
       T0.GroupNum AS PaymentTerms,
@@ -818,13 +829,16 @@ const getPurchaseOrder = async (docEntry) => {
   }
 
   const header = headerRows[0];
-  const [headerUdfs, lineUdfsByLineNum] = await Promise.all([
+  const [headerUdfs, lineUdfsByLineNum, referenceDocuments] = await Promise.all([
     getHeaderUdfValues({ tableId: 'OPOR', keyValue: docEntry }),
     getLineUdfValues({ tableId: 'POR1', keyValue: docEntry }),
+    getDocumentReferences(db, 'POR21', docEntry),
   ]);
 
   // Get lines
-const lineRows = await safe(db.query(`
+  const por1Columns = await getTableColumnSet('POR1');
+  const documentUom = await getDocumentUomSql(db, 'POR1');
+  const lineResult = await db.query(`
   SELECT 
     T0.LineNum,
     T0.ItemCode,
@@ -832,22 +846,38 @@ const lineRows = await safe(db.query(`
     T0.Quantity,
     T0.OpenQty,
     T0.LineStatus,
-    COALESCE(T0.PriceBefDi, T0.Price) AS UnitPrice,
+    ${await getDocumentUnitPriceSql(db, 'POR1', 'T0')} AS UnitPrice,
     T0.DiscPrcnt AS DiscountPercent,
     T0.TaxCode,
     T0.LineTotal,
-    T0.GTotal AS GrossTotal,
+    ${selectPhysicalOptionalColumn(por1Columns, 'T0', 'GTotal', 'GrossTotal')},
     T0.VatSum AS TaxAmount,
-    T0.Commission AS CommissionPercent,
+    ${selectPhysicalOptionalColumn(por1Columns, 'T0', 'Commission', 'CommissionPercent')},
     T0.WhsCode AS Warehouse,
-    T0.unitMsr AS UoMCode,
-    CHP.ChapterID AS HSNCode
+    ${documentUom.entrySql} AS UoMEntry,
+    ${documentUom.codeSql} AS UoMCode,
+    ${documentUom.nameSql} AS UoMName,
+    CHP.ChapterID AS HSNCode,
+    ${selectColumnOrBlank(por1Columns, 'SACEntry', 'SACCode', 'T0')},
+    ${selectColumnOrBlank(por1Columns, 'OcrCode', 'DistRule', 'T0')},
+    ${selectColumnOrBlank(por1Columns, 'CountryOrg', 'CountryOfOrigin', 'T0')},
+    ${selectColumnOrBlank(por1Columns, 'AgrNo', 'BlanketAgreementNo', 'T0')},
+    ${selectColumnOrBlank(por1Columns, 'U_Cost_Sheet', 'CostSheet', 'T0')},
+    ${selectColumnOrBlank(por1Columns, 'U_PackingType', 'PackingType', 'T0')},
+    ${selectColumnOrBlank(por1Columns, 'U_ContainerType', 'ContainerType', 'T0')},
+    ${selectColumnOrBlank(por1Columns, 'U_GrossWt', 'GrossWt', 'T0')},
+    ${selectColumnOrBlank(por1Columns, 'U_TotalPackage', 'TotalPackage', 'T0')}
   FROM POR1 T0
   LEFT JOIN OITM ITM ON ITM.ItemCode = T0.ItemCode
   LEFT JOIN OCHP CHP ON CHP.AbsEntry = ITM.ChapterID
+  ${documentUom.joinSql}
   WHERE T0.DocEntry = @docEntry
   ORDER BY T0.LineNum
-`, { docEntry }));
+`, { docEntry });
+  const lineRows = lineResult.recordset || [];
+  if (!lineRows.length) {
+    throw new Error(`Purchase Order ${docEntry} exists but its content lines could not be loaded.`);
+  }
 
   const result = {
     purchase_order: {
@@ -907,10 +937,24 @@ const lineRows = await safe(db.query(`
   taxAmount: l.TaxAmount != null ? String(l.TaxAmount) : '',
   commPercent: l.CommissionPercent != null ? String(l.CommissionPercent) : '',
   whse: l.Warehouse || '',
+  uomEntry: l.UoMEntry != null ? Number(l.UoMEntry) : null,
   uomCode: l.UoMCode || '',
+  uomName: l.UoMName || l.UoMCode || '',
+  sac: l.SACCode != null ? String(l.SACCode) : '',
+  distRule: l.DistRule || '',
+  countryOfOrigin: l.CountryOfOrigin || '',
+  loc: header.Branch ? String(header.Branch) : '',
+  branch: header.Branch ? String(header.Branch) : '',
+  blanketAgreementNo: l.BlanketAgreementNo != null ? String(l.BlanketAgreementNo) : '',
+  costSheet: l.CostSheet || '',
+  packingType: l.PackingType || '',
+  containerType: l.ContainerType || '',
+  grossWt: l.GrossWt != null ? String(l.GrossWt) : '',
+  totalPackage: l.TotalPackage != null ? String(l.TotalPackage) : '',
   udf: lineUdfsByLineNum[l.LineNum] || {},
 })),
       header_udfs: headerUdfs,
+      reference_documents: referenceDocuments,
     }
   };
 
@@ -1015,21 +1059,7 @@ const getReferenceData = async () => {
     lineFieldMetadata._preferencesByKey || {},
   );
 
-  // Process UOM groups
-  const uomGroupMap = {};
-  uomGroupsRaw.forEach(row => {
-    if (!uomGroupMap[row.AbsEntry]) {
-      uomGroupMap[row.AbsEntry] = {
-        AbsEntry: row.AbsEntry,
-        Name: row.Name,
-        uomCodes: []
-      };
-    }
-    if (row.UomCode) {
-      uomGroupMap[row.AbsEntry].uomCodes.push(row.UomCode);
-    }
-  });
-  const uom_groups = Object.values(uomGroupMap);
+  const uom_groups = uomGroupsRaw;
 
   // Decimal settings
   const decimalSettings = decimalRows.length > 0 ? {

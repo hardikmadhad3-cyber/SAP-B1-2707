@@ -481,6 +481,17 @@ const SALES_ORDER_LINE_STANDARD_FIELDS = Object.freeze({
     order: 126,
     width: 125,
   }),
+  PackageQuantity: Object.freeze({
+    stateKey: 'noOfPackages',
+    sapField: 'PackageQuantity',
+    databaseField: 'PackQty',
+    aliases: Object.freeze(['PackageQuantity', 'PackQty', 'Packages', 'NumOfPacks', 'No. of Packages']),
+    label: 'No. of Packages',
+    renderer: 'number',
+    type: 'number',
+    order: 127,
+    width: 120,
+  }),
   OpenQuantity: Object.freeze({
     stateKey: 'openQty',
     sapField: 'OpenQuantity',

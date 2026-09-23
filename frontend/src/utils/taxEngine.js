@@ -26,6 +26,57 @@ export const TAX_MAPPING = {
   'GST0': { intra: 'EXEMPT', inter: 'EXEMPT', rate: 0 },
 };
 
+const normalizeTaxText = (value) => String(value || '').trim().toUpperCase();
+
+const isGstTaxCode = (tax = {}) => {
+  const gstType = normalizeTaxText(tax.GSTType);
+  return gstType === 'INTRASTATE' || gstType === 'INTERSTATE';
+};
+
+const isNonGstTaxCode = (tax = {}) => {
+  if (!tax) return false;
+  const code = normalizeTaxText(tax.Code);
+  const name = normalizeTaxText(tax.Name || tax.Description);
+  const gstType = normalizeTaxText(tax.GSTType);
+  if (gstType && !isGstTaxCode(tax)) return true;
+  return (
+    code.includes('EXEMPT')
+    || code.includes('NIL')
+    || code.includes('NONGST')
+    || code.includes('NON-GST')
+    || code.includes('0%')
+    || name.includes('EXEMPT')
+    || name.includes('NIL')
+    || name.includes('NON GST')
+    || name.includes('0 GST')
+  );
+};
+
+const isExplicitExemptTaxCodeText = (value) => {
+  const text = normalizeTaxText(value);
+  return (
+    text.includes('EXEMPT')
+    || text.includes('NIL')
+    || text.includes('NON GST')
+    || text.includes('NONGST')
+  );
+};
+
+export const isGstRelevantItem = (item = {}) => {
+  const value = normalizeTaxText(
+    item.GSTRelevnt ?? item.GSTRelevant ?? item.gstRelevant,
+  );
+  if (!value) return null;
+  return ['TYES', 'YES', 'Y', 'TRUE', '1'].includes(value.replace(/\s+/g, ''));
+};
+
+export const normalizeTaxCodeSelection = (taxCode, item = {}) => {
+  const value = String(taxCode || '').trim();
+  if (!value) return '';
+  if (isGstRelevantItem(item) === false) return '';
+  return value;
+};
+
 /**
  * Determine tax code for a line item
  * @param {Object} item - Item from OITM
@@ -44,22 +95,37 @@ export function determineTaxCode(
   companyState,
   availableTaxCodes = []
 ) {
-  // Validation
-  if (!item || !item.TaxCodeAR) {
-    console.warn('Item missing TaxCodeAR:', item);
-    return null;
+  if (isGstRelevantItem(item) === false) {
+    return '';
   }
 
+  const baseTaxCode = String(
+    item?.TaxCodeAR
+    || item?.VatGourpSa
+    || item?.VatGroupSa
+    || item?.TaxGroup
+    || '',
+  ).trim();
+  if (!baseTaxCode) {
+    return '';
+  }
+
+  const itemTaxCode = availableTaxCodes.find(
+    (tax) => normalizeTaxText(tax.Code) === normalizeTaxText(baseTaxCode),
+  );
+  if (itemTaxCode && isNonGstTaxCode(itemTaxCode)) {
+    return itemTaxCode.Code;
+  }
+  if (!itemTaxCode && isExplicitExemptTaxCodeText(baseTaxCode)) {
+    return baseTaxCode;
+  }
   // Determine GST state based on checkbox
   const gstState = useBillToForTax ? billToState : shipToState;
 
   if (!gstState || !companyState) {
     console.warn('Missing state information:', { gstState, companyState });
-    return null;
+    return baseTaxCode;
   }
-
-  // Get base tax code from item
-  const baseTaxCode = String(item.TaxCodeAR || '').trim();
 
   // Determine if intra-state or inter-state
   const isIntraState = gstState === companyState;
@@ -75,9 +141,9 @@ export function determineTaxCode(
 
   // Map to appropriate tax code
   if (isIntraState) {
-    return mapToIntraStateTax(baseTaxCode, availableTaxCodes);
+    return mapToIntraStateTax(baseTaxCode, availableTaxCodes) || baseTaxCode;
   } else {
-    return mapToInterStateTax(baseTaxCode, availableTaxCodes);
+    return mapToInterStateTax(baseTaxCode, availableTaxCodes) || baseTaxCode;
   }
 }
 

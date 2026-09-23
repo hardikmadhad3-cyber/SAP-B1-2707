@@ -5,6 +5,7 @@ import { fetchInventoryInWarehouseLookups, fetchInventoryInWarehouseReport } fro
 import BusinessPartnerLookupModal from "../components/reports/BusinessPartnerLookupModal";
 import ItemLookupModal from "../components/reports/ItemLookupModal";
 import PropertiesSelectionModal from "../components/reports/PropertiesSelectionModal";
+import WarehouseLookupModal from "../components/reports/WarehouseLookupModal";
 import useFloatingWindow from "../components/reports/useFloatingWindow";
 import { useSapWindowTaskbarActions } from "../components/SapWindowTaskbarContext";
 import { matchesSapSearchText } from "../utils/sapSearch";
@@ -224,6 +225,11 @@ function InventoryInWarehouseReportPage() {
     setLookupTarget("");
   };
 
+  const handleSelectWarehouse = (warehouse) => {
+    if (lookupTarget) setField(lookupTarget, warehouse.code || "");
+    setLookupTarget("");
+  };
+
   const setOpeningBalanceField = (field, value) =>
     setOpeningBalances((current) => ({ ...current, [field]: value }));
 
@@ -282,11 +288,27 @@ function InventoryInWarehouseReportPage() {
       ) : (
         <div className="iwh-warehouse-ranges">
           <label><input type="checkbox" checked={criteria.includeWarehouses} onChange={(event) => setField("includeWarehouses", event.target.checked)} />Including</label>
-          <span>From</span><input value={criteria.includeWarehouseFrom} onChange={(event) => setField("includeWarehouseFrom", event.target.value)} />
-          <span>To</span><input value={criteria.includeWarehouseTo} onChange={(event) => setField("includeWarehouseTo", event.target.value)} />
+          <span>From</span>
+          <div className="iwh-lookup">
+            <input value={criteria.includeWarehouseFrom} onChange={(event) => setField("includeWarehouseFrom", event.target.value)} />
+            <button type="button" onClick={() => setLookupTarget("includeWarehouseFrom")}>...</button>
+          </div>
+          <span>To</span>
+          <div className="iwh-lookup">
+            <input value={criteria.includeWarehouseTo} onChange={(event) => setField("includeWarehouseTo", event.target.value)} />
+            <button type="button" onClick={() => setLookupTarget("includeWarehouseTo")}>...</button>
+          </div>
           <label><input type="checkbox" checked={criteria.excludeWarehouses} onChange={(event) => setField("excludeWarehouses", event.target.checked)} />Excluding</label>
-          <span>From</span><input value={criteria.excludeWarehouseFrom} disabled={!criteria.excludeWarehouses} onChange={(event) => setField("excludeWarehouseFrom", event.target.value)} />
-          <span>To</span><input value={criteria.excludeWarehouseTo} disabled={!criteria.excludeWarehouses} onChange={(event) => setField("excludeWarehouseTo", event.target.value)} />
+          <span>From</span>
+          <div className="iwh-lookup">
+            <input value={criteria.excludeWarehouseFrom} disabled={!criteria.excludeWarehouses} onChange={(event) => setField("excludeWarehouseFrom", event.target.value)} />
+            <button type="button" disabled={!criteria.excludeWarehouses} onClick={() => setLookupTarget("excludeWarehouseFrom")}>...</button>
+          </div>
+          <span>To</span>
+          <div className="iwh-lookup">
+            <input value={criteria.excludeWarehouseTo} disabled={!criteria.excludeWarehouses} onChange={(event) => setField("excludeWarehouseTo", event.target.value)} />
+            <button type="button" disabled={!criteria.excludeWarehouses} onClick={() => setLookupTarget("excludeWarehouseTo")}>...</button>
+          </div>
         </div>
       )}
     </div>
@@ -397,6 +419,12 @@ function InventoryInWarehouseReportPage() {
 
       <ItemLookupModal isOpen={lookupTarget.startsWith("item") || lookupTarget === "openingBalanceItem"} onClose={() => setLookupTarget("")} onSelect={handleSelectLookup} />
       <BusinessPartnerLookupModal isOpen={lookupTarget.startsWith("vendor")} type="cSupplier" onClose={() => setLookupTarget("")} onSelect={handleSelectLookup} />
+      <WarehouseLookupModal
+        isOpen={lookupTarget.toLowerCase().includes("warehouse")}
+        onClose={() => setLookupTarget("")}
+        onSelect={handleSelectWarehouse}
+        warehouses={lookups.warehouses}
+      />
       <PropertiesSelectionModal isOpen={showProperties} title="Properties" propertyLabelPrefix="Items Property" properties={properties} value={criteria.propertyFilter} onClose={() => setShowProperties(false)} onSave={(value) => setField("propertyFilter", value)} />
     </div>
   );

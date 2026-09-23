@@ -3,6 +3,7 @@ import DocumentLineSettingsLoading from '../../../components/sales-document/Docu
 import { resolveLocationDisplayName } from '../../../utils/locationLookup';
 import TaxCodeLookup from '../../../components/TaxCodeLookup';
 import DocumentLinesTable from '../../../components/sales-document/DocumentLinesTable';
+import useDocumentTableClipboard from '../../../components/sales-document/useDocumentTableClipboard';
 import { useSapItemCodeTab } from '../../../utils/sapTabNavigation';
 import { matchesSapSearchText } from '../../../utils/sapSearch';
 import { filterSalesOrderRowUdfDefinitions } from '../../../config/salesOrderForm';
@@ -10,8 +11,10 @@ import LineValueLookupModal from '../../../components/sales-document/LineValueLo
 import { SALES_ORDER_LINE_NUMBER_KEY } from '../documentLayout';
 import { getReadableDocumentLineColumnWidth } from '../../../utils/documentLineColumnWidth';
 import { getOrderedVisibleMatrixColumns } from '../../../utils/formSettingsColumns';
+import { isBaseDocumentLine } from '../../../utils/documentUom';
 
 import { getCalculatedForRate, getLineTotalsForDisplay } from '../../../utils/lineTotals';
+import { isSalesBomComponentLine } from '../../../utils/salesBomLines';
 
 const MATRIX_COLS = [
   { key: 'itemNo', label: 'Item No.', minWidth: 160 },
@@ -39,6 +42,9 @@ const MATRIX_COLS = [
   { key: 'taxAmount', label: 'Tax Amount (Doc)', minWidth: 115 },
   { key: 'totalLC', label: 'Total (Doc)', minWidth: 115 },
   { key: 'whse', label: 'Whse', minWidth: 75 },
+  { key: 'binLocationAllocation', label: 'Bin Location Allocation', minWidth: 160, readOnly: true },
+  { key: 'priceAfterDiscount', label: 'Price after Discount', minWidth: 130, readOnly: true, numeric: true, type: 'number' },
+  { key: 'itemCost', label: 'Item Cost', minWidth: 110, readOnly: true, numeric: true, type: 'number' },
   { key: 'forRate', label: 'FOR Rate', minWidth: 115 },
   { key: 'distRule', label: 'Distr. Rule', minWidth: 105 },
   { key: 'openQty', label: 'Open Qty', minWidth: 85 },
@@ -72,6 +78,22 @@ const parseNumber = (value) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+const hasNonZeroDisplayValue = (value) => {
+  if (value === undefined || value === null) return false;
+  const text = String(value).trim();
+  if (!text) return false;
+  const numericText = text.replace(/,/g, '').replace(/[^0-9.-]/g, '');
+  if (!numericText) return true;
+  const parsed = Number(numericText);
+  return !Number.isFinite(parsed) || parsed !== 0;
+};
+
+const getDisplayForRate = (line = {}, taxCodes = []) => (
+  hasNonZeroDisplayValue(line.forRate)
+    ? line.forRate
+    : getCalculatedForRate(line, taxCodes)
+);
+
 const formatDateDisplay = (value) => {
   if (!value) return '';
   return String(value).split('T')[0];
@@ -101,6 +123,21 @@ const normalizeColumnToken = (value) =>
     .trim()
     .toUpperCase()
     .replace(/[^A-Z0-9]+/g, '');
+
+const getRenderableUomOptions = (options = [], selectedValue = '') => {
+  const unique = [];
+  const seen = new Set();
+  (Array.isArray(options) ? options : []).forEach((option) => {
+    const value = String(option || '').trim();
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    unique.push(value);
+  });
+
+  const selected = String(selectedValue || '').trim();
+  if (selected && !seen.has(selected)) unique.push(selected);
+  return unique;
+};
 
 const COLUMN_RENDERER_ALIASES = new Map([
   ['LINENUM', SALES_ORDER_LINE_NUMBER_KEY],
@@ -398,6 +435,9 @@ function ReadyContentsTab({
   displayCurrency = '',
   documentCurrency = '',
   formatDisplayMoney,
+  canPasteTable = false,
+  onPasteTable,
+  onClipboardFeedback,
 }) {
   const sapItemTab = useSapItemCodeTab({ lineItemOptions, onLineChange, onOpenItemModal });
   const [dynamicUdfLookup, setDynamicUdfLookup] = React.useState({
@@ -467,26 +507,39 @@ function ReadyContentsTab({
     const sourceFields = Array.isArray(matrixFields) ? matrixFields : MATRIX_COLS;
     if (!sourceFields.length) return [];
     const hasLineNumberColumn = sourceFields.some((field) => field?.key === SALES_ORDER_LINE_NUMBER_KEY);
-    if (hasLineNumberColumn) return sourceFields;
+    const withLineNumberColumn = hasLineNumberColumn
+      ? sourceFields
+      : [
+          {
+            key: SALES_ORDER_LINE_NUMBER_KEY,
+            fieldName: 'LineNum',
+            label: '#',
+            visible: true,
+            active: true,
+            readOnly: true,
+            minWidth: 42,
+            width: 42,
+            order: 0,
+            columnOrder: 0,
+            sapControlled: true,
+            importedLayout: true,
+          },
+          ...sourceFields,
+        ];
 
-    return [
-      {
-        key: SALES_ORDER_LINE_NUMBER_KEY,
-        fieldName: 'LineNum',
-        label: '#',
-        visible: true,
-        active: true,
-        readOnly: true,
-        minWidth: 42,
-        width: 42,
-        order: 0,
-        columnOrder: 0,
-        sapControlled: true,
-        importedLayout: true,
-      },
-      ...sourceFields,
-    ];
-  }, [matrixFields]);
+    if (!formSettings?.__companyQueryLayout?.isPublished) return withLineNumberColumn;
+
+    const existingKeys = new Set(
+      withLineNumberColumn.flatMap((field) => [field?.key, field?.valueKey, field?.rendererKey]).filter(Boolean),
+    );
+    const sqlSelectedFallbackColumns = MATRIX_COLS.filter((column) => (
+      formSettings?.matrixColumns?.[column.key]?.visible !== false
+      && formSettings?.matrixColumns?.[column.key]?.companyQueryLayout === true
+      && !existingKeys.has(column.key)
+    ));
+
+    return [...withLineNumberColumn, ...sqlSelectedFallbackColumns];
+  }, [formSettings, matrixFields]);
   const usesMetadataDrivenMatrix = useSapMatrixOrder || liveMatrixFields.some((field) => field?.importedLayout || field?.schemaDriven);
   const visibleRowUdfFields = usesMetadataDrivenMatrix
     ? (rowUdfFields || [])
@@ -563,7 +616,46 @@ function ReadyContentsTab({
     }))),
   ].sort((left, right) => (Number(left.order ?? 99999) - Number(right.order ?? 99999)));
 
-  const visibleColumns = getOrderedVisibleMatrixColumns(matrixColumns, formSettings);
+  const configuredVisibleColumns = getOrderedVisibleMatrixColumns(matrixColumns, formSettings);
+  const visibleColumns = configuredVisibleColumns.some((column) => column.key === SALES_ORDER_LINE_NUMBER_KEY)
+    ? configuredVisibleColumns
+    : [
+        {
+          key: SALES_ORDER_LINE_NUMBER_KEY,
+          valueKey: SALES_ORDER_LINE_NUMBER_KEY,
+          rendererKey: SALES_ORDER_LINE_NUMBER_KEY,
+          fieldName: 'LineNum',
+          label: '#',
+          visible: true,
+          active: false,
+          readOnly: true,
+          minWidth: 42,
+          width: 42,
+          order: -10000,
+          columnOrder: -10000,
+        },
+        ...configuredVisibleColumns,
+      ];
+  const clipboardColumns = React.useMemo(() => visibleColumns
+    .filter((column) => column.key !== SALES_ORDER_LINE_NUMBER_KEY)
+    .map((column) => {
+      const valueKey = getColumnValueKey(column);
+      const setting = getMatrixColumnSetting(column);
+      return {
+        key: valueKey,
+        label: column.label || column.columnTitle || valueKey,
+        isUdf: isUdfMatrixColumn(column),
+        readOnly: Boolean(column.readOnly || (setting.active === false && isUdfMatrixColumn(column))),
+      };
+    }), [visibleColumns, formSettings]);
+  const { tableClipboardProps, tableClipboardUi } = useDocumentTableClipboard({
+    columns: clipboardColumns,
+    rows: lines,
+    columnOffset: 1,
+    canPaste: canPasteTable,
+    onPaste: onPasteTable,
+    onFeedback: onClipboardFeedback,
+  });
 
   // Helper to check if a column is visible
   const isColumnVisible = (columnKey) => {
@@ -631,13 +723,13 @@ function ReadyContentsTab({
 
   const renderGenericMatrixCell = (column, line, i) => {
     const setting = getMatrixColumnSetting(column);
-    const disabled = column.readOnly || setting.active === false;
+    const disabled = column.readOnly || (setting.active === false && isUdfMatrixColumn(column));
     const valueKey = getColumnValueKey(column);
     const rawValue = isUdfMatrixColumn(column)
       ? (line.udf?.[valueKey] || '')
       : (line[valueKey] ?? '');
     const value = valueKey === 'forRate'
-      ? (rawValue || getCalculatedForRate(line, effectiveTaxCodes))
+      ? (hasNonZeroDisplayValue(rawValue) ? rawValue : getCalculatedForRate(line, effectiveTaxCodes))
       : valueKey === 'grossTotal'
         ? (rawValue || getLineTotalsForDisplay(line, effectiveTaxCodes).total)
       : rawValue;
@@ -653,6 +745,7 @@ function ReadyContentsTab({
           <select
             className="so-grid__input"
             value={value}
+            data-sap-native-tab="true"
             disabled={disabled}
             onChange={(e) => handleGenericMatrixValueChange(i, column, e.target.value)}
           >
@@ -677,6 +770,7 @@ function ReadyContentsTab({
         <td key={column.key}>
           <input
             type="checkbox"
+            data-sap-native-tab="true"
             checked={['Y', 'YES', 'TRUE', '1', 'TYES'].includes(String(value || '').trim().toUpperCase())}
             disabled={disabled}
             onChange={(e) => handleGenericMatrixValueChange(i, column, e.target.checked ? 'Y' : 'N')}
@@ -742,6 +836,8 @@ function ReadyContentsTab({
     const columnKey = column.key;
     const rendererKey = getColumnRendererKey(column);
     const valueKey = getColumnValueKey(column);
+    const isSalesBomComponent = line.bomRole === 'component' && line.bomType === 'S';
+    const isSalesBomParent = line.bomRole === 'parent' && line.bomType === 'S';
     if (columnKey === SALES_ORDER_LINE_NUMBER_KEY) {
       return (
         <td key={columnKey} className="so-grid__cell--muted" style={{ textAlign: 'center', fontSize: 11 }}>
@@ -765,8 +861,11 @@ function ReadyContentsTab({
 
     const cellRenderers = {
       itemNo: () => (
-        <td key="itemNo">
-          <div style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+        <td key="itemNo" title={isSalesBomParent ? 'Sales BOM parent' : (isSalesBomComponent ? 'Sales BOM component' : undefined)}>
+          <div style={{ display: 'flex', gap: 2, alignItems: 'center', paddingLeft: isSalesBomComponent ? 12 : 0 }}>
+            {isSalesBomComponent ? (
+              <span aria-hidden="true" style={{ color: 'var(--sap-text-muted)', fontSize: 10, width: 8 }}>&gt;</span>
+            ) : null}
             <input
               className="so-grid__input"
               style={{ flex: 1, textAlign: 'left', border: valErrors.lines[i]?.itemNo ? '1px solid #c00' : undefined }}
@@ -777,12 +876,14 @@ function ReadyContentsTab({
               value={line.itemNo}
               onChange={(e) => onLineChange(i, e)}
               placeholder="Item Code"
+              disabled={isSalesBomComponent}
             />
             <button
               type="button"
               onClick={() => onOpenItemModal && onOpenItemModal(i)}
               style={pickerButtonStyle}
               title="Select Item"
+              disabled={isSalesBomComponent}
             >
               ...
             </button>
@@ -869,32 +970,34 @@ function ReadyContentsTab({
             value: line.unitPrice,
             onChange: (e) => onLineChange(i, e),
             onBlur: () => onNumBlur('unitPrice', 'line', i),
+            disabled: isSalesBomComponent,
           })}
           {valErrors.lines[i]?.unitPrice && (
             <div style={{ color: '#c00', fontSize: 10, marginTop: 2 }}>{valErrors.lines[i].unitPrice}</div>
           )}
         </td>
       ),
-      uomCode: () => (
-        <td key="uomCode">
-          <select
-            className="so-grid__input"
-            name="uomCode"
-            value={line.uomCode || ''}
-            onChange={(e) => onLineChange(i, e)}
-          >
-            <option value=""></option>
-            {uomOpts.map((uom) => (
-              <option key={uom} value={uom}>
-                {uom}
-              </option>
-            ))}
-            {line.uomCode && !uomOpts.includes(line.uomCode) && (
-              <option value={line.uomCode}>{line.uomCode}</option>
-            )}
-          </select>
-        </td>
-      ),
+      uomCode: () => {
+        const renderableUomOpts = getRenderableUomOptions(uomOpts, line.uomCode);
+        return (
+          <td key="uomCode">
+            <select
+              className="so-grid__input"
+              name="uomCode"
+              value={line.uomCode || ''}
+              onChange={(e) => onLineChange(i, e)}
+              disabled={isBaseDocumentLine(line) || Number(line.uomEntry) < 0 || String(line.uomCode || '').toUpperCase() === 'MANUAL'}
+            >
+              <option value=""></option>
+              {renderableUomOpts.map((uom) => (
+                <option key={uom} value={uom}>
+                  {uom}
+                </option>
+              ))}
+            </select>
+          </td>
+        );
+      },
       sellerPrice: () => (
         <td key="sellerPrice">
           <div style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
@@ -1079,7 +1182,7 @@ function ReadyContentsTab({
           <input
             className="so-grid__input"
             name="forRate"
-            value={line.forRate || getCalculatedForRate(line, effectiveTaxCodes)}
+            value={getDisplayForRate(line, effectiveTaxCodes)}
             onChange={(e) => onLineChange(i, e)}
           />
         </td>
@@ -1183,6 +1286,7 @@ function ReadyContentsTab({
             name="uomName"
             value={line.uomNameEdited ? (line.uomName ?? '') : (line.uomName || line.uomCode || '')}
             onChange={(e) => onLineChange(i, e)}
+            disabled={isBaseDocumentLine(line) || !(Number(line.uomEntry) < 0 || String(line.uomCode || '').toUpperCase() === 'MANUAL')}
           />
         </td>
       ),
@@ -1458,7 +1562,14 @@ function ReadyContentsTab({
     if (!React.isValidElement(rendered)) return rendered;
 
     const setting = getMatrixColumnSetting(column);
-    const disableSpecializedCell = Boolean(column.readOnly || setting.active === false);
+    // SAP/company layout preferences control visibility and ordering. Core
+    // transaction fields keep their document editability; stale CPRF
+    // EditInForm flags must not turn fields such as Discount into disabled
+    // controls. Explicit UDF activity preferences remain respected, while
+    // specialized renderers apply base-document/calculation/UoM locks.
+    const disableSpecializedCell = Boolean(
+      column.readOnly || (setting.active === false && isUdfMatrixColumn(column)),
+    );
     return React.cloneElement(
       rendered,
       { key: columnKey },
@@ -1484,6 +1595,7 @@ function ReadyContentsTab({
       </div>
 
       <DocumentLinesTable
+        tableProps={tableClipboardProps}
         rows={lines}
         columns={visibleColumns.map((column) => ({
           ...column,
@@ -1496,7 +1608,9 @@ function ReadyContentsTab({
         rowKey={(_row, index) => index}
         renderCell={(column, line, rowIndex) => {
           const uomOpts = getUomOptions(line);
-          const lineTotals = getLineTotalsForDisplay(line, effectiveTaxCodes);
+          const lineTotals = isSalesBomComponentLine(line)
+            ? { beforeTax: '0.00', total: '0.00' }
+            : getLineTotalsForDisplay(line, effectiveTaxCodes);
           return renderCell(column, line, rowIndex, uomOpts, lineTotals);
         }}
         renderTrailingHeaderCell={() => <th style={{ width: 25 }}></th>}
@@ -1507,12 +1621,14 @@ function ReadyContentsTab({
               className="so-btn so-btn--danger"
               style={{ padding: '2px 8px', fontSize: 14 }}
               onClick={() => onRemoveLine(rowIndex)}
+              title={lines[rowIndex]?.bomRole === 'component' ? 'Sales BOM components cannot be removed individually' : 'Remove line'}
             >
               x
             </button>
           </td>
         )}
       />
+      {tableClipboardUi}
     </div>
     <LineValueLookupModal
       isOpen={dynamicUdfLookup.open}

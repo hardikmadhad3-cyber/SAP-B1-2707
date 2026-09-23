@@ -80,4 +80,23 @@ describe("SAP lookup Tab navigation", () => {
 
     expect(openLookup).not.toHaveBeenCalled();
   });
+
+  test("ordinary matrix fields keep native Tab behavior", () => {
+    const discount = document.createElement("input");
+    discount.name = "stdDiscount";
+    const country = document.createElement("select");
+    country.name = "countryOfOrigin";
+    document.body.append(discount, country);
+
+    discount.focus();
+    const tabEvent = new KeyboardEvent("keydown", {
+      key: "Tab",
+      bubbles: true,
+      cancelable: true,
+    });
+    const dispatched = discount.dispatchEvent(tabEvent);
+
+    expect(dispatched).toBe(true);
+    expect(tabEvent.defaultPrevented).toBe(false);
+  });
 });

@@ -39,7 +39,7 @@ function BusinessPartnerLookupModal({ isOpen, onClose, onSelect, type = 'cCustom
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const windowFrame = useFloatingWindow({ isOpen, defaultTop: 36 });
+  const windowFrame = useFloatingWindow({ isOpen, defaultTop: 36, bounds: 'parent' });
 
   const loadRows = async (query = '') => {
     setLoading(true);
@@ -121,7 +121,14 @@ function BusinessPartnerLookupModal({ isOpen, onClose, onSelect, type = 'cCustom
             >
               {windowFrame.isMinimized ? '□' : '-'}
             </button>
-            <button type="button" aria-label="Restore" onClick={windowFrame.restoreWindow}>□</button>
+            <button
+              type="button"
+              aria-label={windowFrame.isMaximized ? 'Restore' : 'Maximize'}
+              title={windowFrame.isMaximized ? 'Restore' : 'Maximize'}
+              onClick={windowFrame.toggleMaximize}
+            >
+              []
+            </button>
             <button type="button" aria-label="Close" onClick={onClose}>x</button>
           </div>
         </div>

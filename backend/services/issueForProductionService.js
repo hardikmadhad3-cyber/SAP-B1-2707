@@ -260,9 +260,50 @@ const getIssueByDocEntry = async (docEntry) => {
 
 // ── Create issue (posts to SAP) ───────────────────────────────────────────────
 const createIssue = async (body) => {
-  _validate(body);
-
-  const payload = _buildPayload(body);
+  const currentOrder = await productionDbService.getProductionOrderForIssue(body.prod_order_entry);
+  if (!currentOrder) {
+    const error = new Error('Production order not found.');
+    error.statusCode = 404;
+    throw error;
+  }
+  const allowedLines = new Map((currentOrder.lines || []).map((line) => [Number(line.base_line), line]));
+  const submittedLines = Array.isArray(body.lines) ? body.lines : [];
+  const lines = [];
+  for (const submitted of submittedLines) {
+    const current = allowedLines.get(Number(submitted.base_line));
+    if (!current || String(submitted.item_code || '') !== String(current.item_code || '')) {
+      const error = new Error('Production order lines changed. Reload the production order before posting.');
+      error.statusCode = 409;
+      throw error;
+    }
+    const quantity = Number(submitted.issue_qty);
+    if (!Number.isFinite(quantity) || quantity <= 0 || quantity > Number(current.remaining_qty || 0) + 0.000001) {
+      const error = new Error(`Issue quantity for "${current.item_code}" exceeds the current open quantity.`);
+      error.statusCode = 422;
+      throw error;
+    }
+    const allocation = await productionDbService.getAllocationOptions(
+      current.item_code,
+      submitted.warehouse || current.warehouse,
+      'issue',
+    );
+    lines.push({
+      ...submitted,
+      item_code: current.item_code,
+      issue_qty: quantity,
+      warehouse: submitted.warehouse || current.warehouse,
+      base_entry: currentOrder.doc_entry,
+      base_line: current.base_line,
+      base_type: 202,
+      manage_batch: allocation.manageBatch,
+      manage_serial: allocation.manageSerial,
+      enable_bin_locations: allocation.binEnabled,
+    });
+  }
+  const trustedBody = { ...body, prod_order_entry: currentOrder.doc_entry, lines };
+  await productionDbService.validateBranchWarehouses(body.branch, lines.map((line) => line.warehouse));
+  _validate(trustedBody);
+  const payload = _buildPayload(trustedBody);
 
   const resp = await sapService.request({
     method: 'POST',
@@ -371,9 +412,43 @@ function _validate(body) {
     }
     if (l.manage_serial) {
       const serialCount = (l.serial_numbers || []).length;
+      if (!Number.isInteger(issueQty)) {
+        throw new Error(`Item "${l.item_code}" is serial-managed and requires a whole-number issue quantity.`);
+      }
       if (serialCount !== Math.floor(issueQty)) {
         throw new Error(`Item "${l.item_code}" requires serial numbers. Number of serials (${serialCount}) must equal issue quantity (${Math.floor(issueQty)}).`);
       }
+    }
+    const binAllocations = Array.isArray(l.bin_allocations)
+      ? l.bin_allocations.filter((row) => row.bin_abs != null && row.bin_abs !== '' && Number(row.quantity) > 0)
+      : [];
+    if (l.enable_bin_locations) {
+      const binTotal = binAllocations.reduce((sum, row) => sum + Number(row.quantity || 0), 0);
+      if (Math.abs(binTotal - issueQty) > 0.001) {
+        throw new Error(`Item "${l.item_code}" bin quantities (${binTotal}) must equal issue quantity (${issueQty}).`);
+      }
+      for (const row of binAllocations) {
+        const link = Number(row.serial_batch_base_line);
+        const managedRows = l.manage_batch ? (l.batch_numbers || []) : (l.serial_numbers || []);
+        if ((l.manage_batch || l.manage_serial)
+          && (!Number.isInteger(link) || link < 0 || link >= managedRows.length)) {
+          throw new Error(`Item "${l.item_code}" requires each bin allocation to reference a batch or serial row.`);
+        }
+      }
+      if (l.manage_batch || l.manage_serial) {
+        const managedRows = l.manage_batch ? (l.batch_numbers || []) : (l.serial_numbers || []);
+        managedRows.forEach((managedRow, index) => {
+          const expected = l.manage_batch ? Number(managedRow.quantity || 0) : 1;
+          const allocated = binAllocations
+            .filter((row) => Number(row.serial_batch_base_line) === index)
+            .reduce((sum, row) => sum + Number(row.quantity || 0), 0);
+          if (Math.abs(allocated - expected) > 0.001) {
+            throw new Error(`Item "${l.item_code}" bin linkage for managed row ${index + 1} must total ${expected}.`);
+          }
+        });
+      }
+    } else if (binAllocations.length) {
+      throw new Error(`Warehouse "${l.warehouse}" is not bin-enabled.`);
     }
   }
 }
@@ -416,6 +491,18 @@ function _buildPayload(body) {
             InternalSerialNumber: s.serial_number,
           }));
         }
+        if (Array.isArray(l.bin_allocations) && l.bin_allocations.length > 0) {
+          line.DocumentLinesBinAllocations = l.bin_allocations
+            .filter((row) => row.bin_abs != null && row.bin_abs !== '' && Number(row.quantity) > 0)
+            .map((row) => ({
+              BinAbsEntry: Number(row.bin_abs),
+              Quantity: Number(row.quantity),
+              BaseLineNumber: idx,
+              ...((l.manage_batch || l.manage_serial)
+                ? { SerialAndBatchNumbersBaseLine: Number(row.serial_batch_base_line) }
+                : {}),
+            }));
+        }
         
         return line;
       }),
@@ -423,15 +510,19 @@ function _buildPayload(body) {
 
   if (opt(body.series)) p.Series = Number(body.series);
   if (opt(body.ref_2))  p.Reference2 = body.ref_2;
+  if (opt(body.branch)) p.BPL_IDAssignedToInvoice = Number(body.branch);
 
   return p;
 }
 
-const getReferenceDataByOdbc = () => productionDbService.getIssueReferenceData();
+const getReferenceDataByOdbc = (options) => productionDbService.getIssueReferenceData(options);
+const getSeries = (date, branch) => productionDbService.lookupSeriesContext('60', date, branch);
+const getAllocationOptions = (itemCode, warehouse) =>
+  productionDbService.getAllocationOptions(itemCode, warehouse, 'issue');
 
 const getProductionOrderForIssueByOdbc = async (docEntry) => {
   const data = await productionDbService.getProductionOrderForIssue(docEntry);
-  if (!data) throw new Error('Production order not found.');
+  if (!data) throw Object.assign(new Error('Production order not found.'), { statusCode: 404 });
   return data;
 };
 
@@ -439,7 +530,7 @@ const getIssueListByOdbc = (query) => productionDbService.getIssueList(query);
 
 const getIssueByDocEntryByOdbc = async (docEntry) => {
   const data = await productionDbService.getIssueByDocEntry(docEntry);
-  if (!data) throw new Error('Issue for production not found.');
+  if (!data) throw Object.assign(new Error('Issue for production not found.'), { statusCode: 404 });
   return data;
 };
 
@@ -519,4 +610,7 @@ module.exports = {
   getIssueByDocEntry: getIssueByDocEntryByOdbc,
   createIssue,
   lookupProductionOrders: lookupProductionOrdersWithFallback,
+  getSeries,
+  getAllocationOptions,
+  _private: { _validate, _buildPayload },
 };

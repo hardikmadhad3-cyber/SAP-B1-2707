@@ -42,6 +42,18 @@ const TaxCode = lazyWithRetry(() => import("./pages/TaxCode"));
 const UoMGroup = lazyWithRetry(() => import("./pages/UoMGroup"));
 const PaymentTerms = lazyWithRetry(() => import("./pages/PaymentTerms"));
 const ShippingType = lazyWithRetry(() => import("./pages/ShippingType"));
+const QcAddonsPage = lazyWithRetry(() => import("./pages/QcAddonsPage"));
+const QcDocumentMappingsPage = lazyWithRetry(() => import("./pages/QcDocumentMappingsPage"));
+const QcParametersPage = lazyWithRetry(() => import("./pages/QcParametersPage"));
+const QcWorkflowsPage = lazyWithRetry(() => import("./pages/QcWorkflowsPage"));
+const QcTransactionsPage = lazyWithRetry(() => import("./pages/QcTransactionsPage"));
+const QcInwardPage = lazyWithRetry(() => import("./pages/QcInwardPage"));
+const QcOutwardPage = lazyWithRetry(() => import("./pages/QcOutwardPage"));
+const QcItemParameterMappingsPage = lazyWithRetry(() => import("./pages/QcItemParameterMappingsPage"));
+const QcItemParameterMappingsFindPage = lazyWithRetry(() => import("./pages/QcItemParameterMappingsFindPage"));
+const QcInstrumentsPage = lazyWithRetry(() => import("./pages/QcInstrumentsPage"));
+const WhatsAppDashboardPage = lazyWithRetry(() => import("./pages/WhatsAppDashboardPage"));
+const WhatsAppConfigurationPage = lazyWithRetry(() => import("./pages/WhatsAppConfigurationPage"));
 const Branch = lazyWithRetry(() => import("./pages/Branch"));
 const ChartOfAccounts = lazyWithRetry(() => import("./pages/ChartOfAccounts"));
 const GoodsReceipt = lazyWithRetry(() => import("./pages/GoodsReceipt"));
@@ -132,8 +144,19 @@ const CustomerReceivablesAgingReportPage = lazyWithRetry(() => import("./pages/C
 const VendorLiabilitiesAgingReportPage = lazyWithRetry(() => import("./pages/VendorLiabilitiesAgingReportPage"));
 const ReportsStudioPage = lazyWithRetry(() => import("./pages/ReportsStudioPage"));
 const ReportRunnerPage = lazyWithRetry(() => import("./pages/ReportRunnerPage"));
+const QueryManagerPage = lazyWithRetry(() => import("./pages/QueryManagerPage"));
+const JobworkIssueNotePage = lazyWithRetry(() => import("./pages/JobworkIssueNotePage"));
+const JobworkReceiptReturnNotePage = lazyWithRetry(() => import("./pages/JobworkReceiptReturnNotePage"));
+const CustomerReceiptNotePage = lazyWithRetry(() => import("./pages/CustomerReceiptNotePage"));
+const CustomerIssueReturnNotePage = lazyWithRetry(() => import("./pages/CustomerIssueReturnNotePage"));
+const GatePassVisitorTypePage = lazyWithRetry(() => import("./pages/GatePassVisitorTypePage"));
+const GatePassVisitTypePage = lazyWithRetry(() => import("./pages/GatePassVisitTypePage"));
+const VisitorLogPage = lazyWithRetry(() => import("./pages/VisitorLogPage"));
+const GateInPage = lazyWithRetry(() => import("./pages/GateInPage"));
+const GateOutPage = lazyWithRetry(() => import("./pages/GateOutPage"));
 const AdminPanelHome = lazyWithRetry(() => import("./pages/AdminPanelHome"));
 const AdminPanelEntity = lazyWithRetry(() => import("./pages/AdminPanelEntity"));
+const CompanyFormSettings = lazyWithRetry(() => import("./pages/CompanyFormSettings"));
 
 const DEFAULT_DOCUMENT_TITLE = "SAP Business One";
 
@@ -238,6 +261,18 @@ function App() {
                   <Route path="/soda-delivery/new" element={<SODADelivery />} />
                   <Route path="/soda-delivery/find" element={<SODADeliveryList />} />
                   <Route path="/shipping-type" element={<ShippingType />} />
+                  <Route path="/whatsapp" element={<WhatsAppDashboardPage />} />
+                  <Route path="/whatsapp/configuration" element={<WhatsAppConfigurationPage />} />
+                  <Route path="/qc/addons" element={<QcAddonsPage />} />
+                  <Route path="/qc/document-mappings" element={<QcDocumentMappingsPage />} />
+                  <Route path="/qc/parameters" element={<QcParametersPage />} />
+                  <Route path="/qc/workflows" element={<QcWorkflowsPage />} />
+                  <Route path="/qc/transactions" element={<QcTransactionsPage />} />
+                  <Route path="/qc/inward" element={<QcInwardPage />} />
+                  <Route path="/qc/outward" element={<QcOutwardPage />} />
+                  <Route path="/qc/item-parameter-mappings" element={<QcItemParameterMappingsPage />} />
+                  <Route path="/qc/item-parameter-mappings/find" element={<QcItemParameterMappingsFindPage />} />
+                  <Route path="/qc/instruments" element={<QcInstrumentsPage />} />
                   <Route path="/branch" element={<Branch />} />
                   <Route path="/chart-of-accounts" element={<ChartOfAccounts />} />
                   <Route path="/purchase-order" element={<PurchaseOrder />} />
@@ -265,6 +300,16 @@ function App() {
                   <Route path="/reports" element={<ReportsStudioPage />} />
                   <Route path="/reports/menu/:menuId" element={<ReportRunnerPage />} />
                   <Route path="/reports/report/:reportId" element={<ReportRunnerPage />} />
+                  <Route path="/query-manager" element={<QueryManagerPage />} />
+                  <Route path="/jobwork-issue-note" element={<JobworkIssueNotePage />} />
+                  <Route path="/jobwork-receipt-note" element={<JobworkReceiptReturnNotePage />} />
+                  <Route path="/customer-receipt-note" element={<CustomerReceiptNotePage />} />
+                  <Route path="/customer-issue-note" element={<CustomerIssueReturnNotePage />} />
+                  <Route path="/gate-pass/visitor-type" element={<GatePassVisitorTypePage />} />
+                  <Route path="/gate-pass/visit-type" element={<GatePassVisitTypePage />} />
+                  <Route path="/gate-pass/visitor-log" element={<VisitorLogPage />} />
+                  <Route path="/gate-pass/gate-in" element={<GateInPage />} />
+                  <Route path="/gate-pass/gate-out" element={<GateOutPage />} />
                   <Route path="/reports/sales/analysis" element={<SalesAnalysisReportPage />} />
                   <Route path="/reports/crm/opportunities/forecast" element={<OpportunitiesForecastReportPage />} />
                   <Route path="/reports/crm/opportunities/forecast-over-time" element={<OpportunitiesForecastOverTimeReportPage />} />
@@ -336,6 +381,7 @@ function App() {
                   <Route path="/admin" element={<AdminPanelHome />} />
                   <Route path="/admin/general-settings" element={<GeneralSettings />} />
                   <Route path="/admin/transaction-field-configuration" element={<TransactionFieldConfiguration />} />
+                  <Route path="/admin/company-form-settings" element={<CompanyFormSettings />} />
                   <Route path="/admin/:entityKey" element={<AdminPanelEntity />} />
                   <Route path="/admin/:entityKey/new" element={<AdminPanelEntity />} />
                   <Route path="/admin/:entityKey/:recordId" element={<AdminPanelEntity />} />

@@ -331,6 +331,18 @@
   }
 }
 
+/* Match the compact, balanced Sales document header grid when the UDF pane is open. */
+.service-ap-credit-memo-page .service-ap-header-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 4px 14px !important;
+}
+
+.service-ap-credit-memo-page .service-ap-header-grid .del-field__label {
+  flex-basis: 100px !important;
+  width: 100px !important;
+  min-width: 100px !important;
+}
+
 @media (max-width: 1024px) {
   .service-ap-credit-memo-page .so-layout {
     padding-inline: 6px;

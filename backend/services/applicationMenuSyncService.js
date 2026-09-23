@@ -47,6 +47,23 @@ const APP_MENU_DEFINITIONS = [
   { key: 'branch', parentKey: 'master', menuName: 'Branch', menuPath: '/branch', icon: 'branch', sortOrder: 9 },
   { key: 'chart-of-accounts', parentKey: 'master', menuName: 'Chart Of Accounts', menuPath: '/chart-of-accounts', icon: 'accounts', sortOrder: 10 },
 
+  { key: 'job-work', menuName: 'Job Work', icon: 'production', sortOrder: 4.5 },
+  { key: 'job-work-sales', parentKey: 'job-work', menuName: 'Sales J/W', icon: 'sales', sortOrder: 1 },
+  { key: 'customer-receipt-note', parentKey: 'job-work-sales', menuName: 'Customer Receipt Note', menuPath: '/customer-receipt-note', icon: 'receipt', sortOrder: 1 },
+  { key: 'customer-issue-note', parentKey: 'job-work-sales', menuName: 'Customer Issue / Return Note', menuPath: '/customer-issue-note', icon: 'issue', sortOrder: 2 },
+  { key: 'job-work-purchase', parentKey: 'job-work', menuName: 'Purchase J/W', icon: 'purchase', sortOrder: 2 },
+  { key: 'jobwork-issue-note', parentKey: 'job-work-purchase', menuName: 'Jobwork Issue Note', menuPath: '/jobwork-issue-note', icon: 'issue', sortOrder: 1 },
+  { key: 'jobwork-receipt-note', parentKey: 'job-work-purchase', menuName: 'Jobwork Receipt / Return Note', menuPath: '/jobwork-receipt-note', icon: 'receipt', sortOrder: 2 },
+
+  { key: 'gate-pass', menuName: 'Gate Pass', icon: 'branch', sortOrder: 4.7 },
+  { key: 'gate-pass-master', parentKey: 'gate-pass', menuName: 'Master', icon: 'master', sortOrder: 1 },
+  { key: 'gate-pass-visitor-type', parentKey: 'gate-pass-master', menuName: 'Visitor Type', menuPath: '/gate-pass/visitor-type', icon: 'partner', sortOrder: 1 },
+  { key: 'gate-pass-visit-type', parentKey: 'gate-pass-master', menuName: 'Visit Type', menuPath: '/gate-pass/visit-type', icon: 'document', sortOrder: 2 },
+  { key: 'gate-pass-transactions', parentKey: 'gate-pass', menuName: 'Transactions', icon: 'document', sortOrder: 2 },
+  { key: 'gate-pass-visitor-log', parentKey: 'gate-pass-transactions', menuName: 'Visitor Log', menuPath: '/gate-pass/visitor-log', icon: 'partner', sortOrder: 1 },
+  { key: 'gate-pass-gate-in', parentKey: 'gate-pass-transactions', menuName: 'Gate In', menuPath: '/gate-pass/gate-in', icon: 'receipt', sortOrder: 2 },
+  { key: 'gate-pass-gate-out', parentKey: 'gate-pass-transactions', menuName: 'Gate Out', menuPath: '/gate-pass/gate-out', icon: 'issue', sortOrder: 3 },
+
   { key: 'production', menuName: 'Production', icon: 'production', sortOrder: 5 },
   { key: 'bom', parentKey: 'production', menuName: 'Bill of Materials', menuPath: '/bom', icon: 'bom', sortOrder: 1 },
   { key: 'production-order', parentKey: 'production', menuName: 'Production Order', menuPath: '/production-order', icon: 'production', sortOrder: 2 },
@@ -58,6 +75,21 @@ const APP_MENU_DEFINITIONS = [
   { key: 'goods-issue', parentKey: 'inventory', menuName: 'Goods Issue', menuPath: '/goods-issue', icon: 'issue', sortOrder: 2 },
   { key: 'inventory-transfer-request', parentKey: 'inventory', menuName: 'Inventory Transfer Request', menuPath: '/inventory-transfer-request', icon: 'transfer', sortOrder: 3 },
   { key: 'inventory-transfer', parentKey: 'inventory', menuName: 'Inventory Transfer', menuPath: '/inventory-transfer', icon: 'transfer', sortOrder: 4 },
+
+  { key: 'quality-control', menuName: 'Quality Control', icon: 'report', sortOrder: 6.5 },
+  { key: 'qc-addons', parentKey: 'quality-control', menuName: 'Add-on Management', menuPath: '/qc/addons', icon: 'settings', sortOrder: 1 },
+  { key: 'qc-mappings', parentKey: 'quality-control', menuName: 'Document Mapping', menuPath: '/qc/document-mappings', icon: 'document', sortOrder: 2 },
+  { key: 'qc-parameters', parentKey: 'quality-control', menuName: 'Parameters', menuPath: '/qc/parameters', icon: 'uom', sortOrder: 3 },
+  { key: 'qc-item-parameter-mappings', parentKey: 'quality-control', menuName: 'Item-wise Parameter Mapping', menuPath: '/qc/item-parameter-mappings', icon: 'item', sortOrder: 4 },
+  { key: 'qc-instruments', parentKey: 'quality-control', menuName: 'Instrument Master', menuPath: '/qc/instruments', icon: 'settings', sortOrder: 5 },
+  { key: 'qc-workflows', parentKey: 'quality-control', menuName: 'Workflows', menuPath: '/qc/workflows', icon: 'production', sortOrder: 6 },
+  { key: 'qc-inward', parentKey: 'quality-control', menuName: 'Inward QC', menuPath: '/qc/inward', icon: 'receipt', sortOrder: 7 },
+  { key: 'qc-outward', parentKey: 'quality-control', menuName: 'Outward QC', menuPath: '/qc/outward', icon: 'issue', sortOrder: 8 },
+  { key: 'qc-transactions', parentKey: 'quality-control', menuName: 'Transactions', menuPath: '/qc/transactions', icon: 'document', sortOrder: 9 },
+
+  { key: 'whatsapp', menuName: 'WhatsApp', icon: 'chat', sortOrder: 6.7 },
+  { key: 'whatsapp-inbox', parentKey: 'whatsapp', menuName: 'Inbox', menuPath: '/whatsapp', icon: 'chat', sortOrder: 1 },
+  { key: 'whatsapp-configuration', parentKey: 'whatsapp', menuName: 'Configuration', menuPath: '/whatsapp/configuration', icon: 'settings', sortOrder: 2 },
 
   { key: 'banking', menuName: 'Banking', icon: 'banking', sortOrder: 7 },
   {
@@ -149,6 +181,7 @@ const APP_MENU_DEFINITIONS = [
   { key: 'cash-flow-reference-report', parentKey: 'reports-financial-statements', menuName: 'Cash Flow Reference Report', menuPath: '/reports/financial/financial/cash-flow-reference-report', icon: 'report', sortOrder: 6 },
   { key: 'business-assessment-report', parentKey: 'reports-financial-statements', menuName: 'Business Assessment Report', menuPath: '/reports/financial/financial/business-assessment-report', icon: 'report', sortOrder: 7 },
 
+  { key: 'query-manager', menuName: 'Query Manager', menuPath: '/query-manager', icon: 'reports', sortOrder: 12 },
 ];
 
 const normalizeText = (value) => String(value || '').trim();
@@ -451,6 +484,45 @@ const syncApplicationSidebarMenus = async (db) => {
   }
 
   syncCount += await deleteDeprecatedTransactionFieldMenu(db);
+  const featureRights = [
+    ['purchase', 'job-work'],
+    ['sales', 'job-work-sales'],
+    ['purchase', 'job-work-purchase'],
+    ['grpo', 'jobwork-issue-note'],
+    ['grpo', 'jobwork-receipt-note'],
+    ['delivery', 'customer-receipt-note'],
+    ['delivery', 'customer-issue-note'],
+    ['purchase', 'gate-pass'],
+    ['master', 'gate-pass-master'],
+    ['warehouse', 'gate-pass-visitor-type'],
+    ['warehouse', 'gate-pass-visit-type'],
+    ['production', 'gate-pass-transactions'],
+    ['grpo', 'gate-pass-visitor-log'],
+    ['grpo', 'gate-pass-gate-in'],
+    ['grpo', 'gate-pass-gate-out'],
+    ['inventory', 'quality-control'],
+    ['goods-receipt', 'qc-addons'],
+    ['goods-receipt', 'qc-mappings'],
+    ['goods-receipt', 'qc-parameters'],
+    ['goods-receipt', 'qc-item-parameter-mappings'],
+    ['goods-receipt', 'qc-instruments'],
+    ['goods-receipt', 'qc-workflows'],
+    ['goods-receipt', 'qc-inward'],
+    ['goods-receipt', 'qc-outward'],
+    ['goods-receipt', 'qc-transactions'],
+  ];
+  for (const [sourceKey, targetKey] of featureRights) {
+    syncCount += await cloneRoleRightsForDuplicateMenu(
+      db,
+      menuByKey.get(sourceKey)?.MenuId,
+      menuByKey.get(targetKey)?.MenuId,
+    );
+  }
+
+  for (const menuKey of ['whatsapp', 'whatsapp-inbox', 'whatsapp-configuration', 'query-manager']) {
+    syncCount += await restrictMenuToAdminRoles(db, menuByKey.get(menuKey)?.MenuId);
+  }
+
   syncCount += await cloneRoleRightsForDuplicateMenu(
     db,
     menuByKey.get('sales-order')?.MenuId,

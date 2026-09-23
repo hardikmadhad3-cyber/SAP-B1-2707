@@ -1,3 +1,4 @@
+const { reportTableExists, getReportTableColumns } = require('../reportMetadataService');
 const db = require("../dbService");
 
 const ACTIVITY_OPTIONS = [
@@ -18,8 +19,8 @@ const SOURCE_TYPE_OPTIONS = [
   { value: "Employee", label: "Employee" },
 ];
 
-const columnCache = new Map();
-const tableCache = new Map();
+
+
 
 const queryRows = async (sql, params = {}) => {
   const result = await db.query(sql, params);
@@ -29,41 +30,9 @@ const queryRows = async (sql, params = {}) => {
 const normalizeText = (value) => String(value || "").trim();
 const buildLike = (value) => `%${normalizeText(value)}%`;
 
-const tableExists = async (tableName) => {
-  const table = normalizeText(tableName).toUpperCase();
-  if (!table) return false;
-  if (tableCache.has(table)) return tableCache.get(table);
+const tableExists = reportTableExists;
 
-  const rows = await queryRows(
-    `
-      SELECT 1 AS present
-      FROM INFORMATION_SCHEMA.TABLES
-      WHERE TABLE_NAME = @tableName
-    `,
-    { tableName: table }
-  );
-  const exists = rows.length > 0;
-  tableCache.set(table, exists);
-  return exists;
-};
-
-const getColumns = async (tableName) => {
-  const table = normalizeText(tableName).toUpperCase();
-  if (!table) return new Set();
-  if (columnCache.has(table)) return columnCache.get(table);
-
-  const rows = await queryRows(
-    `
-      SELECT COLUMN_NAME
-      FROM INFORMATION_SCHEMA.COLUMNS
-      WHERE TABLE_NAME = @tableName
-    `,
-    { tableName: table }
-  );
-  const columns = new Set(rows.map((row) => normalizeText(row.COLUMN_NAME).toUpperCase()));
-  columnCache.set(table, columns);
-  return columns;
-};
+const getColumns = getReportTableColumns;
 
 const hasColumn = async (tableName, columnName) => {
   const columns = await getColumns(tableName);

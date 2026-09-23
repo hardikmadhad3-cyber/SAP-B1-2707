@@ -1,4 +1,7 @@
+const { buildDocumentConfirmationPayload, updateDocumentConfirmationOnly } = require('./documentConfirmationUtils');
+const { buildDocumentSeriesPayload } = require('./documentSeriesPayloadUtils');
 const sapService = require('./sapService');
+const { buildDocumentRoundingPayload } = require('./documentRoundingPayloadUtils');
 const purchaseQuotationDb = require('./purchaseQuotationDbService');
 const { getDocumentFreightCharges } = require('./freightChargesDbService');
 const { buildDocumentAdditionalExpenses } = require('./freightPayloadUtils');
@@ -445,9 +448,12 @@ const buildDocumentLines = async (lines = []) => {
   return lines
     .filter((line) => String(line.itemNo || '').trim())
     .map((line) => {
-      const uomValue = line.uomNameEdited
+      const rawUomEntry = Number(line.uomEntry ?? line.UoMEntry);
+      const usesManualUom = line.uomNameEdited || (Number.isInteger(rawUomEntry) && rawUomEntry < 0);
+      const uomValue = usesManualUom
         ? (line.uomName ?? line.UoMName ?? line.UomName ?? line.UnitMsr ?? line.unitMsr)
-        : (line.uomName || line.UoMName || line.UomName || line.UnitMsr || line.unitMsr || line.uomCode);
+        : (line.uomCode || line.UoMCode || line.UomCode || line.uomName || line.UoMName || line.UomName || line.UnitMsr || line.unitMsr);
+      const positiveUomEntry = Number.isInteger(rawUomEntry) && rawUomEntry > 0 ? rawUomEntry : null;
       const documentLine = cleanObject({
         ItemCode: line.itemNo,
         ItemDescription: line.itemDescription,
@@ -457,8 +463,13 @@ const buildDocumentLines = async (lines = []) => {
         DiscountPercent: toNumberOrUndefined(line.stdDiscount),
         TaxCode: line.taxCode,
         WarehouseCode: line.whse,
-        UoMCode: uomValue,
+        ...(usesManualUom
+          ? { MeasureUnit: uomValue }
+          : (positiveUomEntry ? { UoMEntry: positiveUomEntry } : { UoMCode: uomValue })),
         RequiredDate: line.requiredDate,
+        PackageQuantity: toNumberOrUndefined(
+          line.noOfPackages ?? line.NoOfPackages ?? line.packageQuantity ?? line.PackageQuantity ?? line.PackQty
+        ),
         ShipDate: line.quotedDate,
         CostingCode: line.distRule,
         CountryOrg: line.countryOfOrigin,
@@ -483,16 +494,16 @@ const buildPurchaseQuotationPayload = async ({ header = {}, lines = [], header_u
     RequriedDate: header.requiredDate || header.deliveryDate || header.postingDate || header.documentDate,
     TaxDate: header.documentDate || header.postingDate,
     // Series for auto-numbering - only include if explicitly provided and valid
-    ...(header.series && Number(header.series) > 0 ? { Series: Number(header.series) } : {}),
+    ...buildDocumentSeriesPayload(header),
     BPLId: header.branch ? Number(header.branch) : undefined,
     BPL_IDAssignedToInvoice: header.branch ? Number(header.branch) : undefined,
     PaymentGroupCode: header.paymentTerms ? Number(header.paymentTerms) : undefined,
     SalesPersonCode: header.salesEmployee !== '' && header.salesEmployee != null ? toNumberOrUndefined(header.salesEmployee) : undefined,
     Comments: header.otherInstruction,
     JournalMemo: header.journalRemark,
-    Confirmed: header.confirmed ? 'tYES' : 'tNO',
+    ...buildDocumentConfirmationPayload(header),
     DiscountPercent: toNumberOrUndefined(header.discount),
-    Rounding: toSapYesNo(header.rounding),
+    ...buildDocumentRoundingPayload(header),
     DocumentAdditionalExpenses: buildDocumentAdditionalExpenses(freightCharges),
     DocumentLines: await buildDocumentLines(lines),
   });
@@ -547,6 +558,8 @@ const submitPurchaseQuotation = async (payload) => {
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€ UPDATE ORDER (USING SERVICE LAYER) â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const updatePurchaseQuotation = async (docEntry, payload) => {
+  const confirmationResult = await updateDocumentConfirmationOnly(docEntry, payload, 'PurchaseQuotations', sapService);
+  if (confirmationResult) return confirmationResult;
   await validatePurchaseQuotationPayload(payload);
   const purchaseQuotationPayload = await buildPurchaseQuotationPayload(payload);
 

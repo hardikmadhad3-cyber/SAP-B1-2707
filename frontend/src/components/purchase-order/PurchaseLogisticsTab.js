@@ -191,7 +191,7 @@ export default function PurchaseLogisticsTab({
           <div className="po-field">
             <label className="po-field__label" />
             <label className="po-checkbox-label">
-              <input type="checkbox" name="confirmed" checked={header.confirmed || false} onChange={onHeaderChange} disabled={!isEditable} />
+              <input type="checkbox" name="confirmed" checked={header.confirmed ?? true} title={header.confirmed == null ? 'SAP company default; click to choose explicitly' : undefined} onChange={onHeaderChange} disabled={!isEditable} />
               <span>Approved</span>
             </label>
           </div>

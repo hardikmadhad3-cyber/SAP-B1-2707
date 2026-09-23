@@ -28,6 +28,30 @@ const setIfPresent = (target, key, value) => {
   }
 };
 
+const isManualUomEntry = (value) => {
+  const entry = Number(value);
+  return Number.isInteger(entry) && entry < 0;
+};
+
+const normalizeManualUomForDuplicate = (line = {}) => {
+  const uomEntry = line.uomEntry ?? line.UoMEntry;
+  if (!isManualUomEntry(uomEntry)) return line;
+
+  const measureUnit = String(
+    line.uomName ?? line.UoMName ?? line.UomName ?? line.unitMsr ?? line.UnitMsr ?? line.uomCode ?? line.UoMCode ?? '',
+  ).trim();
+
+  return {
+    ...line,
+    uomEntry: null,
+    UoMEntry: null,
+    uomCode: measureUnit,
+    UoMCode: measureUnit,
+    uomName: measureUnit,
+    uomNameEdited: true,
+  };
+};
+
 const HEADER_ID_KEYS = [
   'docEntry',
   'DocEntry',
@@ -149,7 +173,7 @@ export const buildDuplicateLines = (lines = [], createLine, rowUdfDefinitions) =
     if (Object.prototype.hasOwnProperty.call(duplicate, 'batchAllocations')) duplicate.batchAllocations = [];
     duplicate.taxCodeManuallyOverridden = Boolean(duplicate.taxCode || duplicate.TaxCode || duplicate.VatGroup);
 
-    return duplicate;
+    return normalizeManualUomForDuplicate(duplicate);
   });
 };
 

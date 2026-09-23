@@ -2,6 +2,7 @@ import {
   buildServiceDocumentLiveFields,
   getSapStandardServiceMatrixColumns,
 } from './serviceDocumentLiveFields';
+import { getReadableDocumentLineColumnWidth } from './documentLineColumnWidth';
 
 const schema = {
   documentType: 'SERVICE_AP_INVOICE',
@@ -27,6 +28,17 @@ test('pins mandatory service identity fields in the safe fallback profile', () =
 
   expect(fields.find((field) => field.key === 'description')).toMatchObject({ requiredVisible: true });
   expect(fields.find((field) => field.key === 'glAccount')).toMatchObject({ requiredVisible: true });
+  expect(fields.find((field) => field.key === 'totalLC')).toMatchObject({ readOnly: false, active: true });
+  expect(fields.find((field) => field.key === 'priceAfterDisc')).toMatchObject({ readOnly: false, active: true });
+});
+
+test('keeps lookup columns wide enough for their value and lookup action', () => {
+  expect(getReadableDocumentLineColumnWidth({
+    key: 'glAccount',
+    label: 'G/L Account',
+    width: 100,
+    lookup: 'account',
+  })).toBe(125);
 });
 
 test('maps service standards, keeps unsupported standards read-only, and exposes only schema UDFs', () => {
@@ -54,8 +66,12 @@ test('maps service standards, keeps unsupported standards read-only, and exposes
     label: 'G/L Account (SAP)',
     readOnly: false,
     width: 180,
+    lookup: 'account',
   });
-  expect(result.matrixColumns.find((field) => field.key === 'totalLC').readOnly).toBe(true);
+  expect(result.matrixColumns.find((field) => field.key === 'totalLC')).toMatchObject({
+    readOnly: false,
+    active: true,
+  });
   expect(result.matrixColumns.some((field) => field.sapField === 'ItemCode')).toBe(false);
   expect(result.matrixColumns.find((field) => field.key.startsWith('sapLayout_')).readOnly).toBe(true);
   expect(result.rowUdfFields.map((field) => field.key)).toEqual(['U_CompanyA']);
@@ -104,4 +120,54 @@ test('returns the safe service fallback and no UDFs for stale-company metadata',
   expect(result.rowUdfFields).toEqual([]);
   expect(result.matrixColumns).toEqual(getSapStandardServiceMatrixColumns());
   expect(result.matrixColumns.some((field) => field.key === 'itemNo')).toBe(false);
+});
+
+test('maps TaxCode and VatGroup to one editable standard Tax Code column', () => {
+  const taxSchema = {
+    ...schema,
+    lineFields: [
+      { id: 'PCH1.TaxCode', stateKey: 'taxCode', sapField: 'TaxCode', databaseField: 'TaxCode', label: 'Tax Code', visible: true, editable: true, order: 1 },
+      { id: 'PCH1.VatGroup', stateKey: 'taxCode', sapField: 'TaxCode', databaseField: 'VatGroup', label: 'Tax Code', visible: true, editable: true, order: 2 },
+    ],
+  };
+  const result = buildServiceDocumentLiveFields({
+    schema: taxSchema,
+    documentType: 'SERVICE_AP_INVOICE',
+    headerTable: 'OPCH',
+    lineTable: 'PCH1',
+    companyId: 10,
+    companyDb: 'COMPANY_A',
+    layoutResponse: {
+      source: 'live-sap-metadata',
+      columns: [
+        { fieldName: 'TaxCode', columnTitle: 'Tax Code', visible: true, editable: true, columnOrder: 1 },
+        { fieldName: 'VatGroup', columnTitle: 'Tax Code', visible: true, editable: true, columnOrder: 2 },
+      ],
+    },
+  });
+
+  expect(result.matrixColumns.filter((column) => column.key === 'taxCode')).toHaveLength(1);
+  expect(result.matrixColumns[0]).toMatchObject({ lookup: 'tax', readOnly: false });
+});
+
+test('uses the SAP matrix editability flag for directly-entered service totals', () => {
+  const result = buildServiceDocumentLiveFields({
+    schema,
+    documentType: 'SERVICE_AP_INVOICE',
+    headerTable: 'OPCH',
+    lineTable: 'PCH1',
+    companyId: 10,
+    companyDb: 'COMPANY_A',
+    layoutResponse: {
+      source: 'live-sap-metadata',
+      columns: [
+        { fieldName: 'LineTotal', columnTitle: 'Total (LC)', visible: true, editable: true, columnOrder: 1 },
+      ],
+    },
+  });
+
+  expect(result.matrixColumns.find((field) => field.key === 'totalLC')).toMatchObject({
+    readOnly: false,
+    active: true,
+  });
 });

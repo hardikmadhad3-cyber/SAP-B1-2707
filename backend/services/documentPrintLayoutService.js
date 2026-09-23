@@ -1,6 +1,10 @@
 const dbService = require('./dbService');
 const reportService = require('./reportService');
 const { getActiveCompanyConfig } = require('./companyConfigService');
+const {
+  getSapDefaultReportCode,
+  selectSapDefaultReportRow,
+} = require('../utils/documentPrintDefaultLayout');
 
 const DOCUMENT_PRINT_CONFIG = {
   salesQuotation: {
@@ -352,6 +356,69 @@ const isTruthySapFlag = (value) => {
   return ['1', 'Y', 'YES', 'T', 'TRUE'].includes(normalized);
 };
 
+const resolveMappedSapUserId = async (schema) => {
+  const companyConfig = await getActiveCompanyConfig();
+  const sapUserCode = String(
+    companyConfig.userMapping?.sapUserCode
+      || companyConfig.userMapping?.companySapUserCode
+      || companyConfig.serviceLayer?.username
+      || '',
+  ).trim();
+  if (!sapUserCode) return null;
+
+  const result = await dbService.query(`
+    SELECT TOP 1 USERID
+    FROM OUSR
+    WHERE USER_CODE = @sapUserCode
+       OR U_NAME = @sapUserCode
+    ORDER BY CASE WHEN USER_CODE = @sapUserCode THEN 0 ELSE 1 END, USERID
+  `, { sapUserCode }, { databaseName: schema });
+
+  return result.recordset?.[0]?.USERID ?? null;
+};
+
+const getSapAssignedDefaultLayout = async ({ typeCode, cardCode, schema }) => {
+  const requiredColumns = ['DoumntDode', 'UserId', 'DfltReport', 'CardCode'];
+  const optionalColumns = ['TYPE'];
+  const availableColumns = await getExistingTableColumns(
+    'RDFL',
+    [...requiredColumns, ...optionalColumns],
+    schema,
+  );
+  const availableColumnTokens = new Set(
+    [...availableColumns].map((columnName) => String(columnName).trim().toUpperCase()),
+  );
+  if (requiredColumns.some((columnName) => !availableColumnTokens.has(columnName.toUpperCase()))) {
+    return {
+      docCode: '',
+      source: 'SAP B1 RDFL unavailable',
+      warnings: ['SAP B1 default-layout assignments are unavailable in this company schema.'],
+    };
+  }
+
+  const typeSelect = availableColumnTokens.has('TYPE') ? ', TYPE' : '';
+  const result = await dbService.query(`
+    SELECT DoumntDode, UserId, DfltReport, CardCode${typeSelect}
+    FROM RDFL
+    WHERE DoumntDode = @typeCode
+  `, { typeCode }, { databaseName: schema });
+  const userId = await resolveMappedSapUserId(schema);
+  const selectedRow = selectSapDefaultReportRow({
+    rows: result.recordset || [],
+    userId,
+    cardCode,
+  });
+
+  return {
+    docCode: getSapDefaultReportCode(selectedRow),
+    source: selectedRow
+      ? 'SAP B1 RDFL default (user/business partner)'
+      : 'SAP B1 RDFL has no matching default',
+    warnings: [],
+    userId,
+  };
+};
+
 const getSapLayoutRows = async (config, schema) => {
   const resolvedTypeCode = await resolveLayoutTypeCode(config, schema);
   const availableColumnSet = await getExistingTableColumns('RDOC', SAP_DEFAULT_LAYOUT_FLAG_COLUMNS, schema);
@@ -406,7 +473,13 @@ const getSapLayoutRows = async (config, schema) => {
   };
 };
 
-const selectSapAssignedLayout = ({ config, layouts, defaultFlagColumns, docCode = '' }) => {
+const selectSapAssignedLayout = ({
+  config,
+  layouts,
+  defaultFlagColumns,
+  docCode = '',
+  assignedDefault = null,
+}) => {
   const activeLayouts = filterActiveSapLayouts(config, layouts);
   const crystalLayouts = filterDocumentLayouts(config, layouts);
   const normalizedDocCode = String(docCode || '').trim();
@@ -443,6 +516,23 @@ const selectSapAssignedLayout = ({ config, layouts, defaultFlagColumns, docCode 
     };
   }
 
+  const assignedDocCode = String(assignedDefault?.docCode || '').trim();
+  if (assignedDocCode) {
+    const assignedLayout = crystalLayouts.find((layout) =>
+      String(layout.DocCode || layout.layout_id || '').trim().toLowerCase()
+        === assignedDocCode.toLowerCase(),
+    );
+    if (assignedLayout) {
+      return {
+        layout: assignedLayout,
+        layoutCandidates: activeLayouts,
+        requiresLayoutSelection: false,
+        selectionSource: assignedDefault.source || 'SAP B1 RDFL default',
+        warnings: assignedDefault.warnings || [],
+      };
+    }
+  }
+
   const defaultLayouts = defaultFlagColumns.length
     ? crystalLayouts.filter((layout) => defaultFlagColumns.some((columnName) => isTruthySapFlag(layout[columnName])))
     : [];
@@ -459,11 +549,11 @@ const selectSapAssignedLayout = ({ config, layouts, defaultFlagColumns, docCode 
 
   if (defaultLayouts.length > 1) {
     return {
-      layout: null,
+      layout: defaultLayouts[0],
       layoutCandidates: activeLayouts,
-      requiresLayoutSelection: true,
-      selectionSource: 'SAP B1 Choose Layout list',
-      warnings: [`SAP B1 exposes multiple default Crystal Report layouts for ${config.label}; choose the required layout.`],
+      requiresLayoutSelection: false,
+      selectionSource: `RDOC default flag fallback (${defaultFlagColumns.join(', ')})`,
+      warnings: [`SAP B1 exposes multiple legacy default flags for ${config.label}; the first active Crystal layout was selected.`],
     };
   }
 
@@ -480,11 +570,14 @@ const selectSapAssignedLayout = ({ config, layouts, defaultFlagColumns, docCode 
   }
 
   return {
-    layout: null,
+    layout: crystalLayouts[0],
     layoutCandidates: activeLayouts,
-    requiresLayoutSelection: true,
-    selectionSource: 'SAP B1 Choose Layout list',
-    warnings: [],
+    requiresLayoutSelection: false,
+    selectionSource: 'First active SAP B1 Crystal layout fallback',
+    warnings: [
+      ...(assignedDefault?.warnings || []),
+      `SAP B1 has no matching RDFL default for ${config.label}; the first active Crystal layout was selected.`,
+    ],
   };
 };
 
@@ -723,6 +816,11 @@ const getDocumentReportMetadata = async ({
   const resolvedCardCode = String(document.CardCode || cardCode || '').trim();
   const { layouts, defaultFlagColumns, typeCode } = await getSapLayoutRows(config, normalizedSchema);
   const resolvedConfig = { ...config, typeCode };
+  const assignedDefault = await getSapAssignedDefaultLayout({
+    typeCode,
+    cardCode: resolvedCardCode,
+    schema: normalizedSchema,
+  });
   const {
     layout,
     layoutCandidates,
@@ -734,6 +832,7 @@ const getDocumentReportMetadata = async ({
     layouts,
     defaultFlagColumns,
     docCode,
+    assignedDefault,
   });
   const layoutCandidateMetadata = (layoutCandidates || []).map((candidate) =>
     buildLayoutMetadata(candidate, { selectionSource: 'SAP B1 active layout' }));
@@ -759,6 +858,8 @@ const getDocumentReportMetadata = async ({
       layoutSource: selectionSource,
       activeCrystalLayoutCount: filterDocumentLayouts(resolvedConfig, layouts).length,
       defaultFlagColumns,
+      sapDefaultLayout: assignedDefault.docCode || '',
+      sapDefaultUserId: assignedDefault.userId ?? null,
       reportService: 'SAP Business One Report Service / Crystal Reports',
     },
   };

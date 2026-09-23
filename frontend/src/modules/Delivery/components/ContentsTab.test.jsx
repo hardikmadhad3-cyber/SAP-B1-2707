@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import ContentsTab from './ContentsTab';
 
 const renderContentsTab = (matrixFields, overrides = {}) => render(
@@ -51,10 +51,11 @@ test('keeps configured Delivery column widths and lets the wrapper scroll for ex
   const table = screen.getByRole('table');
   const scroller = table.closest('.del-grid-wrap__scroller--contents');
 
-  // 42px row number + visible columns + 48px action column.
-  expect(table).toHaveStyle({ width: '770px', minWidth: '100%', tableLayout: 'fixed' });
+  // 42px row number + visible columns + compulsory Bin Location Allocation + 48px action column.
+  expect(table).toHaveStyle({ width: '944px', minWidth: '100%', tableLayout: 'fixed' });
   expect(scroller).toHaveStyle({ overflowX: 'auto' });
   expect(screen.getByText('Extra Field').closest('th')).toHaveStyle({ width: '180px' });
+  expect(screen.getByText('Bin Location Allocation')).toBeInTheDocument();
 });
 
 test('applies SAP line-number visibility, order, and width like any other matrix column', () => {
@@ -64,9 +65,11 @@ test('applies SAP line-number visibility, order, and width like any other matrix
   ]);
 
   const headers = screen.getAllByRole('columnheader');
-  expect(headers[0]).toHaveTextContent('Item No.');
-  expect(headers[1]).toHaveTextContent('#');
-  expect(headers[1]).toHaveStyle({ width: '60px' });
+  expect(headers[0]).toHaveTextContent('#');
+  expect(headers[0]).toHaveStyle({ width: '60px' });
+  expect(headers[1]).toHaveTextContent('Item No.');
+
+  cleanup();
 
   renderContentsTab([
     { key: '__lineNumber', label: '#', order: 0, visible: false, importedLayout: true },
@@ -80,6 +83,22 @@ test('does not show hard-coded company fields while the live Delivery schema is 
 
   expect(screen.queryByText('Seller Brokerage')).not.toBeInTheDocument();
   expect(screen.queryByText('Packing-Type')).not.toBeInTheDocument();
+});
+
+test('keeps Bin Location Allocation compulsory on Delivery even when settings try to hide it', () => {
+  renderContentsTab([
+    { key: 'itemNo', label: 'Item No.', importedLayout: true },
+  ], {
+    lines: [{ itemNo: 'ITEM-1', binLocationAllocation: '' }],
+    formSettings: {
+      matrixColumns: {
+        itemNo: { visible: true, active: true },
+        binLocationAllocation: { visible: false, active: false },
+      },
+    },
+  });
+
+  expect(screen.getByText('Bin Location Allocation')).toBeInTheDocument();
 });
 
 test('configured lookup overrides the specialized Delivery item renderer', () => {

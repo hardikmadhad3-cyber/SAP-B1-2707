@@ -1,6 +1,7 @@
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import FormSettingsPanel, { filterDuplicateRowUdfFields } from './FormSettingsPanel';
+import useClosedDocumentViewMode from '../../hooks/useClosedDocumentViewMode';
 
 const fields = [
   { key: 'ItemCode', label: 'Item No.', order: 1 },
@@ -157,4 +158,45 @@ test('does not expose fields or Save while company settings are loading', () => 
   expect(screen.getByText('Loading saved Content-column settings...')).toBeInTheDocument();
   expect(screen.queryByText('Item No.')).not.toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+});
+
+test('closed documents keep user visibility, ordering and Save enabled without unlocking document fields', async () => {
+  const onSettingChange = jest.fn();
+  const onColumnOrderChange = jest.fn();
+  const onSave = jest.fn();
+  const onCancel = jest.fn();
+  function ClosedDocument({ showSettings }) {
+    const ref = React.useRef(null);
+    useClosedDocumentViewMode(ref, true);
+    return <fieldset ref={ref}>
+      <input aria-label="Document quantity" defaultValue="1" />
+      <input aria-label="Document tax" type="checkbox" />
+      <button type="button">Add document line</button>
+      <FormSettingsPanel isOpen={showSettings} onClose={jest.fn()}
+        matrixFields={fields} formSettings={settings}
+        onSettingChange={onSettingChange} onColumnOrderChange={onColumnOrderChange}
+        settingsLoaded hasUnsavedChanges onSave={onSave} onCancel={onCancel}
+        settingsScopeLabel="manager / COMPANY_A" />
+    </fieldset>;
+  }
+  const { rerender } = render(<ClosedDocument showSettings={false} />);
+  expect(screen.getByLabelText('Document quantity')).toHaveAttribute('readonly');
+  expect(screen.getByLabelText('Document tax')).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Add document line' })).toBeDisabled();
+  // Opening the sidebar after the lock exercises the MutationObserver path.
+  rerender(<ClosedDocument showSettings />);
+  await act(async () => { await Promise.resolve(); });
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Move Discount % down' })).toBeEnabled());
+  const discount = screen.getAllByLabelText('Visible')[1];
+  expect(discount).toBeEnabled();
+  fireEvent.click(discount);
+  fireEvent.click(screen.getByRole('button', { name: 'Move Discount % down' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+  expect(onSettingChange).toHaveBeenCalledWith('matrixColumns', 'discount', 'visible', false);
+  expect(onColumnOrderChange).toHaveBeenCalledTimes(1);
+  expect(onSave).toHaveBeenCalledTimes(1);
+  expect(screen.getAllByLabelText('Visible')[0]).toBeDisabled();
+  expect(screen.getByLabelText('Document tax')).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(onCancel).toHaveBeenCalledTimes(1);
 });

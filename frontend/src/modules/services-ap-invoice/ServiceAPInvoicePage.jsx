@@ -1,3 +1,5 @@
+import useConfirmationOnlyUpdate from '../../utils/useConfirmationOnlyUpdate';
+import useDocumentSeries from '../../hooks/useDocumentSeries';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import TaxCodeLookup from '../../components/TaxCodeLookup';
@@ -16,12 +18,15 @@ import { createActiveCompanyScopedRouteState, isRouteStateForCompany } from '../
 import useServiceDocumentFormSettings from '../../utils/useServiceDocumentFormSettings';
 import { updateFormSettingPreference } from '../../utils/formSettingsPreferences';
 import { getOrderedVisibleMatrixColumns } from '../../utils/formSettingsColumns';
+import { getReadableDocumentLineColumnWidth } from '../../utils/documentLineColumnWidth';
+import { calculateServiceInvoiceLine } from '../../utils/serviceInvoiceLineCalculations';
 import { buildVisibleEnteredRowUdfPayload } from '../../utils/rowUdfPayload';
-import { calculateDocumentRounding } from '../../utils/documentRounding';
-import { getSapVisibleDocumentSeries } from '../../utils/seriesDefaults';
+import { calculateDocumentRounding, getDocumentRoundingPolicy, formatDocumentRoundingAmount } from '../../utils/documentRounding';
+import { getSapVisibleDocumentSeries, getDefaultSeriesForCurrentYear, canUseManualSeries } from '../../utils/seriesDefaults';
 import { resolveLocationDisplayName } from '../../utils/locationLookup';
 import { getDocumentLayout } from '../../api/sapLayoutApi';
-import { fetchSalesDocumentSchema } from '../../api/salesDocumentSchemaApi';
+import { fetchSalesDocumentLookup, fetchSalesDocumentSchema } from '../../api/salesDocumentSchemaApi';
+import { loadSalesDocumentFieldLookupOptions } from '../../utils/salesDocumentLiveFields';
 import { useAuth } from '../../auth/AuthContext';
 import { convertDocumentAmountForDisplay, resolveDisplayCurrency } from '../../utils/documentCurrency';
 import { buildServiceDocumentLiveFields, getSapStandardServiceMatrixColumns } from '../../utils/serviceDocumentLiveFields';
@@ -52,7 +57,6 @@ import {
   fetchOpenServicePurchaseOrdersForAPInvoice,
   fetchOpenServicePurchaseQuotationsForAPInvoice,
   fetchServiceAPInvoiceByDocEntry,
-  fetchServiceAPInvoiceNextNumber,
   fetchServiceAPInvoiceReferenceData,
   fetchServiceAPInvoiceSeries,
   fetchServiceAPInvoiceVendorDetails,
@@ -120,7 +124,7 @@ const INIT_HEADER = {
   billToCode: '',
   billToAddress: '',
   shippingType: '',
-  confirmed: false,
+  confirmed: undefined,
   useBillToForTax: false,
   journalRemark: '',
   paymentMethod: '',
@@ -322,112 +326,10 @@ const dedupeSeriesOptions = (series = []) => {
   });
 };
 
-const normalizeSeriesIdentity = (value) =>
-  String(value || '').toUpperCase().replace(/FY/g, '').replace(/[^A-Z0-9]/g, '');
 
-const resolveTransactionSeriesKind = (transactionType = '') => {
-  const normalizedType = normalizeSeriesIdentity(transactionType);
-  if (normalizedType.includes('DEBIT')) return 'debit';
-  if (normalizedType.includes('BILLOFSUPPLY') || normalizedType.includes('SUPPLY')) return 'bill';
-  if (normalizedType.includes('TAXINVOICE') || normalizedType.includes('GST')) return 'tax';
-  return '';
-};
 
-const scoreSeriesForTransactionType = (series = {}, transactionType = '') => {
-  const targetKind = resolveTransactionSeriesKind(transactionType);
-  if (!targetKind) return 0;
 
-  const text = normalizeSeriesIdentity([
-    series.SeriesName,
-    series.DisplayName,
-    series.RawSeriesName,
-    series.BeginStr,
-    series.Indicator,
-    series.DocSubType,
-  ].filter(Boolean).join(' '));
-  const docSubType = String(series.DocSubType || '').trim().toUpperCase();
-  const isManual = Number(series.Series) === -1 || String(series.SeriesName || '').trim().toUpperCase() === 'MANUAL';
-  if (isManual) return -10000;
 
-  let score = series.IsDefault || series.isDefault ? 25 : 0;
-  if (targetKind === 'debit') {
-    if (docSubType === 'GD') score += 250;
-    if (text.includes('CAN')) score += 180;
-    if (text.includes('DEBIT') || text.includes('DBN')) score += 160;
-    if (text.includes('AP')) score -= 40;
-    if (docSubType === 'GA' || text.includes('TAX')) score -= 80;
-  } else if (targetKind === 'bill') {
-    if (docSubType === '--') score += 120;
-    if (text.includes('BILLOFSUPPLY') || text.includes('SUPPLY') || text.includes('BOS') || text.includes('BILL')) score += 180;
-    if (text.includes('AP')) score += 140;
-    if (text.includes('CAN') || text.includes('DEBIT') || docSubType === 'GD') score -= 120;
-    if (docSubType === 'GA' || text.includes('TAX')) score -= 60;
-  } else if (targetKind === 'tax') {
-    if (docSubType === 'GA') score += 180;
-    if (text.includes('GST') || text.includes('TAXINVOICE') || text.includes('TAX')) score += 160;
-    if (!text.includes('AP') && !text.includes('CAN') && !text.includes('DEBIT') && !text.includes('BILL')) score += 120;
-    if (text.includes('AP')) score -= 100;
-    if (text.includes('CAN') || text.includes('DEBIT') || docSubType === 'GD') score -= 160;
-  }
-  return score;
-};
-
-const pickSapSeriesForTransactionType = (series = [], transactionType = '') => {
-  const rows = (Array.isArray(series) ? series : []).filter(Boolean);
-  if (!rows.length || !String(transactionType || '').trim()) return null;
-  const candidates = rows.filter((row) => (
-    Number(row.Series) !== -1 &&
-    String(row.SeriesName || '').trim().toUpperCase() !== 'MANUAL'
-  ));
-  const pool = candidates.length ? candidates : rows;
-  return [...pool]
-    .map((row, index) => ({ row, index, score: scoreSeriesForTransactionType(row, transactionType) }))
-    .sort((left, right) =>
-      right.score - left.score ||
-      Number(right.row.IsDefault || right.row.isDefault || 0) - Number(left.row.IsDefault || left.row.isDefault || 0) ||
-      left.index - right.index)[0]?.row || null;
-};
-
-const getSeriesFamilyKey = (series = {}) => {
-  const label = String(
-    series.SeriesName ||
-    series.DisplayName ||
-    series.RawSeriesName ||
-    series.BeginStr ||
-    series.Indicator ||
-    ''
-  );
-  return label
-    .replace(/^U_/i, '')
-    .replace(/[^a-z0-9]+/gi, '')
-    .toLowerCase()
-    .replace(/(?:fy)?\d{2}\d{2}$/i, '')
-    .replace(/\d{4,}$/i, '')
-    .replace(/\d{2}$/i, '');
-};
-
-const pickSeriesForNewDocument = (series = [], preferredSeries = '', sourceSeries = []) => {
-  const available = Array.isArray(series) ? series.filter(Boolean) : [];
-  if (!available.length) return null;
-  const sourceAvailable = toArray(sourceSeries, ['series']);
-
-  const preferred = String(preferredSeries || '').trim();
-  const currentMatch = preferred
-    ? available.find((item) => String(item.Series || '') === preferred)
-    : null;
-  if (currentMatch) return currentMatch;
-
-  const oldSeries = preferred
-    ? sourceAvailable.find((item) => String(item.Series || '') === preferred)
-    : null;
-  const familyKey = getSeriesFamilyKey(oldSeries);
-  const familyMatch = familyKey
-    ? available.find((item) => getSeriesFamilyKey(item) === familyKey)
-    : null;
-  if (familyMatch) return familyMatch;
-
-  return available.find((item) => item.IsDefault || item.isDefault) || available[0];
-};
 
 const normalizeFieldName = (value) =>
   String(value || '')
@@ -445,6 +347,7 @@ const FIXED_SERVICE_MATRIX_FIELD_NAMES = new Set([
   'grossweight',
   'totalpackage',
   'taxcoderepeat',
+  'taxcode',
   'taxcodeudf',
   'price',
   'apinvdockey',
@@ -495,7 +398,8 @@ const fieldNameMatches = (field = {}, names = new Set()) =>
   names.has(normalizeFieldName(field.aliasId));
 
 const isFixedServiceMatrixField = (field = {}) =>
-  fieldNameMatches(field, FIXED_SERVICE_MATRIX_FIELD_NAMES);
+  !/^U_/i.test(String(field.key || field.sapField || ''))
+  && fieldNameMatches(field, FIXED_SERVICE_MATRIX_FIELD_NAMES);
 
 const applyServiceRowUdfDefaults = (definitions = []) =>
   definitions.map((field) => ({ ...field, visible: field.visible === true }));
@@ -677,6 +581,8 @@ const normalizeCopyLine = (line, idx, docEntry, baseType, accounts) => {
 };
 
 function ServiceAPInvoicePage() {
+  const [seriesRevision, setSeriesRevision] = useState(0);
+
   const location = useLocation();
   const navigate = useNavigate();
   const { company } = useAuth();
@@ -702,6 +608,7 @@ function ServiceAPInvoicePage() {
     formSettings,
     setFormSettings,
     formSettingsStatus,
+    formSettingsStorageKey,
     formSettingsReady: companyFormSettingsReady,
     hydrateFormSettings,
     clearMetadataScope: clearFormSettingsMetadataScope,
@@ -795,6 +702,7 @@ function ServiceAPInvoicePage() {
     searchPlaceholder: 'Search values',
     emptyMessage: 'No values found',
     allowCreate: false,
+    isUdf: false,
     columns: null,
   });
 
@@ -835,7 +743,7 @@ function ServiceAPInvoicePage() {
       ? dedupeSeriesOptions(includeSelectedSeries(availableSeries, header.series, header.seriesName))
       : availableSeries;
     return getSapVisibleDocumentSeries(options, {
-      selectedSeries: header.series,
+      selectedSeries: header.series, includeHistorical: Boolean(currentDocEntry),
       postingDate: header.postingDate || header.documentDate,
     });
   }, [currentDocEntry, refData.series, header.series, header.seriesName, header.postingDate, header.documentDate]);
@@ -1051,6 +959,8 @@ function ServiceAPInvoicePage() {
     },
   }), [freightProviderLookupOptions, itemLookupOptions, locationLookupOptions, paymentTermLookupOptions, refData.price_options, refData.quality_options, serviceSacLookupOptions]);
 
+  const sumDecimals = Number(refData.decimal_settings?.sum);
+  const numDec = Number.isInteger(sumDecimals) && sumDecimals >= 0 && sumDecimals <= 6 ? sumDecimals : 2;
   const totals = useMemo(() => {
     if (currentDocEntry) {
       const total = parseNum(header.totalPaymentDue);
@@ -1071,7 +981,8 @@ function ServiceAPInvoicePage() {
         total + wtaxAmount + discountAmount + downPayment - freight - tax - explicitRounding
       );
       const derivedRounding = total + wtaxAmount + discountAmount + downPayment - subtotal - freight - tax;
-      const roundingAmount = explicitRounding || (Math.abs(derivedRounding) <= 1 ? derivedRounding : 0);
+      const roundingAmount = header.roundingAmount !== '' && header.roundingAmount != null
+        ? explicitRounding : derivedRounding;
       return {
         subtotal,
         tax,
@@ -1092,11 +1003,11 @@ function ServiceAPInvoicePage() {
     const freight = parseNum(header.freight);
     const downPayment = parseNum(header.totalDownPayment);
     const totalBeforeRounding = Math.max(0, subtotal - discountAmount - downPayment) + freight + tax;
-    const { roundingAmount, total } = calculateDocumentRounding(totalBeforeRounding, header.rounding, 2);
+    const { roundingAmount, total } = calculateDocumentRounding(totalBeforeRounding, header.rounding, numDec, currentDocEntry ? header : null, getDocumentRoundingPolicy(refData, header));
     const appliedAmount = parseNum(header.appliedAmount);
     const balanceDue = Math.max(0, total - appliedAmount);
     return { subtotal, tax, discountAmount, freight, downPayment, roundingAmount, total, appliedAmount, balanceDue, wtaxAmount: 0 };
-  }, [currentDocEntry, header.appliedAmount, header.balanceDue, header.discount, header.discountAmount, header.freight, header.rounding, header.roundingAmount, header.tax, header.totalBeforeDiscount, header.totalDownPayment, header.totalPaymentDue, header.wtaxAmount, lines]);
+  }, [refData, numDec, currentDocEntry, header.appliedAmount, header.balanceDue, header.discount, header.discountAmount, header.freight, header.rounding, header.roundingAmount, header.tax, header.totalBeforeDiscount, header.totalDownPayment, header.totalPaymentDue, header.wtaxAmount, lines]);
 
   const wtaxDecimals = { total: 2, tax: 2, totalPaymentDue: 2 };
   const hasSavedWTaxAmount = Boolean(currentDocEntry && Math.abs(parseNum(header.wtaxAmount)) > 0);
@@ -1272,7 +1183,7 @@ function ServiceAPInvoicePage() {
             ...(layoutRes?.data?.warning ? [layoutRes.data.warning] : []),
           ],
         });
-        const firstSeries = nextRefData.series[0];
+        const firstSeries = getDefaultSeriesForCurrentYear(nextRefData.series);
         if (firstSeries && !requestedDocEntry) {
           setHeader((prev) => ({
             ...prev,
@@ -1397,18 +1308,10 @@ function ServiceAPInvoicePage() {
     };
   }, [requestedDocEntry, headerUdfDefinitions, rowUdfDefinitions]);
 
-  const updateLineCalculatedValues = (line) => {
-    const next = { ...line };
-    next.taxCodeRepeat = next.taxCode || '';
-    const qty = parseNum(next.sQty);
-    const price = parseNum(next.unitPrice);
-    if (qty > 0 && price > 0) {
-      next.totalLC = fmt(qty * price);
-    }
-    const taxRate = getTaxRate(taxCodes, next.taxCode);
-    next.taxAmountLC = next.totalLC ? fmt(parseNum(next.totalLC) * taxRate / 100) : '';
-    return next;
-  };
+  const updateLineCalculatedValues = (line, changedField) => ({
+    ...calculateServiceInvoiceLine(line, changedField, getTaxRate(taxCodes, line.taxCode)),
+    taxCodeRepeat: line.taxCode || '',
+  });
 
   const loadVendorDetails = async (vendorCode) => {
     const normalizedVendorCode = String(vendorCode || '').trim();
@@ -1499,6 +1402,7 @@ function ServiceAPInvoicePage() {
       searchPlaceholder: override.searchPlaceholder || config.searchPlaceholder || 'Search values',
       emptyMessage: override.emptyMessage || config.emptyMessage || 'No values found',
       allowCreate: Boolean(override.allowCreate ?? config.allowCreate ?? false),
+      isUdf: Boolean(override.isUdf),
       columns: override.columns || config.columns || null,
     });
   };
@@ -1512,6 +1416,9 @@ function ServiceAPInvoicePage() {
     const selectedValue = option?.value || '';
     setLines((prev) => prev.map((line, lineIndex) => {
       if (lineIndex !== lineLookupModal.lineIndex) return line;
+      if (lineLookupModal.isUdf) {
+        return { ...line, udf: { ...(line.udf || {}), [lineLookupModal.field]: selectedValue } };
+      }
       const next = { ...line, [lineLookupModal.field]: selectedValue };
       if (lineLookupModal.field === 'glAccount') {
         next.glAccountName = option?.description || '';
@@ -1557,60 +1464,14 @@ function ServiceAPInvoicePage() {
       return;
     }
 
-    if (name === 'postingDate') {
-      setHeader((prev) => ({ ...prev, postingDate: value, exchangeRate: '' }));
-      setPageState((prev) => ({ ...prev, seriesLoading: true }));
-      try {
-        const res = await fetchServiceAPInvoiceSeries(value, header.transactionType, header.branch);
-        const nextSeries = dedupeSeriesOptions(toArray(res.data?.series || res.data, ['series']));
-        setRefData((prev) => ({ ...prev, series: nextSeries }));
-        setHeader((prev) => {
-          if (prev.series === 'manual') {
-            return { ...prev, postingDate: value };
-          }
-
-          const selectedSeries = pickSeriesForNewDocument(nextSeries, prev.series, refData.series || []);
-
-          return {
-            ...prev,
-            postingDate: value,
-            branch: prev.branch || String(selectedSeries?.BPLId || ''),
-            series: selectedSeries ? String(selectedSeries.Series || '') : '',
-            nextNumber: selectedSeries ? String(selectedSeries.NextNumber || '') : '',
-          };
-        });
-      } catch (_error) {
-        setHeader((prev) => ({ ...prev, postingDate: value }));
-      } finally {
-        setPageState((prev) => ({ ...prev, seriesLoading: false }));
-      }
-      return;
-    }
+    if (name === 'postingDate') { setHeader(prev => ({ ...prev, [name]: value, exchangeRate: '', series: '', nextNumber: '', docNo: '' })); return; }
 
     if (name === 'series') {
-      if (value === 'manual') {
-        setHeader((prev) => ({ ...prev, series: value, nextNumber: '', docNo: '' }));
-        return;
-      }
-
-      const selectedSeries = seriesOptions.find((series) => String(series.Series || '') === String(value || ''));
-      setHeader((prev) => ({
-        ...prev,
-        branch: prev.branch || String(selectedSeries?.BPLId || ''),
-        series: value,
-        nextNumber: selectedSeries ? String(selectedSeries.NextNumber || '') : '...',
-      }));
-      setPageState((prev) => ({ ...prev, seriesLoading: true }));
-      try {
-        const res = await fetchServiceAPInvoiceNextNumber(value);
-        setHeader((prev) => ({ ...prev, nextNumber: String(res.data?.nextNumber || '') }));
-      } catch (_error) {
-        setHeader((prev) => ({ ...prev, nextNumber: '' }));
-      } finally {
-        setPageState((prev) => ({ ...prev, seriesLoading: false }));
-      }
-      return;
-    }
+ const manual = ['-1','manual'].includes(String(value));
+ if(manual && !canUseManualSeries(refData)) return;
+ const selected = (refData.series || []).find(row => String(row.Series) === String(value));
+ setHeader(prev => ({ ...prev, series: manual ? 'manual' : selected ? String(selected.Series) : '', nextNumber: manual ? '' : String(selected?.NextNumber ?? ''), docNo: '' })); return;
+}
 
     if (name === 'shipToCode') {
       const selected = vendorEffectiveShipToAddresses.find((address) => String(address.Address || '') === String(value));
@@ -1635,75 +1496,7 @@ function ServiceAPInvoicePage() {
       return;
     }
 
-    if (name === 'transactionType') {
-      const selectedOption = transactionTypeOptions.find((option) => String(option.value) === String(value));
-      setHeader((prev) => ({
-        ...prev,
-        transactionType: value,
-        indicator: selectedOption?.indicator || prev.indicator,
-        series: '',
-        nextNumber: '',
-        docNo: '',
-      }));
-      setPageState((prev) => ({ ...prev, seriesLoading: true }));
-      try {
-        const res = await fetchServiceAPInvoiceSeries(header.postingDate, value, header.branch);
-        let nextSeries = dedupeSeriesOptions(toArray(res.data?.series || res.data, ['series']));
-        if (!nextSeries.length) {
-          const fallbackRes = await fetchServiceAPInvoiceSeries(header.postingDate, '', header.branch);
-          nextSeries = dedupeSeriesOptions(toArray(fallbackRes.data?.series || fallbackRes.data, ['series']));
-        }
-        const selectedSeries =
-          pickSapSeriesForTransactionType(nextSeries, value) ||
-          pickSeriesForNewDocument(nextSeries, '', refData.series || []);
-        if (nextSeries.length) {
-          setRefData((prev) => ({ ...prev, series: nextSeries }));
-        }
-        if (selectedSeries) {
-          const numberRes = await fetchServiceAPInvoiceNextNumber(selectedSeries.Series);
-          setHeader((prev) => ({
-            ...prev,
-            transactionType: value,
-            indicator: selectedOption?.indicator || prev.indicator,
-            branch: prev.branch || String(selectedSeries.BPLId || ''),
-            series: String(selectedSeries.Series || ''),
-            nextNumber: String(numberRes.data?.nextNumber || selectedSeries.NextNumber || ''),
-            docNo: '',
-          }));
-        } else {
-          setHeader((prev) => ({
-            ...prev,
-            transactionType: value,
-            indicator: selectedOption?.indicator || prev.indicator,
-            series: '',
-            nextNumber: '',
-            docNo: '',
-          }));
-        }
-      } catch (_error) {
-        const selectedSeries = pickSapSeriesForTransactionType(refData.series || [], value);
-        if (selectedSeries) {
-          setHeader((prev) => ({
-            ...prev,
-            transactionType: value,
-            indicator: selectedOption?.indicator || prev.indicator,
-            branch: prev.branch || String(selectedSeries.BPLId || ''),
-            series: String(selectedSeries.Series || ''),
-            nextNumber: String(selectedSeries.NextNumber || ''),
-            docNo: '',
-          }));
-        } else {
-          setHeader((prev) => ({
-            ...prev,
-            transactionType: value,
-            indicator: selectedOption?.indicator || prev.indicator,
-          }));
-        }
-      } finally {
-        setPageState((prev) => ({ ...prev, seriesLoading: false }));
-      }
-      return;
-    }
+    if (name === 'transactionType') { setHeader(prev => ({ ...prev, [name]: value, exchangeRate: '', series: '', nextNumber: '', docNo: '' })); return; }
 
     setHeader((prev) => ({
       ...prev,
@@ -1731,10 +1524,19 @@ function ServiceAPInvoicePage() {
       if (name === 'loc') {
         next.locCode = '';
       }
-      return ['taxCode', 'totalLC', 'unitPrice', 'sQty'].includes(name)
-        ? updateLineCalculatedValues(next)
+      return ['taxCode', 'discountPercent', 'priceAfterDisc', 'totalLC', 'unitPrice', 'sQty'].includes(name)
+        ? updateLineCalculatedValues(next, name)
         : next;
     }));
+  };
+
+  const handleLineBlur = (index, fieldName) => {
+    if (!isDocumentEditable || fieldName !== 'priceAfterDisc') return;
+    setLines((prev) => prev.map((line, lineIndex) => (
+      lineIndex === index && line._pendingPriceDiscountApplication
+        ? updateLineCalculatedValues(line, 'priceAfterDiscCommit')
+        : line
+    )));
   };
 
   const addLine = () => {
@@ -1890,6 +1692,7 @@ function ServiceAPInvoicePage() {
   const buildPayload = () => ({
     header: {
       ...header,
+      roundingAmount: totals.roundingAmount,
       wtaxAmount,
       totalPaymentDue: totalPaymentDueAfterWTax,
     },
@@ -1954,6 +1757,11 @@ function ServiceAPInvoicePage() {
     }
   };
 
+  const narrowConfirmationUpdate = useConfirmationOnlyUpdate({
+    docEntry: currentDocEntry, isDirty,
+    state: { header, lines, headerUdfs, withholdingTax, companyDb: activeCompanyDb , company_id: activeCompanyId, companyKey: formSettingsStorageKey },
+  });
+
   const handleSubmit = async (event) => {
     event.preventDefault();
     if (!companyFormSettingsReady) {
@@ -1980,7 +1788,7 @@ function ServiceAPInvoicePage() {
     setPageState((prev) => ({ ...prev, posting: true, error: '', success: '' }));
     try {
       const res = currentDocEntry
-        ? await updateServiceAPInvoice(currentDocEntry, buildPayload())
+        ? await updateServiceAPInvoice(currentDocEntry, narrowConfirmationUpdate(buildPayload()))
         : await submitServiceAPInvoice(buildPayload());
       const docEntry = res.data?.doc_entry || res.data?.DocEntry || currentDocEntry;
       const docNum = res.data?.doc_num || res.data?.DocNum || header.docNo;
@@ -1995,7 +1803,9 @@ function ServiceAPInvoicePage() {
   };
 
   const resetForm = () => {
-    const firstSeries = seriesOptions[0];
+    setSeriesRevision(value => value + 1);
+
+    const firstSeries = getDefaultSeriesForCurrentYear(seriesOptions);
     setIsDirty(false);
     setCurrentDocEntry(null);
     setHeader({
@@ -2055,68 +1865,11 @@ function ServiceAPInvoicePage() {
     return null;
   };
 
-  const refreshSeriesForNewDocument = async ({
-    postingDate = header.postingDate,
-    transactionType = header.transactionType,
-    branch = header.branch,
-    preferredSeries = header.series,
-  } = {}) => {
-    if (String(preferredSeries || '') === 'manual') {
-      setHeader((prev) => ({ ...prev, series: 'manual', nextNumber: '', docNo: '' }));
-      return;
-    }
-
-    setPageState((prev) => ({ ...prev, seriesLoading: true }));
-    try {
-      const res = await fetchServiceAPInvoiceSeries(postingDate, transactionType, branch);
-      let nextSeries = dedupeSeriesOptions(toArray(res.data?.series || res.data, ['series']));
-      if (!nextSeries.length) {
-        const fallbackRes = await fetchServiceAPInvoiceSeries(postingDate, '', branch);
-        nextSeries = dedupeSeriesOptions(toArray(fallbackRes.data?.series || fallbackRes.data, ['series']));
-      }
-      const selectedSeries =
-        pickSapSeriesForTransactionType(nextSeries, transactionType) ||
-        pickSeriesForNewDocument(nextSeries, preferredSeries, refData.series || []);
-      if (nextSeries.length) {
-        setRefData((prev) => ({ ...prev, series: nextSeries }));
-      }
-      if (selectedSeries) {
-        const numberRes = await fetchServiceAPInvoiceNextNumber(selectedSeries.Series);
-        setHeader((prev) => ({
-          ...prev,
-          postingDate,
-          documentDate: postingDate,
-          deliveryDate: postingDate,
-          transactionType,
-          branch: branch || prev.branch || String(selectedSeries.BPLId || ''),
-          series: String(selectedSeries.Series || ''),
-          nextNumber: String(numberRes.data?.nextNumber || selectedSeries.NextNumber || ''),
-          docNo: '',
-        }));
-      }
-    } catch (_error) {
-      const selectedSeries =
-        pickSapSeriesForTransactionType(refData.series || [], transactionType) ||
-        pickSeriesForNewDocument(refData.series || [], preferredSeries, refData.series || []);
-      if (selectedSeries) {
-        setHeader((prev) => ({
-          ...prev,
-          postingDate,
-          documentDate: postingDate,
-          deliveryDate: postingDate,
-          transactionType,
-          branch: branch || prev.branch || String(selectedSeries.BPLId || ''),
-          series: String(selectedSeries.Series || ''),
-          nextNumber: String(selectedSeries.NextNumber || ''),
-          docNo: '',
-        }));
-      }
-    } finally {
-      setPageState((prev) => ({ ...prev, seriesLoading: false }));
-    }
-  };
+  const refreshSeriesForNewDocument = async ({ postingDate = header.postingDate, transactionType = header.transactionType, branch = header.branch } = {}) => { setHeader(prev => ({ ...prev, postingDate, transactionType, branch, series: '', nextNumber: '', docNo: '' })); };
 
   const handleCopyFrom = async (data, sourceType) => {
+    setSeriesRevision(value => value + 1);
+
     const copySource = unwrapCopyFromDocument(data);
     const sourceLines = toArray(copySource.lines, ['lines', 'DocumentLines']);
     const copyKey = `${sourceType}-${copySource.docEntry}-${sourceLines.length}`;
@@ -2188,6 +1941,8 @@ function ServiceAPInvoicePage() {
   };
 
   const handleDuplicate = async () => {
+    setSeriesRevision(value => value + 1);
+
     const duplicateDate = today();
     const duplicateTransactionType = header.transactionType || transactionTypeOptions[0]?.value || 'GST Tax Invoice';
     const duplicateBranch = header.branch || '';
@@ -2233,6 +1988,9 @@ function ServiceAPInvoicePage() {
   };
 
   const renderLineCell = (line, index, column) => {
+    const numericValue = column.key === 'priceAfterDisc'
+      ? Number(line.unitPrice || 0) * (1 - Number(line.discountPercent || 0) / 100)
+      : line[column.key];
     const error = valErrors.lines[index]?.[column.key];
     if (column.isUdf) {
       const disabled =
@@ -2241,11 +1999,41 @@ function ServiceAPInvoicePage() {
         formSettings.rowUdfs?.[column.udfKey]?.active === false;
       const value = line.udf?.[column.udfKey] || '';
 
+      if (column.lookupSource) {
+        return (
+          <div className="service-ap-lookup-cell">
+            <input className="del-grid__input" value={value} disabled={disabled} onChange={(event) => handleRowUdfChange(index, column.udfKey, event.target.value)} title={`Select ${column.label}`} />
+            <button
+              type="button"
+              className="del-btn service-ap-lookup-btn"
+              disabled={disabled}
+              title={`Select ${column.label}`}
+              onClick={async () => {
+                try {
+                  const options = await loadSalesDocumentFieldLookupOptions({
+                    fetchLookup: fetchSalesDocumentLookup,
+                    source: column.lookupSource,
+                    field: column,
+                    line,
+                    documentType: 'SERVICE_AP_INVOICE',
+                    schemaVersion: refData.line_field_metadata?.live_schema?.schemaVersion || '',
+                  });
+                  openLineLookup(column.udfKey, index, { title: `Select ${column.label}`, options, isUdf: true });
+                } catch (_error) {
+                  openLineLookup(column.udfKey, index, { title: `Select ${column.label}`, options: column.options || [], isUdf: true });
+                }
+              }}
+            >...</button>
+          </div>
+        );
+      }
+
       if (column.type === 'checkbox') {
         const checked = ['Y', 'YES', 'TRUE', '1', 'TYES'].includes(String(value || '').trim().toUpperCase());
         return (
-          <input
-            type="checkbox"
+        <input
+          type="checkbox"
+          data-sap-native-tab="true"
             className="form-check-input service-ap-udf-checkbox"
             checked={checked}
             disabled={disabled}
@@ -2400,8 +2188,9 @@ function ServiceAPInvoicePage() {
         className={`del-grid__input${error ? ' del-field__input--error' : ''}`}
         type={column.type === 'date' ? 'date' : 'text'}
         name={column.key}
-        value={column.readOnly && column.numeric ? String(displayAmount(line[column.key] || 0)) : (column.key === 'taxCodeRepeat' ? (line.taxCodeRepeat || line.taxCode || '') : (line[column.key] || ''))}
+        value={column.readOnly && column.numeric ? String(displayAmount(numericValue ?? 0)) : (column.key === 'taxCodeRepeat' ? (line.taxCodeRepeat || line.taxCode || '') : (line[column.key] || ''))}
         onChange={(event) => handleLineChange(index, event)}
+        onBlur={() => handleLineBlur(index, column.key)}
         readOnly={column.readOnly}
         disabled={!isDocumentEditable || column.readOnly}
         style={{ textAlign: column.numeric || column.readOnly ? 'right' : 'left' }}
@@ -2425,9 +2214,18 @@ function ServiceAPInvoicePage() {
       readOnly: field.readOnly,
       isUdf: true,
       options: toArray(field.options, ['options']),
+      lookupSource: field.lookupSource,
+      lookupTable: field.lookupTable,
+      fieldId: field.fieldId,
+      schemaFieldId: field.schemaFieldId,
     })),
-  ], formSettings);
+  ], formSettings).map((column) => {
+    const width = getReadableDocumentLineColumnWidth(column);
+    return { ...column, width, minWidth: width };
+  });
   const tableMinWidth = 42 + 48 + visibleLineColumns.reduce((sum, column) => sum + column.width, 0);
+
+  useDocumentSeries({ endpoint: '/services/ap-invoice', companyKey: formSettingsStorageKey, currentDocEntry, header: header, setHeader, setRefData, setPageState, ready: !pageState.loading && !pageState.posting , refreshKey: seriesRevision});
 
   return (
     <form ref={workspaceRef} className={`ap-invoice-page del-page sap-document-page service-ap-invoice-page${isRightSidebarOpen ? ' del-page--sidebar-open' : ''}`} onSubmit={handleSubmit} onChangeCapture={markDirty}>
@@ -2563,13 +2361,6 @@ function ServiceAPInvoicePage() {
                   ))}
                 </select>
               </div>
-              <div className="del-field">
-                <label className="del-field__label">Place of Supply</label>
-                <div className="service-ap-header-lookup">
-                  <input className="del-field__input" name="placeOfSupply" value={header.placeOfSupply} onChange={handleHeaderChange} disabled={!isDocumentEditable} />
-                  <button type="button" className="del-btn service-ap-lookup-btn" onClick={() => setStateModalOpen(true)} disabled={!isDocumentEditable} title="List of States">...</button>
-                </div>
-              </div>
             </div>
 
             <div>
@@ -2577,8 +2368,8 @@ function ServiceAPInvoicePage() {
                 <label className="del-field__label">No.</label>
                 <div className="service-ap-docnum">
                   <select className="del-field__select" name="series" value={header.series} onChange={handleHeaderChange} disabled={!isDocumentEditable || currentDocEntry || pageState.seriesLoading}>
-                    <option value="">Select Series</option>
-                    <option value="manual">Manual</option>
+                    <option value="">{pageState.seriesLoading ? 'Loading series...' : pageState.seriesError ? 'Series unavailable' : 'Select Series'}</option>
+                    {(canUseManualSeries(refData) || (currentDocEntry && ['-1','manual','__sap_manual__'].includes(String(header.series)))) && (<option value="manual">Manual</option>)}
                     {seriesOptions.map((series) => (
                       <option key={series.Series} value={series.Series}>{series.SeriesName}</option>
                     ))}
@@ -2586,7 +2377,7 @@ function ServiceAPInvoicePage() {
                   <input
                     className={`del-field__input${valErrors.header.docNo ? ' del-field__input--error' : ''}`}
                     name="docNo"
-                    value={pageState.seriesLoading ? '...' : (header.docNo || header.nextNumber || '')}
+                    value={currentDocEntry ? (header.docNo || header.nextNumber || '') : pageState.seriesLoading ? '...' : (header.docNo || header.nextNumber || '')}
                     onChange={handleHeaderChange}
                     readOnly={header.series !== 'manual'}
                     disabled={!isDocumentEditable || currentDocEntry || pageState.seriesLoading}
@@ -2609,6 +2400,13 @@ function ServiceAPInvoicePage() {
                 <label className="del-field__label">Document Date</label>
                 <input type="date" className={`del-field__input${valErrors.header.documentDate ? ' del-field__input--error' : ''}`} name="documentDate" value={header.documentDate} onChange={handleHeaderChange} disabled={!isDocumentEditable} />
               </div>
+              <div className="del-field">
+                <label className="del-field__label">Place of Supply</label>
+                <div className="service-ap-header-lookup">
+                  <input className="del-field__input" name="placeOfSupply" value={header.placeOfSupply} onChange={handleHeaderChange} disabled={!isDocumentEditable} />
+                  <button type="button" className="del-btn service-ap-lookup-btn" onClick={() => setStateModalOpen(true)} disabled={!isDocumentEditable} title="List of States">...</button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -2628,7 +2426,7 @@ function ServiceAPInvoicePage() {
 
         {activeTab === 'Contents' && (
           <div className="del-tab-panel" style={{ overflow: 'visible', minWidth: 0 }}>
-            <div className="service-ap-content-toolbar">
+            <div className="service-ap-content-toolbar" style={{ justifyContent: 'flex-end' }}>
               <button type="button" className="del-btn del-btn--primary" onClick={addLine} disabled={!isDocumentEditable}>+ Add Line</button>
             </div>
 
@@ -2735,7 +2533,7 @@ function ServiceAPInvoicePage() {
                   <tr><td>Discount %</td><td><input className="del-grid__input" name="discount" value={header.discount} onChange={handleHeaderChange} disabled={!isDocumentEditable} /></td></tr>
                   <tr><td>Total Down Payment</td><td><input className="del-grid__input" name="totalDownPayment" value={header.totalDownPayment} onChange={handleHeaderChange} disabled={!isDocumentEditable} /></td></tr>
                   <tr><td>Freight</td><td><input className="del-grid__input" name="freight" value={header.freight} onChange={handleHeaderChange} disabled={!isDocumentEditable} /></td></tr>
-                  <tr><td><label className="service-ap-checkbox"><input type="checkbox" name="rounding" checked={header.rounding || parseNum(header.roundingAmount) !== 0} onChange={handleHeaderChange} disabled={!isDocumentEditable} /> Rounding</label></td><td><input className="del-grid__input" value={`${displayCurrency} ${fmt(displayAmount(totals.roundingAmount))}`.trim()} readOnly /></td></tr>
+                  <tr><td><label className="service-ap-checkbox"><input type="checkbox" name="rounding" checked={header.rounding || parseNum(header.roundingAmount) !== 0} onChange={handleHeaderChange} disabled={!isDocumentEditable} /> Rounding</label></td><td><input className="del-grid__input" value={`${displayCurrency} ${formatDocumentRoundingAmount(displayAmount(totals.roundingAmount), numDec)}`.trim()} readOnly /></td></tr>
                   <tr><td>Tax</td><td><input className="del-grid__input" value={fmt(displayAmount(totals.tax))} readOnly /></td></tr>
                   {hasWTaxLiableLines && (
                     <tr>

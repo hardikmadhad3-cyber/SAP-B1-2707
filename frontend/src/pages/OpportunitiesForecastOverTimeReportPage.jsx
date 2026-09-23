@@ -213,6 +213,8 @@ export default function OpportunitiesForecastOverTimeReportPage() {
   const criteriaWindow = useFloatingWindow({
     isOpen: true,
     defaultTop: 22,
+    bounds: 'parent',
+    allowPersistedMinimized: false,
     taskId: 'opportunities-forecast-over-time-criteria',
     taskTitle: 'Opportunities Forecast Over Time Report - Selection Criteria',
     taskPath: '/reports/crm/opportunities/forecast-over-time',
@@ -220,6 +222,7 @@ export default function OpportunitiesForecastOverTimeReportPage() {
   const reportWindow = useFloatingWindow({
     isOpen: hasReport,
     defaultTop: 12,
+    bounds: 'parent',
     taskId: 'opportunities-forecast-over-time-report',
     taskTitle: 'Opportunities Forecast Over Time Report',
     taskPath: '/reports/crm/opportunities/forecast-over-time',
@@ -429,7 +432,8 @@ export default function OpportunitiesForecastOverTimeReportPage() {
               onChange={handleCriteriaChange}
               onOpenExternalLookup={handleOpenExternalLookup}
               onSubmit={handleSubmit}
-              onCancel={handleCancel}
+              onClear={handleCancel}
+              onClose={handleCloseCriteriaWindow}
               loading={loading}
               filterRows={OVER_TIME_FILTER_ROWS}
               groupByOptions={GROUP_BY_OPTIONS}

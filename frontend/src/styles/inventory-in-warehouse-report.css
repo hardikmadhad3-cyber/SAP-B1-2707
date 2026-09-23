@@ -2,8 +2,23 @@
 .iwh-criteria-layout { display: grid; grid-template-columns: minmax(500px, 1fr) minmax(250px, 310px); gap: 20px; }
 .iwh-criteria-left { display: grid; gap: 6px; align-content: start; }
 .iwh-range-row { display: grid; grid-template-columns: 80px 42px 1fr 28px 1fr; gap: 6px; align-items: center; font-size: 12px; }
-.iwh-lookup { display: grid; grid-template-columns: 1fr 22px; gap: 2px; }
-.iwh-lookup button { padding: 0; font-size: 9px; }
+.iwh-lookup { display: grid; grid-template-columns: 1fr 24px; gap: 4px; }
+.iwh-lookup button {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--sap-border-strong, #aab8c4);
+  border-radius: var(--sap-radius-xs, 4px);
+  background: linear-gradient(180deg, #ffffff 0%, var(--sap-toolbar-bg, #eef2f7) 100%);
+  color: var(--sap-text, #223548);
+  font-size: 11px;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.iwh-lookup button:hover:not(:disabled) {
+  background: linear-gradient(180deg, #ffffff 0%, #dfe8f1 100%);
+  border-color: var(--sap-primary, #0a6ed1);
+}
+.iwh-lookup button:disabled { opacity: 0.6; cursor: not-allowed; }
 .iwh-page input, .iwh-page select { min-width: 0; height: 26px; border: 1px solid var(--sap-border-strong, #aab8c4); border-radius: var(--sap-radius-xs, 4px); background: var(--sap-surface, #ffffff); color: var(--sap-text, #223548); font-size: 12px; padding: 0 6px; }
 .iwh-page input:focus, .iwh-page select:focus { outline: none; border-color: var(--sap-primary, #0a6ed1); box-shadow: 0 0 0 2px var(--sap-primary-soft, rgba(10, 110, 209, 0.13)); }
 .iwh-page input:disabled { background: #edf1f5; }

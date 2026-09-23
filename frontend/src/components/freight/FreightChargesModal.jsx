@@ -452,8 +452,8 @@ export default function FreightChargesModal({
   const validateRows = () => {
     const nextErrors = {};
     rows.forEach((row, index) => {
-      if (Number(row.netAmount || 0) > 0 && !String(row.taxCode || '').trim()) {
-        nextErrors[index] = 'Tax Code is required when Net Amount is greater than zero.';
+      if (Number(row.netAmount || 0) !== 0 && !String(row.taxCode || '').trim()) {
+        nextErrors[index] = 'Tax Code is required when Net Amount is nonzero.';
       }
     });
     setErrors(nextErrors);

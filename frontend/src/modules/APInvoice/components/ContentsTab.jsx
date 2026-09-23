@@ -4,11 +4,16 @@ import { useSapItemCodeTab } from '../../../utils/sapTabNavigation';
 import { getLineTotalsForDisplay } from '../../../utils/lineTotals';
 import { resolveLocationDisplayName } from '../../../utils/locationLookup';
 import { getOrderedVisibleMatrixColumns } from '../../../utils/formSettingsColumns';
+import { getReadableDocumentLineColumnWidth } from '../../../utils/documentLineColumnWidth';
+import { isBaseDocumentLine } from '../../../utils/documentUom';
+import useDocumentTableClipboard from '../../../components/sales-document/useDocumentTableClipboard';
 
 const FALLBACK_MATRIX_COLS = [
   { key: 'itemNo', label: 'Item No.', minWidth: 160 },
-  { key: 'itemDescription', label: 'Item Description', minWidth: 220 },
+  { key: 'itemDescription', label: 'Item Description', minWidth: 240 },
   { key: 'quantity', label: 'Quantity', minWidth: 90 },
+  { key: 'uomCode', label: 'UoM Code', minWidth: 105 },
+  { key: 'uomName', label: 'UoM Name', minWidth: 120 },
   { key: 'unitPrice', label: 'Unit Price', minWidth: 110 },
   { key: 'stdDiscount', label: 'Discount %', minWidth: 95 },
   { key: 'taxCode', label: 'Tax Code', minWidth: 120 },
@@ -17,7 +22,16 @@ const FALLBACK_MATRIX_COLS = [
 ];
 
 const INDEX_COL_WIDTH = 42;
-const ACTION_COL_WIDTH = 48;
+const ACTION_COL_WIDTH = 128;
+const FALLBACK_MATRIX_COLUMN_BY_KEY = new Map(FALLBACK_MATRIX_COLS.map((column) => [column.key, column]));
+
+const getColumnWidth = (column = {}) => getReadableDocumentLineColumnWidth(
+  column,
+  {
+    ...(FALLBACK_MATRIX_COLUMN_BY_KEY.get(column.rendererKey || column.valueKey || column.key) || {}),
+    ...(column.field || column.udfField || {}),
+  },
+);
 
 const normalizeFieldIdentity = (field = {}) =>
   [
@@ -112,6 +126,7 @@ const DIRECT_LINE_FIELDS = new Set([
   'priceSource',
   'taxAmountLC',
   'uomCode',
+  'uomName',
   'countryOfOrigin',
   'loc',
   'withoutQtyPosting',
@@ -241,12 +256,13 @@ const isLiveUdfColumn = (column = {}) => (
   || String(column.sapField || '').trim().toUpperCase().startsWith('U_')
 );
 
-export default function ContentsTab({
+function EditableContentsTab({
   lines,
   onLineChange,
   onNumBlur,
   onAddLine,
   onRemoveLine,
+  onOpenBatchModal,
   lineItemOptions,
   getUomOptions,
   effectiveTaxCodes,
@@ -261,6 +277,9 @@ export default function ContentsTab({
   rowUdfFields = [],
   onRowUdfChange,
   locationLookupOptions = [],
+  canPasteTable = false,
+  onPasteTable,
+  onClipboardFeedback,
 }) {
   const sapItemTab = useSapItemCodeTab({ lineItemOptions, onLineChange, onOpenItemModal });
   const baseColumns = (matrixFields?.length ? matrixFields : FALLBACK_MATRIX_COLS)
@@ -272,9 +291,8 @@ export default function ContentsTab({
       const udfSetting = matchedUdfField
         ? (formSettings.matrixColumns?.[column.key] || formSettings.rowUdfs?.[matchedUdfField.key])
         : null;
-      return {
+      const hydratedColumn = {
         ...column,
-        minWidth: column.minWidth || 125,
         active: isLiveUdfColumn(column)
           ? udfSetting?.active !== false && matchedUdfField?.active !== false
           : isColumnActive(column, formSettings),
@@ -282,10 +300,26 @@ export default function ContentsTab({
         udfField: matchedUdfField,
         field: isLiveUdfColumn(column) ? matchedUdfField : column.field,
       };
+      const width = getColumnWidth(hydratedColumn);
+      return { ...hydratedColumn, width, minWidth: width };
     })
     .filter((column) => !isLiveUdfColumn(column) || Boolean(column.field));
   const matrixCols = getOrderedVisibleMatrixColumns(baseColumns, formSettings);
-  const tableMinWidth = INDEX_COL_WIDTH + ACTION_COL_WIDTH + matrixCols.reduce((total, col) => total + col.minWidth, 0);
+  const clipboardColumns = React.useMemo(() => matrixCols.map((column) => ({
+    key: column.valueKey || column.rendererKey || column.key,
+    label: column.label || column.key,
+    isUdf: isLiveUdfColumn(column),
+    readOnly: Boolean(column.readOnly || column.active === false || column.field?.readOnly),
+  })), [matrixCols]);
+  const { tableClipboardProps, tableClipboardUi } = useDocumentTableClipboard({
+    columns: clipboardColumns,
+    rows: lines,
+    columnOffset: 1,
+    canPaste: canPasteTable,
+    onPaste: onPasteTable,
+    onFeedback: onClipboardFeedback,
+  });
+  const tableMinWidth = INDEX_COL_WIDTH + ACTION_COL_WIDTH + matrixCols.reduce((total, col) => total + getColumnWidth(col), 0);
 
   const renderUdfCell = (field, line, rowIndex) => {
     const disabled = field.active === false || field.readOnly === true;
@@ -552,6 +586,7 @@ export default function ContentsTab({
     }
 
     if (column.key === 'uomCode') {
+      const manualUom = Number(line.uomEntry) < 0 || String(line.uomCode || '').toUpperCase() === 'MANUAL';
       return (
         <select
           className="po-grid__input"
@@ -559,7 +594,7 @@ export default function ContentsTab({
           name="uomCode"
           value={line.uomCode || ''}
           onChange={(event) => onLineChange(rowIndex, event)}
-          disabled={disabled}
+          disabled={disabled || manualUom || isBaseDocumentLine(line)}
         >
           <option value=""></option>
           {uomOpts.map((uom) => (
@@ -571,6 +606,20 @@ export default function ContentsTab({
             <option value={line.uomCode}>{line.uomCode}</option>
           )}
         </select>
+      );
+    }
+
+    if (column.key === 'uomName') {
+      const manualUom = Number(line.uomEntry) < 0 || String(line.uomCode || '').toUpperCase() === 'MANUAL';
+      return (
+        <input
+          className="po-grid__input"
+          style={{ width: '100%', textAlign: 'left', background: manualUom ? undefined : '#f5f8fc' }}
+          name="uomName"
+          value={line.uomNameEdited ? (line.uomName ?? '') : (line.uomName || line.uomCode || '')}
+          onChange={(event) => onLineChange(rowIndex, event)}
+          disabled={disabled || !manualUom || isBaseDocumentLine(line)}
+        />
       );
     }
 
@@ -714,13 +763,14 @@ export default function ContentsTab({
       </div>
       <div className="po-grid-wrap" style={{ overflowX: 'auto', overflowY: 'visible' }}>
           <table
+            {...tableClipboardProps}
             className="po-grid"
             style={{ width: 'max-content', minWidth: tableMinWidth, tableLayout: 'auto' }}
           >
             <colgroup>
               <col style={{ width: INDEX_COL_WIDTH }} />
               {matrixCols.map((column) => (
-                <col key={column.key} style={{ width: column.minWidth }} />
+                <col key={column.key} style={{ width: getColumnWidth(column) }} />
               ))}
               <col style={{ width: ACTION_COL_WIDTH }} />
             </colgroup>
@@ -728,7 +778,7 @@ export default function ContentsTab({
               <tr>
                 <th style={{ width: INDEX_COL_WIDTH }}>#</th>
                 {matrixCols.map((column) => (
-                  <th key={column.key} style={{ minWidth: column.minWidth }}>
+                  <th key={column.key} style={{ minWidth: getColumnWidth(column) }}>
                     {column.label}
                   </th>
                 ))}
@@ -748,6 +798,18 @@ export default function ContentsTab({
                       </td>
                     ))}
                     <td>
+                      {line.batchManaged && Number(line.baseType ?? line.BaseType) !== 20 && (
+                        <button
+                          type="button"
+                          className="po-btn"
+                          style={{ padding: '2px 6px', marginRight: 3, fontSize: 11 }}
+                          onClick={() => onOpenBatchModal?.(rowIndex)}
+                          disabled={!line.itemNo || !line.whse || Number(line.quantity || 0) <= 0}
+                          title="Assign incoming batches"
+                        >
+                          {line.batches?.length ? `${line.batches.length} Batch` : 'Batch'}
+                        </button>
+                      )}
                       <button
                         type="button"
                         className="po-btn po-btn--danger"
@@ -762,7 +824,12 @@ export default function ContentsTab({
               })}
             </tbody>
           </table>
+          {tableClipboardUi}
       </div>
     </div>
   );
+}
+
+export default function ContentsTab(props) {
+  return <EditableContentsTab {...props} />;
 }

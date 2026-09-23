@@ -404,7 +404,8 @@ export default function OpportunitiesForecastCriteria({
   onChange,
   onOpenExternalLookup,
   onSubmit,
-  onCancel,
+  onClear,
+  onClose,
   loading,
   filterRows = OPPORTUNITIES_FORECAST_FILTER_ROWS,
   groupByOptions = OPPORTUNITIES_FORECAST_GROUP_BY_OPTIONS,
@@ -471,8 +472,11 @@ export default function OpportunitiesForecastCriteria({
         <button type="button" className="sales-analysis__sap-btn sap-report-btn sap-report-btn--primary" disabled={loading} onClick={onSubmit}>
           {loading ? 'Loading...' : 'OK'}
         </button>
-        <button type="button" className="sales-analysis__sap-btn sap-report-btn" onClick={onCancel}>
-          Cancel
+        <button type="button" className="sales-analysis__sap-btn sap-report-btn" onClick={onClear}>
+          Clear
+        </button>
+        <button type="button" className="sales-analysis__sap-btn sap-report-btn" onClick={onClose}>
+          Close
         </button>
       </div>
     </>

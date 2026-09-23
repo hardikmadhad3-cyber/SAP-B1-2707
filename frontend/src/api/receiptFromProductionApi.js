@@ -1,7 +1,11 @@
 import apiClient from './client';
 
-export const fetchReceiptReferenceData = () =>
-  apiClient.get('/receipt-from-production/reference-data').then((r) => r.data);
+export const fetchReceiptReferenceData = (params = {}) =>
+  apiClient.get('/receipt-from-production/reference-data', { params }).then((r) => r.data);
+export const fetchReceiptSeries = (date, branch = '') =>
+  apiClient.get('/receipt-from-production/series', { params: { date, branch } }).then((r) => r.data);
+export const fetchReceiptAllocationOptions = (itemCode, warehouse) =>
+  apiClient.get('/receipt-from-production/allocation-options', { params: { itemCode, warehouse } }).then((r) => r.data);
 
 export const fetchProductionOrderForReceipt = (docEntry) =>
   apiClient.get(`/receipt-from-production/production-order/${encodeURIComponent(docEntry)}`).then((r) => r.data);

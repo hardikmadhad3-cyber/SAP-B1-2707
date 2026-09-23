@@ -8,7 +8,7 @@ const listBOMs = async (req, res) => {
     const rows = await masterDataDbService.listBOMs(query, top, skip);
     res.json(rows);
   } catch (err) {
-    res.status(err.response?.status || 500).json({ message: _sapMsg(err) });
+    res.status(err.statusCode || err.response?.status || 500).json({ message: _sapMsg(err) });
   }
 };
 
@@ -22,7 +22,7 @@ const getBOM = async (req, res) => {
     }
     res.json(bom);
   } catch (err) {
-    res.status(err.response?.status || 500).json({ message: _sapMsg(err) });
+    res.status(err.statusCode || err.response?.status || 500).json({ message: _sapMsg(err) });
   }
 };
 
@@ -31,15 +31,7 @@ const createBOM = async (req, res) => {
   try {
     const payload = _buildPayload(req.body);
     
-    // Validate: Check for circular reference (parent item in its own BOM)
-    const parentItemCode = payload.TreeCode;
-    const componentItems = (payload.ProductTreeLines || []).map(line => line.ItemCode);
-    
-    if (componentItems.includes(parentItemCode)) {
-      return res.status(400).json({ 
-        message: `Circular reference detected: Item "${parentItemCode}" cannot be a component of itself.` 
-      });
-    }
+    await _assertNoCircularReferences(payload.TreeCode, payload.ProductTreeLines);
     
     const resp = await sapService.request({ method: "POST", url: "/ProductTrees", data: payload });
     const created = await masterDataDbService.getBOM(payload.TreeCode).catch(() => null);
@@ -51,7 +43,7 @@ const createBOM = async (req, res) => {
         message: `A BOM already exists for item "${req.body?.TreeCode || "this item"}". Open the existing BOM instead of creating a new one.`,
       });
     }
-    res.status(err.response?.status || 500).json({ message: _sapMsg(err) });
+    res.status(err.statusCode || err.response?.status || 500).json({ message: _sapMsg(err) });
   }
 };
 
@@ -61,22 +53,14 @@ const updateBOM = async (req, res) => {
     const code = req.params.treeCode;
     const payload = _buildPayload(req.body);
     
-    // Validate: Check for circular reference (parent item in its own BOM)
-    const parentItemCode = payload.TreeCode || code;
-    const componentItems = (payload.ProductTreeLines || []).map(line => line.ItemCode);
-    
-    if (componentItems.includes(parentItemCode)) {
-      return res.status(400).json({ 
-        message: `Circular reference detected: Item "${parentItemCode}" cannot be a component of itself.` 
-      });
-    }
+    await _assertNoCircularReferences(payload.TreeCode || code, payload.ProductTreeLines);
     
     await sapService.request({ method: "PATCH", url: `/ProductTrees('${encodeURIComponent(code)}')`, data: payload });
     const updated = await masterDataDbService.getBOM(code);
     res.json(updated || payload);
   } catch (err) {
     console.error("[BOM update]", _sapMsg(err), JSON.stringify(err.response?.data));
-    res.status(err.response?.status || 500).json({ message: _sapMsg(err) });
+    res.status(err.statusCode || err.response?.status || 500).json({ message: _sapMsg(err) });
   }
 };
 
@@ -202,16 +186,20 @@ function _buildPayload(body) {
 
   if (Array.isArray(body.ProductTreeLines) && body.ProductTreeLines.length > 0) {
     p.ProductTreeLines = body.ProductTreeLines
-      .filter((l) => l.ItemCode)
+      .filter((l) => l.ItemType === "pit_Text" ? (l.LineText || l.Comment) : l.ItemCode)
       .map((l, idx) => {
         const line = {
-          ItemCode:    l.ItemCode,
           Quantity:    Number(l.Quantity) || 1,
           // Confirmed SAP enum: im_Manual | im_Backflush
           IssueMethod: l.IssueMethod || "im_Manual",
           // Confirmed SAP enum: pit_Item (only value seen in live data)
           ItemType:    l.ItemType    || "pit_Item",
         };
+        if (line.ItemType === "pit_Text") {
+          line.LineText = l.LineText || l.Comment || "";
+        } else {
+          line.ItemCode = l.ItemCode;
+        }
         if (opt(l.Warehouse))        line.Warehouse        = l.Warehouse;
         if (opt(l.PriceList))        line.PriceList        = Number(l.PriceList);
         if (opt(l.Comment))          line.Comment          = l.Comment;
@@ -229,6 +217,32 @@ function _buildPayload(body) {
   }
 
   return p;
+}
+
+async function _assertNoCircularReferences(parentCode, lines = []) {
+  const parent = String(parentCode || "").trim();
+  const roots = (lines || [])
+    .filter((line) => line.ItemType !== "pit_Text")
+    .map((line) => String(line.ItemCode || "").trim())
+    .filter(Boolean);
+  const visited = new Set();
+  const visit = async (code, path, depth) => {
+    if (code === parent) {
+      const error = new Error(`Circular BOM reference detected: ${[...path, code].join(" -> ")}.`);
+      error.statusCode = 400;
+      throw error;
+    }
+    if (depth >= 20 || visited.has(code)) return;
+    visited.add(code);
+    const bom = await masterDataDbService.getBOM(code);
+    if (!bom) return;
+    for (const line of bom.ProductTreeLines || []) {
+      if (line.ItemType === "pit_Text") continue;
+      const child = String(line.ItemCode || "").trim();
+      if (child) await visit(child, [...path, code], depth + 1);
+    }
+  };
+  for (const code of roots) await visit(code, [parent], 0);
 }
 
 // ── Get Item Details (for auto-populating BOM fields) ────────────────────────
@@ -252,4 +266,5 @@ module.exports = {
   lookupItems, lookupWarehouses, lookupPriceLists,
   lookupDistributionRules, lookupProjects, lookupGLAccounts,
   getItemDetails,
+  _private: { _buildPayload, _assertNoCircularReferences },
 };

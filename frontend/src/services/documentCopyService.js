@@ -1,6 +1,18 @@
 import { buildCopyToState, createCopyToWindowId, openCopyToDocument } from '../utils/copyToState';
 
 const copyTargetConfig = {
+  purchaseRequest: {
+    purchaseQuotation: {
+      targetDocType: 'purchaseQuotation',
+      targetLabel: 'Purchase Quotation',
+      targetPath: '/purchase-quotation',
+    },
+    purchaseOrder: {
+      targetDocType: 'purchaseOrder',
+      targetLabel: 'Purchase Order',
+      targetPath: '/purchase-order',
+    },
+  },
   salesQuotation: {
     'sales-order': {
       targetDocType: 'salesOrder',
@@ -153,6 +165,18 @@ const copyTargetConfig = {
       targetLabel: 'Goods Receipt PO',
       targetPath: '/grpo',
     },
+    // SAP B1 allows an A/P Invoice to be drawn straight from an open Purchase
+    // Order; the invoice then receives the stock instead of a Goods Receipt PO.
+    'ap-invoice': {
+      targetDocType: 'apInvoice',
+      targetLabel: 'A/P Invoice',
+      targetPath: '/ap-invoice',
+    },
+    apInvoice: {
+      targetDocType: 'apInvoice',
+      targetLabel: 'A/P Invoice',
+      targetPath: '/ap-invoice',
+    },
   },
   grpo: {
     'ap-invoice': {
@@ -181,6 +205,7 @@ const copyTargetConfig = {
 };
 
 const sourceLabels = {
+  purchaseRequest: 'Purchase Request',
   salesQuotation: 'Sales Quotation',
   salesOrder: 'Sales Order',
   dcSalesOrder: 'DC Sales Order',
@@ -202,6 +227,7 @@ const sourceLabels = {
 };
 
 const sourceBaseTypes = {
+  purchaseRequest: 1470000113,
   salesQuotation: 23,
   salesOrder: 17,
   dcSalesOrder: 17,
@@ -222,6 +248,12 @@ const sourceBaseTypes = {
   apInvoice: 18,
 };
 
+// Resolves one Copy To target, accepting either the hyphenated toolbar key or
+// its camelCase alias.
+export const getCopyToTarget = (sourceDocType, targetType) => (
+  (copyTargetConfig[sourceDocType] || {})[targetType] || null
+);
+
 export const getCopyToTargets = (sourceDocType) => {
   const sourceConfig = copyTargetConfig[sourceDocType] || {};
   return Object.entries(sourceConfig)
@@ -234,9 +266,14 @@ export const getCopyToTargets = (sourceDocType) => {
     }));
 };
 
+// Only open lines can be drawn into a target document. A Goods Receipt PO and
+// a Purchase Order both carry line status and open quantity, so both are
+// filtered; other sources copy in full.
+const OPEN_LINE_FILTERED_SOURCES = new Set(['grpo', 'purchaseOrder']);
+
 export const getCopyableSourceLines = (sourceDocType, lines = []) => {
   const sourceLines = Array.isArray(lines) ? lines : [];
-  if (sourceDocType !== 'grpo') return sourceLines;
+  if (!OPEN_LINE_FILTERED_SOURCES.has(sourceDocType)) return sourceLines;
 
   return sourceLines.filter((line = {}) => {
     const lineStatus = String(line.lineStatus ?? line.LineStatus ?? '').trim().toUpperCase();
@@ -289,20 +326,32 @@ export const copyToDocument = async ({
   });
 
   const copyableLines = getCopyableSourceLines(sourceDocType, sourceSnapshot.lines);
-  if (sourceDocType === 'grpo' && !copyableLines.length) {
-    setError?.('This Goods Receipt PO has no open quantity left. It has already been fully copied to an A/P Invoice.');
+  if (OPEN_LINE_FILTERED_SOURCES.has(sourceDocType) && !copyableLines.length) {
+    setError?.(`This ${sourceLabel} has no open quantity left. It has already been fully copied.`);
     return false;
   }
+
+  // Keep source-document details that are not part of the common header/line
+  // shape (for example freight rows). Target pages decide which extras apply.
+  const {
+    header: sourceHeader,
+    headerUdfs: sourceHeaderUdfs,
+  } = sourceSnapshot || {};
+  const extraCopyFrom = { ...(sourceSnapshot || {}) };
+  delete extraCopyFrom.header;
+  delete extraCopyFrom.lines;
+  delete extraCopyFrom.headerUdfs;
 
   const copyState = buildCopyToState({
     sourceDocType,
     sourceLabel,
     sourceDocEntry,
     sourceDocNo,
-    header: sourceSnapshot.header,
+    header: sourceHeader,
     lines: copyableLines,
-    headerUdfs: sourceSnapshot.headerUdfs,
+    headerUdfs: sourceHeaderUdfs,
     baseType,
+    extraCopyFrom,
     extraState: targetConfig.extraState,
   });
 

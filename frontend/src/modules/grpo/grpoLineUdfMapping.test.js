@@ -3,6 +3,8 @@ import {
   getLineUdfValue,
   hydrateGRPOLineUdfFields,
   resolveUdfDefinitionKey,
+  synchronizeGRPOLineFieldChange,
+  synchronizeGRPOLineUdfChange,
 } from './grpoLineUdfMapping';
 
 const rowUdfDefinitions = [
@@ -125,4 +127,46 @@ test('rejects configured pseudo-UDF values until current-company metadata confir
   );
 
   expect(payload).toEqual({});
+});
+
+test('editing live GrossWt and Total-Package UDFs replaces stale copied values', () => {
+  const grossWeightEdited = synchronizeGRPOLineUdfChange(
+    {
+      grossWt: '0.000000',
+      totalPackage: '0.000000',
+      udf: { U_GrossWt: '0.000000', U_TotalPackage: '0.000000' },
+    },
+    'U_GrossWt',
+    '1250.750000',
+    rowUdfDefinitions,
+  );
+  const edited = synchronizeGRPOLineUdfChange(
+    grossWeightEdited,
+    'U_TotalPackage',
+    '48.000000',
+    rowUdfDefinitions,
+  );
+
+  expect(edited.grossWt).toBe('1250.750000');
+  expect(edited.totalPackage).toBe('48.000000');
+  expect(edited.udf.U_GrossWt).toBe('1250.750000');
+  expect(edited.udf.U_TotalPackage).toBe('48.000000');
+  expect(buildGRPOLineUdfPayload(edited, rowUdfDefinitions, {})).toMatchObject({
+    U_GrossWt: '1250.750000',
+    U_TotalPackage: '48.000000',
+  });
+});
+
+test('editing a mapped matrix field keeps the live UDF value in sync', () => {
+  const edited = synchronizeGRPOLineFieldChange(
+    { grossWt: '0.000000', udf: { U_GrossWt: '0.000000' } },
+    'grossWt',
+    '88.500000',
+    rowUdfDefinitions,
+  );
+
+  expect(edited).toMatchObject({
+    grossWt: '88.500000',
+    udf: { U_GrossWt: '88.500000' },
+  });
 });

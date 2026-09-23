@@ -32,3 +32,11 @@ test('prefers explicit total before tax over generic total', () => {
     getLineTotalsForDisplay({ totalBeforeTax: '95.00', total: '100.00' }, [])
   ).toEqual({ beforeTax: '95.00', total: '100.00' });
 });
+
+
+test('Purchase Order calculates current inputs instead of stale imported line amounts', () => {
+  expect(getLineTotalsForDisplay(
+    { quantity: '120', unitPrice: '1200', stdDiscount: '0', totalBeforeTax: '0', total: '0', taxCode: 'GST12' },
+    [{ Code: 'GST12', Rate: 12 }], 2, { preferCalculated: true }
+  )).toEqual({ beforeTax: '144000.00', total: '161280.00' });
+});

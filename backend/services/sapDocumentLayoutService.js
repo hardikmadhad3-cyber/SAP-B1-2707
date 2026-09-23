@@ -39,6 +39,23 @@ const createCommonFallbackColumns = () => [
   { columnUid: 'WhsCode', fieldName: 'WhsCode', columnTitle: 'Whse', columnOrder: 12, width: 80, dataType: 'string', isUdf: false },
 ];
 
+const createPurchaseRequestFallbackColumns = () => [
+  { columnUid: 'LineNum', fieldName: 'LineNum', columnTitle: '#', columnOrder: 1, width: 42, dataType: 'number', isUdf: false },
+  { columnUid: 'ItemCode', fieldName: 'ItemCode', columnTitle: 'Item No.', columnOrder: 2, width: 130, dataType: 'string', isUdf: false },
+  { columnUid: 'LineVendor', fieldName: 'LineVendor', columnTitle: 'Vendor', columnOrder: 3, width: 120, dataType: 'string', isUdf: false },
+  { columnUid: 'ReqDate', fieldName: 'ReqDate', columnTitle: 'Required Date', columnOrder: 4, width: 125, dataType: 'date', isUdf: false },
+  { columnUid: 'Quantity', fieldName: 'Quantity', columnTitle: 'Required Qty.', columnOrder: 5, width: 100, dataType: 'number', isUdf: false },
+  { columnUid: 'Price', fieldName: 'Price', columnTitle: 'Info Price', columnOrder: 6, width: 100, dataType: 'number', isUdf: false },
+  { columnUid: 'DiscPrcnt', fieldName: 'DiscPrcnt', columnTitle: 'Discount %', columnOrder: 7, width: 95, dataType: 'number', isUdf: false },
+  { columnUid: 'TaxCode', fieldName: 'TaxCode', columnTitle: 'Tax Code', columnOrder: 8, width: 105, dataType: 'string', isUdf: false },
+  { columnUid: 'LineTotal', fieldName: 'LineTotal', columnTitle: 'Total (LC)', columnOrder: 9, width: 110, dataType: 'number', isUdf: false },
+  { columnUid: 'OcrCode', fieldName: 'OcrCode', columnTitle: 'Distr. Rule', columnOrder: 10, width: 105, dataType: 'string', isUdf: false },
+  { columnUid: 'UomCode', fieldName: 'UomCode', columnTitle: 'UoM Code', columnOrder: 11, width: 100, dataType: 'string', isUdf: false },
+  { columnUid: 'WhsCode', fieldName: 'WhsCode', columnTitle: 'Whse', columnOrder: 12, width: 85, dataType: 'string', isUdf: false },
+  { columnUid: 'CountryOrg', fieldName: 'CountryOrg', columnTitle: 'Country/Region of Origin', columnOrder: 13, width: 180, dataType: 'string', isUdf: false },
+  { columnUid: 'LocCode', fieldName: 'LocCode', columnTitle: 'Loc.', columnOrder: 14, width: 85, dataType: 'string', isUdf: false },
+];
+
 const createServiceFallbackColumns = () => [
   { columnUid: 'LineNum', fieldName: 'LineNum', columnTitle: '#', columnOrder: 1, width: 42, dataType: 'number', isUdf: false },
   { columnUid: 'Dscription', fieldName: 'Dscription', columnTitle: 'Description', columnOrder: 2, width: 240, dataType: 'string', isUdf: false },
@@ -137,7 +154,7 @@ const DOCUMENT_TYPES = {
     matrixId: '38',
     headerTable: 'OPRQ',
     tableName: 'PRQ1',
-    fallbackColumns: createCommonFallbackColumns(),
+    fallbackColumns: createPurchaseRequestFallbackColumns(),
   },
   PURCHASE_QUOTATION: {
     documentType: 'PURCHASE_QUOTATION',
@@ -736,21 +753,17 @@ const normalizeAuth = async (auth = {}, requestedCompanyDb, requestedUserCode) =
     throw createHttpError(403, 'companyDb does not match the selected company session.');
   }
 
-  // Form Settings in CPRF are owned by the SAP B1 user, not by the technical
-  // Service Layer account. A UserCompanies mapping is therefore preferred
-  // whenever it exists; the technical account remains a compatibility
-  // fallback for installations without mapped SAP users.
+  // Form Settings in CPRF are owned by the SAP B1 user, not by the web user.
+  // A UserCompanies mapping overrides the company SAP account when a person
+  // has a dedicated SAP B1 identity; otherwise all web users share the
+  // configured company account's layout.
   const assignedSapUserCode = normalizeText(
     assignedCompany.AssignedSapUserCode,
     'Assigned SAP user code',
     { required: false, maxLength: 150 },
   );
   const adminPanelSapUsername = normalizeText(assignedCompany.SapUsername, 'Admin panel SAP username', { required: false, maxLength: 150 });
-  // Without an explicit UserCompanies mapping, the signed-in application
-  // user is the closest SAP B1 user identity. The shared Service Layer login
-  // is only a final compatibility fallback; using it first loads another
-  // user's CPRF settings on multi-user installations.
-  const preferredUserCode = assignedSapUserCode || username || adminPanelSapUsername;
+  const preferredUserCode = assignedSapUserCode || adminPanelSapUsername || username;
   const allowedUserCodes = new Set(
     [username, assignedSapUserCode, adminPanelSapUsername]
       .filter(Boolean)
@@ -851,6 +864,7 @@ const getSavedLiveLayoutRows = async ({ companyDb, userCode, documentType, formT
 );
 
 const saveLayoutRows = async ({
+  companyId,
   companyDb,
   userCode,
   documentType,
@@ -862,12 +876,13 @@ const saveLayoutRows = async ({
   await authDbService.transaction(async (tx) => {
     await tx.query(`
       DELETE FROM sap_form_layout_columns
-      WHERE companyDb = @companyDb
-        AND userCode = @userCode
+      WHERE (CompanyId = @companyId OR (CompanyId IS NULL AND UPPER(companyDb) = UPPER(@companyDb)))
+        AND UPPER(userCode) = UPPER(@userCode)
         AND documentType = @documentType
         AND formType = @formType
         AND matrixId = @matrixId
     `, {
+      companyId,
       companyDb,
       userCode,
       documentType,
@@ -878,6 +893,7 @@ const saveLayoutRows = async ({
     for (const column of columns) {
       await tx.query(`
         INSERT INTO sap_form_layout_columns (
+          CompanyId,
           companyDb,
           userCode,
           documentType,
@@ -898,6 +914,7 @@ const saveLayoutRows = async ({
           updatedAt
         )
         VALUES (
+          @companyId,
           @companyDb,
           @userCode,
           @documentType,
@@ -917,7 +934,7 @@ const saveLayoutRows = async ({
           CURRENT_TIMESTAMP,
           CURRENT_TIMESTAMP
         )
-        ON CONFLICT(companyDb, userCode, documentType, formType, matrixId, columnUid) DO UPDATE SET
+        ON CONFLICT(CompanyId, companyDb, userCode, documentType, formType, matrixId, columnUid) DO UPDATE SET
           tableName = excluded.tableName,
           fieldName = excluded.fieldName,
           columnTitle = excluded.columnTitle,
@@ -930,6 +947,7 @@ const saveLayoutRows = async ({
           source = excluded.source,
           updatedAt = CURRENT_TIMESTAMP
       `, {
+        companyId,
         companyDb,
         userCode,
         documentType,
@@ -1180,6 +1198,23 @@ const findGenericColumnDefinition = (row = {}, mapping = {}, referenceDefinition
 // metadata so standard ColIDs cannot become unrelated UDFs by ordinal.
 const findUdfDefinitionForPreference = findCprfUdfDefinition;
 
+// A saved row is mis-bound when its matrix ColID is one SAP reserves for a
+// standard column yet the stored field is a UDF. A genuine UDF column always
+// carries a U_ columnUid, so a numeric id paired with a U_ field can only come
+// from the ordinal-matching resolver this replaced.
+const isMisboundStandardColumn = (row = {}, mapping = {}) => {
+  const columnUid = String(row.columnUid || '').trim();
+  const fieldName = String(row.fieldName || '').trim();
+  if (!isNumericOnly(columnUid) || !fieldName.toUpperCase().startsWith('U_')) return false;
+  const standardDefinition = findGenericColumnDefinition({ ColID: columnUid }, mapping);
+  return Boolean(standardDefinition?.fieldName)
+    && !String(standardDefinition.fieldName).toUpperCase().startsWith('U_');
+};
+
+const hasMisboundStandardColumns = (rows = [], mapping = {}) => (
+  (rows || []).some((row) => isMisboundStandardColumn(row, mapping))
+);
+
 const buildGenericLiveLayoutColumnsFromCprf = async (mapping, scope) => {
   const [{ rows: preferenceRows }, lineColumns, udfDefinitions, referenceData] = await Promise.all([
     getCprfRows({
@@ -1351,10 +1386,24 @@ const getDocumentLayout = async (auth, input = {}) => {
   const savedLiveRowsMissingUdfs = LIVE_MARKETING_LAYOUT_WITH_UDFS.has(mapping.documentType)
     && savedLiveRows.length;
 
-  if (!refreshLive && savedLiveRows.length && !savedLiveRowsMissingUdfs && !savedServiceLayoutIsIncompatible) {
+  // An earlier resolver paired a numeric CPRF ColID with a UDF by ordinal, so
+  // saved layouts can bind a standard SAP caption such as Unit Price to an
+  // unrelated UDF. Those rows make the column read and write the wrong line
+  // field, so the layout is re-derived from SAP rather than trusted.
+  const savedLayoutHasMisboundStandardColumns = hasMisboundStandardColumns(savedLiveRows, mapping);
+  if (savedLayoutHasMisboundStandardColumns) {
+    console.warn(
+      `[SAP_LAYOUT] Discarding a stale ${mapping.documentType} layout for `
+      + `${scope.companyDb}/${scope.userCode}: standard captions are bound to unrelated UDF fields.`,
+    );
+  }
+
+  if (!refreshLive && savedLiveRows.length && !savedLiveRowsMissingUdfs
+      && !savedServiceLayoutIsIncompatible && !savedLayoutHasMisboundStandardColumns) {
     const sanitizedSavedLiveRows = sanitizeLayoutColumns(savedLiveRows.map(mapRowToColumn));
     if (sanitizedSavedLiveRows.length !== savedLiveRows.length) {
       await saveLayoutRows({
+        companyId: scope.companyId,
         companyDb: scope.companyDb,
         userCode: scope.userCode,
         documentType: mapping.documentType,
@@ -1384,6 +1433,7 @@ const getDocumentLayout = async (auth, input = {}) => {
     });
     if (liveDerivedColumns.length) {
       await saveLayoutRows({
+        companyId: scope.companyId,
         companyDb: scope.companyDb,
         userCode: scope.userCode,
         documentType: mapping.documentType,
@@ -1414,7 +1464,9 @@ const getDocumentLayout = async (auth, input = {}) => {
       });
     }
 
-    if (savedLiveRows.length) {
+    // A mis-bound layout is worse than none: its columns read and write the
+    // wrong line field silently, so the neutral fallback is used instead.
+    if (savedLiveRows.length && !savedLayoutHasMisboundStandardColumns) {
       const sanitizedSavedLiveRows = sanitizeLayoutColumns(savedLiveRows.map(mapRowToColumn));
       if (sanitizedSavedLiveRows.length) {
         return buildResponse({
@@ -1500,6 +1552,7 @@ const importDocumentLayout = async (auth, input = {}) => {
 
   try {
     await saveLayoutRows({
+      companyId: scope.companyId,
       companyDb: scope.companyDb,
       userCode: scope.userCode,
       documentType: mapping.documentType,
@@ -1574,6 +1627,7 @@ const syncDocumentLayoutUdfs = async (auth, input = {}) => {
     for (const column of columnsToInsert) {
       await authDbService.query(`
         INSERT INTO sap_form_layout_columns (
+          CompanyId,
           companyDb,
           userCode,
           documentType,
@@ -1594,6 +1648,7 @@ const syncDocumentLayoutUdfs = async (auth, input = {}) => {
           updatedAt
         )
         VALUES (
+          @companyId,
           @companyDb,
           @userCode,
           @documentType,
@@ -1613,7 +1668,7 @@ const syncDocumentLayoutUdfs = async (auth, input = {}) => {
           CURRENT_TIMESTAMP,
           CURRENT_TIMESTAMP
         )
-        ON CONFLICT(companyDb, userCode, documentType, formType, matrixId, columnUid) DO UPDATE SET
+        ON CONFLICT(CompanyId, companyDb, userCode, documentType, formType, matrixId, columnUid) DO UPDATE SET
           fieldName = excluded.fieldName,
           columnTitle = excluded.columnTitle,
           editable = excluded.editable,
@@ -1623,6 +1678,7 @@ const syncDocumentLayoutUdfs = async (auth, input = {}) => {
           source = excluded.source,
           updatedAt = CURRENT_TIMESTAMP
       `, {
+        companyId: scope.companyId,
         companyDb: scope.companyDb,
         userCode: scope.userCode,
         documentType: mapping.documentType,
@@ -1664,6 +1720,8 @@ const syncDocumentLayoutUdfs = async (auth, input = {}) => {
 module.exports = {
   DOCUMENT_TYPES,
   getDocumentLayout,
+  hasMisboundStandardColumns,
   importDocumentLayout,
+  isMisboundStandardColumn,
   syncDocumentLayoutUdfs,
 };

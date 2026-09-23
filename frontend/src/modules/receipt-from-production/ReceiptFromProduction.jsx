@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import "../../modules/item-master/styles/itemMaster.css";
 import "./receiptFromProduction.css";
 import ReceiptAllocationModal from "./components/ReceiptAllocationModal";
@@ -8,6 +8,7 @@ import ProductionOrderSearchModal from "./components/ProductionOrderSearchModal"
 import ItemSearchModal from "../bom/components/ItemSearchModal";
 import {
   fetchReceiptReferenceData,
+  fetchReceiptSeries,
   fetchProductionOrderForReceipt,
   fetchReceiptByDocEntry,
   createReceipt,
@@ -133,6 +134,9 @@ const getAllocationError = (line) => {
   }
 
   if (line.manage_serial) {
+    if (!Number.isInteger(qty)) {
+      return `Line ${line.item_code}: serial-managed quantity must be a whole number.`;
+    }
     const validSerials = (line.serial_numbers || []).filter((row) => row.serial_number);
     if (validSerials.length === 0) {
       return `Line ${line.item_code}: serial numbers are required.`;
@@ -174,6 +178,10 @@ export default function ReceiptFromProductionModule() {
   const [poModal, setPoModal] = useState(null);
   const [itemModal, setItemModal] = useState({ open: false, target: null });
   const [allocationModal, setAllocationModal] = useState({ open: false, lineId: null });
+  const branchWarehouses = useMemo(() => {
+    if (mode !== MODES.ADD || !header.branch) return warehouses;
+    return warehouses.filter((warehouse) => warehouse.BPLID == null || String(warehouse.BPLID) === String(header.branch));
+  }, [header.branch, mode, warehouses]);
 
   const alertTimer = useRef(null);
 
@@ -197,6 +205,25 @@ export default function ReceiptFromProductionModule() {
       })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (mode !== MODES.ADD || !header.posting_date) return undefined;
+    let active = true;
+    fetchReceiptSeries(header.posting_date, header.branch)
+      .then((context) => {
+        if (!active) return;
+        const nextSeries = context.series || [];
+        const preferred = context.defaultSeries != null ? String(context.defaultSeries) : "";
+        setSeries(nextSeries);
+        setHeader((prev) => {
+          const valid = nextSeries.some((entry) => String(entry.Series) === String(prev.series));
+          const fallback = preferred || (pickDefaultSeries(nextSeries)?.Series ?? "");
+          return { ...prev, series: valid ? prev.series : String(fallback) };
+        });
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [header.branch, header.posting_date, mode]);
 
   const showAlert = useCallback((type, msg) => {
     clearTimeout(alertTimer.current);
@@ -703,7 +730,7 @@ export default function ReceiptFromProductionModule() {
                   postingDate: header.posting_date || header.document_date,
                 }).map((entry) => (
                   <option key={entry.Series} value={entry.Series}>
-                    {entry.Name}
+                    {entry.DisplayName || entry.SeriesName || entry.Name}
                   </option>
                 ))}
               </select>
@@ -788,7 +815,7 @@ export default function ReceiptFromProductionModule() {
         {tab === 0 && (
           <ReceiptLines
             lines={lines}
-            warehouses={warehouses}
+            warehouses={branchWarehouses}
             distRules={distRules}
             projects={projects}
             branches={branches}

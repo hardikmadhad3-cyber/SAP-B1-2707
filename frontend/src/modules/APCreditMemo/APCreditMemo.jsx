@@ -1,3 +1,5 @@
+import useConfirmationOnlyUpdate from '../../utils/useConfirmationOnlyUpdate';
+import useDocumentSeries from '../../hooks/useDocumentSeries';
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import './styles/APCreditMemo.css';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -26,24 +28,27 @@ import SalesEmployeeSetupModal from '../../components/sales-employee/SalesEmploy
 import { summarizeFreightRows } from '../../components/freight/freightUtils';
 import { useRelationshipMapRegistration } from '../../components/relationship-map/RelationshipMapHost';
 import { consumeCopyToState, replaceRouteStatePreservingWindow } from '../../utils/copyToState';
-import { duplicateDocumentInPlace, refreshDuplicateSeries } from '../../utils/documentDuplicate';
+import { duplicateDocumentInPlace } from '../../utils/documentDuplicate';
 import { filterWarehousesByBranch } from '../../utils/warehouseBranch';
-import { hydrateDocumentLineFromItem, mergeItemMaster } from '../../utils/documentItemHydration';
-import { mapAddressToModalForm, resolveAddressForModal } from '../../utils/documentAddress';
-import { getDefaultSeriesForCurrentYear, getSapVisibleDocumentSeries, normalizeDocumentSeriesList } from '../../utils/seriesDefaults';
+import { getItemPurchaseUom, hydrateDocumentLineFromItem, mergeItemMaster } from '../../utils/documentItemHydration';
+import { applyUomCodeSelection, getLineUomOptions } from '../../utils/documentUom';
+import { applyDocumentTablePaste } from '../../utils/documentTableClipboard';
+import { mapAddressToModalForm, resolveAddressForModal, resolveBuyerBillToAddress } from '../../utils/documentAddress';
+import { getDefaultSeriesForCurrentYear, getSapVisibleDocumentSeries, normalizeDocumentSeriesList, canUseManualSeries } from '../../utils/seriesDefaults';
 import {
   SAP_MANUAL_SERIES_VALUE,
   isManualDocumentSeries,
   isValidManualDocumentNumber,
 } from '../../utils/documentSeries';
 import { useCompanyScopedFormSettings } from '../../utils/formSettingsStorage';
+import { buildCompanyFormQueryContext } from '../../utils/companyFormQueryContext';
 import { getDocumentLayout } from '../../api/sapLayoutApi';
 import { fetchSalesDocumentSchema } from '../../api/salesDocumentSchemaApi';
 import { buildSalesDocumentLiveFields } from '../../utils/salesDocumentLiveFields';
 import { readGeneralSettings } from '../../utils/generalSettingsStorage';
 import { buildVisibleEnteredRowUdfPayload } from '../../utils/rowUdfPayload';
 import { getStateCodeValue, getStateDisplayName } from '../../utils/stateDisplay';
-import { calculateDocumentRounding } from '../../utils/documentRounding';
+import { calculateDocumentRounding, getDocumentRoundingPolicy } from '../../utils/documentRounding';
 import useSalesEmployeeSetup from '../../hooks/useSalesEmployeeSetup';
 import useDocumentDraftTask from '../../hooks/useDocumentDraftTask';
 import useValidationHighlights from '../../utils/useValidationHighlights';
@@ -55,7 +60,6 @@ import {
   updateAPCreditMemo,
   fetchAPCreditMemoByDocEntry,
   fetchAPCreditMemoSeries,
-  fetchAPCreditMemoNextNumber,
   fetchAPCreditMemoOpenGRPO,
   fetchAPCreditMemoGRPOForCopy,
   fetchItemsForModal,
@@ -282,8 +286,13 @@ const INIT_HEADER = {
   branchRegNo: '',
   shipTo: '',
   shipToCode: '',
+  shipToAddress: '',
+  billTo: '',
+  billToCode: '',
+  billToAddress: '',
   payTo: '',
   payToCode: '',
+  payToAddress: '',
   shippingType: '',
   usePayToForTax: false,
   toOrder: '',
@@ -292,7 +301,7 @@ const INIT_HEADER = {
   notifyPartyAddress: '',
   language: '',
   splitAPCreditMemo: false,
-  confirmed: false,
+  confirmed: undefined,
   journalRemark: '',
   paymentTerms: '',
   paymentMethod: '',
@@ -475,9 +484,9 @@ const hydrateAPCreditMemoLineUdfFields = (line = {}) => {
 };
 
 // â”€â”€â”€ Main Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-const FALLBACK_UOM = ['EA', 'PCS', 'KG', 'LTR', 'MTR', 'BOX', 'SET', 'NOS', 'PKT', 'DZN'];
-
 function APCreditMemo() {
+  const [seriesRevision, setSeriesRevision] = useState(0);
+
   const { company } = useAuth();
   const activeCompanyId = company?.companyId || '';
   const location = useLocation();
@@ -492,11 +501,11 @@ function APCreditMemo() {
   const [attachments] = useState(INIT_ATTACH);
   const [activeTab, setActiveTab] = useState('Contents');
   const [headerUdfs, setHeaderUdfs] = useState(() => createUdfState(HEADER_UDF_DEFINITIONS));
-  const [formSettings, setFormSettings, formSettingsStorageKey, , formSettingsStatus] = useCompanyScopedFormSettings(
+  const [formSettings, setFormSettings, formSettingsStorageKey, replaceFormSettings, formSettingsStatus] = useCompanyScopedFormSettings(
     FORM_SETTINGS_STORAGE_KEY,
     readSavedFormSettings,
     [headerUdfDefinitions, rowUdfDefinitions, matrixColumnDefinitions],
-    { saveMode: 'explicit' },
+    { saveMode: 'explicit', followPublishedVersion: true },
   );
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [formSettingsOpen, setFormSettingsOpen] = useState(false);
@@ -507,6 +516,7 @@ function APCreditMemo() {
     local_currency: '',
     system_currency: '',
     currencies: [],
+    rounding_settings: { method: '', currencies: [] },
     vendors: [],
     contacts: [],
     pay_to_addresses: [],
@@ -639,12 +649,12 @@ function APCreditMemo() {
   const hasUnsavedChanges = Boolean(currentDocEntry && isDirty);
   const updateActionLabel = hasUnsavedChanges ? 'Update' : 'OK';
   const primaryActionLabel = pageState.posting
-    ? 'Savingâ€¦'
+    ? 'Saving...'
     : currentDocEntry
       ? updateActionLabel
       : 'Add';
   const secondaryActionLabel = pageState.posting
-    ? 'Savingâ€¦'
+    ? 'Saving...'
     : currentDocEntry
       ? updateActionLabel
       : 'Add & New';
@@ -726,9 +736,12 @@ function APCreditMemo() {
         setHeaderUdfDefinitions([]);
         setRowUdfDefinitions([]);
         setMatrixColumnDefinitions([]);
-        setHeaderUdfs({});
-        setLines([createLine([])]);
-        if (!activeCompanyId) return;
+        // Loading schema/settings must preserve loaded, copied and draft lines.
+        if (!activeCompanyId) {
+          setHeaderUdfs({});
+          setLines([createLine([])]);
+          return;
+        }
 
         const [refDataRes, layoutRes, schema] = await Promise.all([
           fetchAPCreditMemoReferenceData(activeCompanyId),
@@ -790,18 +803,7 @@ function APCreditMemo() {
             ...line,
             udf: createUdfState(nextRowUdfs, line.udf || {}),
           })));
-          setFormSettings((prev) => ({
-            ...nextDefaults,
-            ...prev,
-            headerUdfs: {
-              ...nextDefaults.headerUdfs,
-              ...(prev.headerUdfs || {}),
-            },
-            rowUdfs: {
-              ...nextDefaults.rowUdfs,
-              ...(prev.rowUdfs || {}),
-            },
-          }));
+          replaceFormSettings(nextDefaults);
 
           setRefData({
             company: refDataRes.data.company || '',
@@ -810,6 +812,7 @@ function APCreditMemo() {
             local_currency: refDataRes.data.local_currency || refDataRes.data.company_currency || '',
             system_currency: refDataRes.data.system_currency || refDataRes.data.company_currency || '',
             currencies: refDataRes.data.currencies || [],
+            rounding_settings: refDataRes.data.rounding_settings || { method: '', currencies: [] },
             vendors: refDataRes.data.vendors || [],
             contacts: refDataRes.data.contacts || [],
             pay_to_addresses: refDataRes.data.pay_to_addresses || [],
@@ -936,13 +939,12 @@ function APCreditMemo() {
         line.branch || normalizedHeader.branch
       ),
       openQty: String(line.openQty ?? line.OpenQty ?? line.quantity ?? line.Quantity ?? ''),
-      taxCodeManuallyOverridden: false,
       udf: { ...createUdfState(rowUdfDefinitions), ...(line.udf || {}) },
     }));
 
     setHeader((prev) => ({ ...prev, ...normalizedHeader }));
     setLines(copiedLines.length ? copiedLines : [createLine(rowUdfDefinitions)]);
-    setFreightModal({ open: false, freightCharges: [], loading: false });
+    setFreightModal({ open: false, freightCharges: Array.isArray(copyFrom.freightCharges) ? copyFrom.freightCharges : [], loading: false });
     setValErrors({ header: {}, lines: {}, form: '' });
 
     if (normalizedHeader.vendor) {
@@ -955,14 +957,7 @@ function APCreditMemo() {
   }, [location.pathname, location.state, navigate]);
 
   useEffect(() => {
-    if (!currentDocEntry) {
-      setFreightModal(prev => (
-        prev.freightCharges.length || prev.loading
-          ? { ...prev, freightCharges: [], loading: false }
-          : prev
-      ));
-      return;
-    }
+    if (!currentDocEntry) return;
 
     let ignore = false;
     const loadSavedFreightCharges = async () => {
@@ -1001,6 +996,15 @@ function APCreditMemo() {
   const vendorBillToAddresses = refData.bill_to_addresses.filter(a => String(a.CardCode || '') === String(header.vendor || ''));
   const vendorEffectiveShipToAddresses = vendorShipToAddresses.length ? vendorShipToAddresses : vendorPayToAddresses;
   const vendorEffectiveBillToAddresses = vendorBillToAddresses.length ? vendorBillToAddresses : vendorPayToAddresses;
+  const selectedWarehouse = refData.warehouses.find(
+    (warehouse) => String(warehouse.WhsCode || '') === String(header.warehouse || ''),
+  );
+  const autoBillToAddressRef = useRef('');
+  const buyerBillToAddress = useMemo(() => resolveBuyerBillToAddress({
+    warehouse: selectedWarehouse,
+    companyAddress: refData.company_address,
+    formatAddress: fmtAddr,
+  }), [refData.company_address, selectedWarehouse]);
 
   const payTermOpts = refData.payment_terms.length
     ? refData.payment_terms.map(t => ({ value: String(t.GroupNum), label: t.PymntGroup }))
@@ -1099,50 +1103,8 @@ function APCreditMemo() {
     }));
   }, [currentDocEntry, header.transactionType, transactionTypeOptions]);
 
-  useEffect(() => {
-    if (currentDocEntry || location.state?.APCreditMemoDocEntry) return undefined;
 
-    let ignore = false;
-    const loadSeriesForHeader = async () => {
-      setPageState((prev) => ({ ...prev, seriesLoading: true }));
-      try {
-        const response = await fetchAPCreditMemoSeries({
-          date: header.postingDate || header.documentDate,
-          branch: header.branch || '',
-          transactionType: header.transactionType || '',
-        });
-        if (ignore) return;
 
-        const nextSeries = normalizeDocumentSeriesList(response.data?.series || []);
-
-        if (!nextSeries.length) {
-          return;
-        }
-
-        setRefData((prev) => ({ ...prev, series: nextSeries }));
-
-        const hasCurrentSeries = nextSeries.some((series) => String(series.Series) === String(header.series || ''));
-        const defaultSeries = hasCurrentSeries
-          ? nextSeries.find((series) => String(series.Series) === String(header.series || ''))
-          : getDefaultSeriesForCurrentYear(nextSeries, header.postingDate || header.documentDate);
-
-        if (defaultSeries?.Series != null && String(defaultSeries.Series) !== String(header.series || '')) {
-          await handleSeriesChange(defaultSeries.Series);
-        } else if (!String(header.nextNumber || '').trim() && defaultSeries?.Series != null) {
-          await handleSeriesChange(defaultSeries.Series);
-        }
-      } catch (error) {
-        // Preserve last known live series if a reload fails.
-      } finally {
-        if (!ignore) setPageState((prev) => ({ ...prev, seriesLoading: false }));
-      }
-    };
-
-    loadSeriesForHeader();
-    return () => { ignore = true; };
-  }, [currentDocEntry, location.state, header.postingDate, header.documentDate, header.branch, header.transactionType]);
-
-  const uomGroupMap = (refData.uom_groups || []).reduce((acc, g) => { acc[g.AbsEntry] = g.uomCodes || []; return acc; }, {});
   const FALLBACK_WAREHOUSES = [{ WhsCode: 'WH01', WhsName: 'Main Warehouse' }];
 
   const effectiveTaxCodes = refData.tax_codes || [];
@@ -1172,14 +1134,8 @@ function APCreditMemo() {
 
   const getUomOptions = useCallback((line) => {
     const item = refData.items.find(i => String(i.ItemCode || '') === String(line.itemNo || ''));
-    if (item) {
-      const codes = uomGroupMap[item.UoMGroupEntry];
-      if (codes && codes.length) return codes;
-      const fb = String(item.PurchaseUnit || item.InventoryUOM || '').trim();
-      if (fb) return [fb];
-    }
-    return FALLBACK_UOM;
-  }, [refData.items, uomGroupMap]);
+    return getLineUomOptions(line, item, refData.uom_groups).map((uom) => uom.uomCode);
+  }, [refData.items, refData.uom_groups]);
 
   const fmtTaxLabel = (t) => {
     const code = String(t?.Code || '').trim();
@@ -1233,8 +1189,7 @@ function APCreditMemo() {
     const rounding = calculateDocumentRounding(
       discSub + freight + taxAmt,
       header.rounding,
-      numDec.totalPaymentDue,
-    );
+      numDec.totalPaymentDue, currentDocEntry ? header : null, getDocumentRoundingPolicy(refData, header));
     return { subtotal, discAmt, discSub, freight, freightTaxAmt, taxAmt, ...rounding, taxBreakdown: Array.from(taxMap.values()) };
   };
 
@@ -1319,6 +1274,27 @@ function APCreditMemo() {
   }, [header.warehouse]);
 
   useEffect(() => {
+    if (!buyerBillToAddress.address) return;
+    const previousDefaultAddress = autoBillToAddressRef.current;
+    autoBillToAddressRef.current = buyerBillToAddress.address;
+    setHeader(prev => {
+      const currentAddress = prev.billToAddress || prev.billTo || '';
+      if (currentAddress && currentAddress !== previousDefaultAddress) return prev;
+      if (
+        prev.billToCode === buyerBillToAddress.code
+        && prev.billTo === buyerBillToAddress.address
+        && prev.billToAddress === buyerBillToAddress.address
+      ) return prev;
+      return {
+        ...prev,
+        billToCode: buyerBillToAddress.code || prev.billToCode || '',
+        billTo: buyerBillToAddress.address,
+        billToAddress: buyerBillToAddress.address,
+      };
+    });
+  }, [buyerBillToAddress]);
+
+  useEffect(() => {
     const shouldAutoPopulateAddresses = true;
     if (!shouldAutoPopulateAddresses) return;
     if (!header.vendor) return;
@@ -1345,7 +1321,7 @@ function APCreditMemo() {
       if (!def) return prev;
       const fmt = fmtAddr(def);
       if (prev.payToCode === def.Address && prev.payTo === fmt) return prev;
-      return { ...prev, payToCode: def.Address || '', payTo: fmt };
+      return { ...prev, payToCode: def.Address || '', payTo: fmt, payToAddress: fmt };
     });
   }, [header.vendor, vendorEffectiveBillToAddresses]);
 
@@ -1499,8 +1475,7 @@ function APCreditMemo() {
     setLines(prev => prev.map((line, idx) => {
       if (idx !== i) return line;
       const next = { ...line, [name]: numDec[name] !== undefined ? sanitize(value, numDec[name]) : value };
-                if (name === 'uomName') next.uomNameEdited = true;
-                if (name === 'uomCode') { next.uomName = value; next.uomNameEdited = false; }
+      if (name === 'uomName') next.uomNameEdited = true;
 
       if (name === 'taxCode') {
         next.taxCodeManuallyOverridden = true;
@@ -1511,7 +1486,7 @@ function APCreditMemo() {
         if (item) {
           next.itemDescription = item.ItemName || next.itemDescription;
           next.hsnCode = item.HSNCode || next.hsnCode || '';
-          next.uomCode = String(item.PurchaseUnit || item.InventoryUOM || '').trim();
+          Object.assign(next, getItemPurchaseUom(item, refData.uom_groups));
 
           // Auto-assign default warehouse
           if (item.DefaultWarehouse) {
@@ -1529,6 +1504,10 @@ function APCreditMemo() {
           }
         }
       }
+      if (name === 'uomCode') {
+        const item = refData.items.find(it => String(it.ItemCode || '') === String(next.itemNo || ''));
+        Object.assign(next, applyUomCodeSelection(next, value, getLineUomOptions(next, item, refData.uom_groups)));
+      }
 
       next.total = fmtDec(calcLineTotal(next), numDec.total);
       return next;
@@ -1540,6 +1519,59 @@ function APCreditMemo() {
     if (d === undefined) return;
     if (target === 'header') { setHeader(p => ({ ...p, [field]: fmtDec(p[field], d) })); return; }
     setLines(p => p.map((l, idx) => idx === i ? { ...l, [field]: fmtDec(l[field], d) } : l));
+  };
+
+  const handleTablePaste = ({ startRowIndex, patches }) => {
+    if (!isDocumentEditable) return;
+    markDirty();
+    setPageState(previous => ({ ...previous, error: '', success: '' }));
+    setValErrors(previous => ({ ...previous, form: '' }));
+    setLines(previous => applyDocumentTablePaste({
+      lines: previous,
+      patches,
+      startRowIndex,
+      createLine: () => ({
+        ...createLine(rowUdfDefinitions),
+        branch: header.branch || '',
+        whse: header.warehouse || '',
+      }),
+      transformLine: (pastedLine, _rowIndex, rowPatch) => {
+        const next = { ...pastedLine };
+        const pastedKeys = new Set(rowPatch.cells.map(cell => cell.key));
+        if (pastedKeys.has('itemNo')) {
+          const item = refData.items.find(candidate => String(candidate.ItemCode || '') === String(next.itemNo || ''));
+          if (item) {
+            next.itemDescription = item.ItemName || next.itemDescription;
+            next.hsnCode = item.HSNCode || next.hsnCode || '';
+            Object.assign(next, getItemPurchaseUom(item, refData.uom_groups));
+            if (!pastedKeys.has('whse') && item.DefaultWarehouse) next.whse = item.DefaultWarehouse;
+          }
+          if (!next.taxCodeManuallyOverridden) {
+            const preferredTaxCode = findPreferredGstTaxCode({
+              taxCodes: refData.tax_codes,
+              gstType: derivedGstType,
+              currentTaxCode: next.taxCode,
+            });
+            if (preferredTaxCode?.Code) next.taxCode = preferredTaxCode.Code;
+          }
+        }
+        if (pastedKeys.has('uomCode')) {
+          const item = refData.items.find(candidate => String(candidate.ItemCode || '') === String(next.itemNo || ''));
+          Object.assign(next, applyUomCodeSelection(next, next.uomCode, getLineUomOptions(next, item, refData.uom_groups)));
+        }
+        if (pastedKeys.has('taxCode')) next.taxCodeManuallyOverridden = true;
+        next.total = fmtDec(calcLineTotal(next), numDec.total);
+        return next;
+      },
+    }));
+  };
+
+  const handleTableClipboardFeedback = (message, type) => {
+    setPageState(previous => ({
+      ...previous,
+      error: type === 'error' ? message : '',
+      success: type === 'error' ? '' : message,
+    }));
   };
 
   const openFreightModal = async () => {
@@ -1735,28 +1767,13 @@ function APCreditMemo() {
   };
 
   // â”€â”€ Series and Auto-Numbering handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  const handleSeriesChange = async (seriesValue) => {
-    if (!seriesValue) return;
-
-    if (isManualDocumentSeries(seriesValue)) {
-      setHeader(p => ({ ...p, series: SAP_MANUAL_SERIES_VALUE, nextNumber: '' }));
-      setPageState(p => ({ ...p, seriesLoading: false, error: '', success: '' }));
-      return;
-    }
-
-    setPageState(p => ({ ...p, seriesLoading: true }));
-    setHeader(p => ({ ...p, series: seriesValue, nextNumber: '...' }));
-
-    try {
-      const res = await fetchAPCreditMemoNextNumber(seriesValue);
-      setHeader(p => ({ ...p, nextNumber: String(res.data.nextNumber || '') }));
-    } catch (err) {
-      setHeader(p => ({ ...p, nextNumber: 'Error' }));
-      setPageState(p => ({ ...p, error: 'Failed to get next document number' }));
-    } finally {
-      setPageState(p => ({ ...p, seriesLoading: false }));
-    }
-  };
+  const handleSeriesChange = (seriesValue) => {
+      const manual = ['-1', 'manual', '__sap_manual__'].includes(String(seriesValue).toLowerCase());
+      if (manual && !canUseManualSeries(refData)) return;
+      const selected = (refData.series || []).find(row => String(row.Series) === String(seriesValue));
+      setHeader(prev => ({ ...prev, series: manual ? '-1' : selected ? String(selected.Series) : '', nextNumber: manual ? '' : String(selected?.NextNumber ?? ''), docNo: '' }));
+      setPageState(prev => ({ ...prev, error: '', success: '' }));
+    };
 
   const handleShipToChange = (addressCode) => {
     if (!addressCode) {
@@ -1955,6 +1972,8 @@ function APCreditMemo() {
 
   // â”€â”€ validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleCopyFrom = (data, docType) => {
+    setSeriesRevision(value => value + 1);
+
     const copySource = unwrapCopyFromDocument(data);
     const normalizedHeader = { ...normaliseDocumentHeader(copySource.header) };
     if (docType === 'grpo') {
@@ -1966,7 +1985,6 @@ function APCreditMemo() {
       ...createLine(rowUdfDefinitions),
       ...normaliseDocumentLine(line, index, copySource.docEntry, AP_CREDIT_MEMO_COPY_BASE_TYPE[docType] || 20, normalizedHeader.branch),
       openQty: String(line.OpenQty ?? line.openQty ?? line.Quantity ?? line.quantity ?? ''),
-      taxCodeManuallyOverridden: false,
       udf: { ...createUdfState(rowUdfDefinitions), ...(line.udf || {}) },
     }));
 
@@ -2032,6 +2050,8 @@ function APCreditMemo() {
   };
 
   const handleDuplicate = async () => {
+    setSeriesRevision(value => value + 1);
+
     const duplicateDate = today();
     const duplicateTransactionType = header.transactionType || transactionTypeOptions[0]?.value || 'GST Tax Invoice';
     const duplicateBranch = header.branch || '';
@@ -2068,19 +2088,7 @@ function APCreditMemo() {
         series: '',
         nextNumber: '',
       }));
-      try {
-        const seriesResponse = await fetchAPCreditMemoSeries({
-          date: duplicateDate,
-          branch: duplicateBranch,
-          transactionType: duplicateTransactionType,
-        });
-        const duplicateSeries = normalizeDocumentSeriesList(seriesResponse.data?.series || []);
-        setRefData((prev) => ({ ...prev, series: duplicateSeries }));
-        const selectedSeries = getDefaultSeriesForCurrentYear(duplicateSeries, duplicateDate) || duplicateSeries[0];
-        if (selectedSeries?.Series != null) await handleSeriesChange(selectedSeries.Series);
-      } catch (_error) {
-        refreshDuplicateSeries(refData.series, '', handleSeriesChange);
-      }
+
     }
   };
 
@@ -2161,6 +2169,11 @@ function APCreditMemo() {
   };
 
   // â”€â”€ submit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const narrowConfirmationUpdate = useConfirmationOnlyUpdate({
+    docEntry: currentDocEntry, isDirty,
+    state: { header, lines, headerUdfs, freightCharges: freightModal.freightCharges , company_id: activeCompanyId, companyKey: formSettingsStorageKey },
+  });
+
   const handleSubmit = async (ev) => {
     ev.preventDefault();
     if (!isDocumentEditable) {
@@ -2181,6 +2194,7 @@ function APCreditMemo() {
       const prep = {
         ...header,
         deliveryDate: header.deliveryDate || header.postingDate || header.documentDate,
+        roundingAmount: totals.roundingAmount,
         series: isManualDocumentSeries(header.series) ? SAP_MANUAL_SERIES_VALUE : (header.series ? Number(header.series) : undefined),
         gstType: inferredGstType,
         allowGstOverride: false,
@@ -2190,7 +2204,7 @@ function APCreditMemo() {
         udf: buildAPCreditMemoLineUdfPayload(line, rowUdfDefinitions, formSettings),
       }));
       const payload = { company_id: activeCompanyId, header: prep, lines: payloadLines, freightCharges: freightModal.freightCharges, header_udfs: headerUdfs };
-      const r = currentDocEntry ? await updateAPCreditMemo(currentDocEntry, payload) : await submitAPCreditMemo(payload);
+      const r = currentDocEntry ? await updateAPCreditMemo(currentDocEntry, narrowConfirmationUpdate(payload)) : await submitAPCreditMemo(payload);
       const dn = r.data.doc_num ? ` Doc No: ${r.data.doc_num}.` : '';
       const warningMsg = r.data.warning?.message ? ` Warning: ${r.data.warning.message}` : '';
       setSnapshotPending(false);
@@ -2201,7 +2215,7 @@ function APCreditMemo() {
       setValErrors({ header: {}, lines: {}, form: '' });
 
       if (refData.series.length > 0) {
-        handleSeriesChange(refData.series[0].Series);
+        setHeader(prev => ({ ...prev, series: '', nextNumber: '', docNo: '' }));
       }
 
       setPageState(p => ({ ...p, success: `${r.data.message || 'A/P Credit Memo saved.'}${dn}${warningMsg}` }));
@@ -2213,6 +2227,8 @@ function APCreditMemo() {
   };
 
   const resetForm = () => {
+    setSeriesRevision(value => value + 1);
+
     setSnapshotPending(false);
     setIsDirty(false);
     setCurrentDocEntry(null); setHeader(INIT_HEADER); setLines([createLine(rowUdfDefinitions)]);
@@ -2235,13 +2251,15 @@ function APCreditMemo() {
   // Continue in next message with render...
 
   // â”€â”€ render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  useDocumentSeries({ endpoint: '/ap-credit-memo', companyKey: formSettingsStorageKey, currentDocEntry, header: header, setHeader, setRefData, setPageState, ready: !pageState.loading && !pageState.posting , refreshKey: seriesRevision});
+
   return (
     <form className={`po-page sap-document-page ap-credit-memo-page${isRightSidebarOpen ? ' po-page--sidebar-open' : ''}`} onSubmit={handleSubmit} onChangeCapture={markDirty}>
 
       {/* â”€â”€ Toolbar â”€â”€ */}
       <div className="po-toolbar sap-document-toolbar">
-        <span className="po-toolbar__title sap-document-toolbar__title">A/P Credit Memo{currentDocEntry ? ` â€” #${header.docNo || currentDocEntry}` : ''}</span>
-        <button type="submit" className="po-btn po-btn--primary sap-document-toolbar__primary" disabled={pageState.posting}>
+        <span className="po-toolbar__title sap-document-toolbar__title">A/P Credit Memo{currentDocEntry ? ` - #${header.docNo || currentDocEntry}` : ''}</span>
+        <button type="submit" className="po-btn po-btn--primary sap-document-toolbar__primary" disabled={pageState.posting || formSettingsStatus.queryModeActive}>
           {primaryActionLabel}
         </button>
         <button type="button" className="po-btn sap-document-toolbar__cancel" onClick={resetForm}>Cancel</button>
@@ -2250,12 +2268,12 @@ function APCreditMemo() {
         <button type="button" className="po-btn sap-document-toolbar__udf" onClick={toggleHeaderUdfs}>
           {sidebarOpen ? 'Hide UDFs' : 'Show UDFs'}
         </button>
-        <button type="button" className="po-btn sap-document-toolbar__settings" onClick={toggleFormSettings}>Form Settings</button>
+        <button type="button" className="po-btn sap-document-toolbar__settings" onClick={toggleFormSettings} disabled={formSettingsStatus.queryModeActive} title={formSettingsStatus.queryModeActive ? 'Company SQL Content layout is active' : 'Choose document-line fields'}>Form Settings</button>
         <div className="po-dropdown">
           <button
             type="button"
             className="po-btn"
-            disabled={!isDocumentEditable || !!currentDocEntry}
+            disabled={!isDocumentEditable || !!currentDocEntry || formSettingsStatus.queryModeActive}
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -2265,7 +2283,7 @@ function APCreditMemo() {
               if (!isActive) dropdown.classList.add('active');
             }}
           >
-            Copy From â–¼
+            Copy From ▼
           </button>
           <div className="po-dropdown-menu">
             <button
@@ -2293,10 +2311,10 @@ function APCreditMemo() {
           </div>
         </div>
         <button type="button" className="po-btn sap-document-toolbar__copy" disabled>
-          Copy To â–¼
+          Copy To ▼
         </button>
         {currentDocEntry && (
-          <button type="button" className="po-btn sap-document-toolbar__duplicate" onClick={handleDuplicate}>
+          <button type="button" className="po-btn sap-document-toolbar__duplicate" onClick={handleDuplicate} disabled={formSettingsStatus.queryModeActive}>
             Duplicate
           </button>
         )}
@@ -2322,7 +2340,7 @@ function APCreditMemo() {
       </div>
 
       {/* â”€â”€ Alerts â”€â”€ */}
-      {pageState.loading && <div className="po-alert po-alert--warning">Loadingâ€¦</div>}
+      {pageState.loading && <div className="po-alert po-alert--warning">Loading...</div>}
       {pageState.error   && <div className="po-alert po-alert--error">{pageState.error}</div>}
       {pageState.success && <div className="po-alert po-alert--success">{pageState.success}</div>}
       {refData.warnings?.length > 0 && (
@@ -2436,10 +2454,10 @@ function APCreditMemo() {
                   <div className="po-field">
                     <label className="po-field__label">No.</label>
                     <select name="series" className="po-field__select" value={header.series} onChange={handleHeaderChange} disabled={!!currentDocEntry || pageState.seriesLoading}>
-                      <option value="">Select Series</option>
-                      <option value={SAP_MANUAL_SERIES_VALUE}>Manual</option>
+                      <option value="">{pageState.seriesLoading ? 'Loading series...' : pageState.seriesError ? 'Series unavailable' : 'Select Series'}</option>
+                      {(canUseManualSeries(refData) || (currentDocEntry && ['-1','manual','__sap_manual__'].includes(String(header.series)))) && (<option value={SAP_MANUAL_SERIES_VALUE}>Manual</option>)}
                       {getSapVisibleDocumentSeries(refData.series, {
-                        selectedSeries: header.series,
+                        selectedSeries: header.series, includeHistorical: Boolean(currentDocEntry),
                         postingDate: header.postingDate || header.documentDate,
                       }).map(s => <option key={s.Series} value={s.Series}>{s.SeriesName} ({s.Indicator})</option>)}
                       {header.series && !isManualDocumentSeries(header.series) && !refData.series.some(s => String(s.Series) === String(header.series)) && (
@@ -2497,6 +2515,7 @@ function APCreditMemo() {
             <div className={activeTab === 'Tax' ? 'sap-b1-tax-panel' : 'po-tab-panel'}>
             {activeTab === 'Contents' && (
               <ContentsTab
+                companyQueryContext={buildCompanyFormQueryContext(currentDocEntry, header)}
                 lines={lines}
                 onLineChange={handleLineChange}
                 onNumBlur={handleNumBlur}
@@ -2518,6 +2537,9 @@ function APCreditMemo() {
                 formSettings={formSettings}
                 rowUdfFields={rowUdfDefinitions}
                 onRowUdfChange={handleRowUdfChange}
+                canPasteTable={isDocumentEditable}
+                onPasteTable={handleTablePaste}
+                onClipboardFeedback={handleTableClipboardFeedback}
               />
             )}
 
@@ -2670,7 +2692,7 @@ function APCreditMemo() {
                       if (!isActive) dropdown.classList.add('active');
                     }}
                   >
-                    Copy From â–¼
+                    Copy From ▼
                   </button>
                   <div className="po-dropdown-menu">
                     <button
@@ -2699,7 +2721,7 @@ function APCreditMemo() {
                 </div>
                 <div className="po-dropdown">
                   <button type="button" className="po-btn" disabled>
-                    Copy To â–¼
+                    Copy To ▼
                   </button>
                 </div>
               </div>

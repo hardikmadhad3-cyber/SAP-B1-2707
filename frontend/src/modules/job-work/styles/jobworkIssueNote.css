@@ -1,0 +1,114 @@
+/* Left-align text-type grid cells (Item Code, Description, Warehouse, Batch, Bin, Remarks) —
+   the shared .po-grid__input default is right-aligned for numeric document grids. */
+.jw-issue-note-page .po-grid__input--text {
+  text-align: left;
+}
+
+/* ── Header: classic SAP B1 two-column document form, polished ── */
+.jw-issue-note-page .jw-header-card {
+  padding: 12px 16px 14px;
+  border-radius: 5px;
+  border-color: #c8d0da;
+  box-shadow: 0 1px 2px rgba(16, 42, 67, 0.05);
+  position: relative;
+  overflow: hidden;
+}
+
+.jw-issue-note-page .jw-header-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: linear-gradient(90deg, #0070c0, #00a3a3 55%, #0070c0);
+}
+
+.jw-issue-note-page .jw-header-lockband {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 12px;
+  padding: 7px 12px;
+  background: #fff7e6;
+  border: 1px solid #f0d999;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #7a5a00;
+  font-weight: 500;
+}
+
+/* Two columns, left = business partner + item-movement fields, right =
+   dates + transport/compliance fields — the same left/right split SAP B1's
+   own marketing-document forms use. */
+.jw-issue-note-page .jw-header-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 4px 32px;
+  align-items: start;
+}
+
+.jw-issue-note-page .jw-header-column {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.jw-issue-note-page .jw-field__selector {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.jw-issue-note-page .jw-field__selector .po-field__input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Full field descriptions stay visible — no truncation, no ellipsis, wide
+   enough for the longest label ("Own Work Order Ref" / "Nature Of Process"). */
+.jw-issue-note-page .jw-field .po-field__label {
+  flex: 0 0 158px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #33424f;
+  text-align: right;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  padding-right: 2px;
+}
+
+.jw-issue-note-page .jw-field .po-field__input,
+.jw-issue-note-page .jw-field .po-field__select {
+  height: 25px;
+  border-radius: 3px;
+  border-color: #b9c3cd;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.jw-issue-note-page .jw-field .po-field__input:hover:not(:disabled),
+.jw-issue-note-page .jw-field .po-field__select:hover:not(:disabled) {
+  border-color: #7fa0c4;
+}
+
+.jw-issue-note-page .jw-field .po-field__input:disabled,
+.jw-issue-note-page .jw-field .po-field__select:disabled {
+  background: #eef1f4;
+  color: #8a95a1;
+  cursor: not-allowed;
+}
+
+@media (max-width: 900px) {
+  .jw-issue-note-page .jw-header-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 5px;
+  }
+}
+
+@media (max-width: 560px) {
+  .jw-issue-note-page .jw-field .po-field__label {
+    flex-basis: 130px;
+    font-size: 11px;
+  }
+}

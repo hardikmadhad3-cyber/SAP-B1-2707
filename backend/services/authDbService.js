@@ -72,8 +72,45 @@ const ensureColumn = (database, tableName, columnName, definition) => {
 const ensureCompanyColumns = (database) => {
   ensureColumn(database, 'Companies', 'DbDialect', "DbDialect TEXT NOT NULL DEFAULT 'sqlserver'");
   ensureColumn(database, 'Companies', 'DbPort', 'DbPort INTEGER NULL');
+  ensureColumn(database, 'Companies', 'FormQueryDbUser', 'FormQueryDbUser TEXT NULL');
+  ensureColumn(database, 'Companies', 'FormQueryDbPassword', 'FormQueryDbPassword TEXT NULL');
   ensureColumn(database, 'Companies', 'ReportServiceDbInstance', 'ReportServiceDbInstance TEXT NULL');
   ensureColumn(database, 'UserCompanies', 'SapUserCode', 'SapUserCode TEXT NULL');
+  ensureLayoutCompanyScope(database);
+};
+
+// Imported SAP Form Settings were scoped by database name alone, so two
+// companies pointing at equally-named databases on different servers shared
+// one layout. CompanyId is the real identity; the legacy companyDb column
+// stays for the rows this backfill cannot attribute unambiguously.
+const ensureLayoutCompanyScope = (database) => {
+  ensureColumn(database, 'sap_form_layout_columns', 'CompanyId', 'CompanyId INTEGER NULL');
+  database.exec(`
+    UPDATE sap_form_layout_columns
+    SET CompanyId = (
+      SELECT c.CompanyId
+      FROM Companies c
+      WHERE UPPER(c.DbName) = UPPER(sap_form_layout_columns.companyDb)
+    )
+    WHERE CompanyId IS NULL
+      AND (
+        SELECT COUNT(*)
+        FROM Companies c
+        WHERE UPPER(c.DbName) = UPPER(sap_form_layout_columns.companyDb)
+      ) = 1;
+  `);
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS IX_sap_form_layout_columns_company
+      ON sap_form_layout_columns (CompanyId, documentType, formType, matrixId, columnOrder, id);
+  `);
+  // The old unique index let a second company on an equally-named database
+  // overwrite the first one's layout. Replace it only once the CompanyId-aware
+  // index is in place, so the table is never left without a uniqueness rule.
+  database.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS UX_sap_form_layout_columns_company_scope
+      ON sap_form_layout_columns (CompanyId, companyDb, userCode, documentType, formType, matrixId, columnUid);
+  `);
+  database.exec('DROP INDEX IF EXISTS UX_sap_form_layout_columns_scope;');
 };
 
 const getCached = (key) => {
@@ -371,6 +408,8 @@ const COMPANY_SELECT_COLUMNS = `
     DbName,
     DbUser,
     DbPassword,
+    FormQueryDbUser,
+    FormQueryDbPassword,
     ServerName,
     LicenseServer,
     SAPVersion,

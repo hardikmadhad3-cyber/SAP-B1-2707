@@ -136,9 +136,15 @@ function DocumentCurrencySelect({
   const selectedCurrencyOption = documentCurrencyOptions.find(
     (currency) => currency.code === selectedDocumentCurrency
   ) || { code: selectedDocumentCurrency, name: selectedDocumentCurrency };
+  const resolvedLocalCurrency = String(localCurrency || fallbackLocalCurrency || '').trim();
+  const normalizedSelectedDocumentCurrency = String(selectedDocumentCurrency || displayCurrency || '').trim();
   const showDocumentCurrencyField = (mode === 'BP' || mode === 'CUSTOM')
     && (!partnerCurrency || isAllCurrenciesPartner || mode === 'CUSTOM');
-  const hasExchangeRateField = Boolean(showDocumentCurrencyField && currentCurrency && currentCurrency !== String(localCurrency || '').trim());
+  const hasExchangeRateField = Boolean(
+    normalizedSelectedDocumentCurrency
+    && resolvedLocalCurrency
+    && normalizedSelectedDocumentCurrency.toUpperCase() !== resolvedLocalCurrency.toUpperCase()
+  );
   const useSapCurrencyDropdown = documentCurrencyOptions.length > 1;
 
   React.useEffect(() => {
@@ -154,7 +160,20 @@ function DocumentCurrencySelect({
 
   const handleModeChange = (event) => {
     const nextMode = event.target.value;
+    const nextCurrency = resolveDocumentCurrency({
+      mode: nextMode,
+      cardCode: header.vendor,
+      businessPartners,
+      currentCurrency,
+      localCurrency,
+      systemCurrency,
+      fallbackLocalCurrency,
+    });
     emitHeaderChange(onHeaderChange, 'currencyMode', nextMode);
+    if (nextCurrency && nextCurrency !== currentCurrency) {
+      emitHeaderChange(onHeaderChange, 'currency', nextCurrency);
+      emitHeaderChange(onHeaderChange, 'exchangeRate', '');
+    }
   };
 
   const handleCurrencyChange = (event) => {

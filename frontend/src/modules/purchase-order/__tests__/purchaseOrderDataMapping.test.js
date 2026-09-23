@@ -190,6 +190,38 @@ describe('purchase order live data mapping', () => {
     expect(line.sellerItem).toBe('');
   });
 
+  it('keeps the purchase UoM entry separate from its code and display name', () => {
+    const line = hydrateDocumentLineFromItem(createLine(), {
+      ItemCode: 'Y-KGS',
+      ItemName: 'Cotton Yarn',
+      PurchaseUomEntry: 7,
+      PurchaseUomCode: 'Kgs',
+      PurchaseUomName: 'KGS',
+      UoMGroupEntry: 3,
+    }, {
+      side: 'purchase',
+      preserveQuantity: false,
+    });
+
+    expect(line.uomEntry).toBe(7);
+    expect(line.uomCode).toBe('Kgs');
+    expect(line.uomName).toBe('KGS');
+    expect(line.uomGroupEntry).toBe(3);
+  });
+
+  it('marks an auto-loaded Manual-group purchase UoM for MeasureUnit serialization', () => {
+    const line = hydrateDocumentLineFromItem(createLine(), {
+      ItemCode: '1544 THREAD 2 PLY 60TKT TUBE',
+      PurchaseUnit: 'BOX',
+      UoMGroupEntry: -1,
+    }, { side: 'purchase', preserveQuantity: false });
+
+    expect(line.uomEntry).toBe(-1);
+    expect(line.uomCode).toBe('BOX');
+    expect(line.uomName).toBe('BOX');
+    expect(line.uomNameEdited).toBe(false);
+  });
+
   it('hydrates purchase order mapped UDF fields from SAP aliases without using standard price fields', () => {
     const line = hydratePurchaseOrderLineUdfFields({
       UnitPrice: '256.1900',
@@ -341,4 +373,33 @@ describe('purchase order live data mapping', () => {
     expect(header.confirmed).toBe(true);
     expect(header.Confirmed).toBe('Y');
   });
+});
+
+
+test('company layout calculates read-only line amounts and updates them after price changes', () => {
+  const props = {
+    onLineChange: jest.fn(), onNumBlur: jest.fn(), onAddLine: jest.fn(), onRemoveLine: jest.fn(),
+    lineItemOptions: [], getUomOptions: () => [], effectiveTaxCodes: [{ Code: 'GST12', Rate: 12 }],
+    effectiveWarehouses: [], valErrors: { lines: {} },
+    matrixFields: [
+      { key: 'unitPrice', label: 'Price' },
+      { key: 'totalBeforeTax', label: 'Total Before Tax' },
+      { key: 'totalLC', label: 'Total (LC)' },
+      { key: 'taxAmount', label: 'Tax Amount' },
+      { key: 'grossTotal', label: 'Total (Doc)' },
+      { key: 'priceAfterDiscount', label: 'Price after Discount' },
+    ],
+    formSettings: { matrixColumns: { unitPrice: { visible: true, companyQueryLayout: true } } },
+  };
+  const line = { quantity: '120', unitPrice: '1200', stdDiscount: '10', taxCode: 'GST12', totalBeforeTax: '0', total: '0' };
+  const { container, rerender } = render(<ContentsTab {...props} lines={[line]} />);
+  const values = () => Array.from(container.querySelectorAll('tbody input')).map((input) => input.value);
+  expect(values()).toEqual(['1200', '129600.00', '129600.00', '15552.00', '145152.00', '1080.00']);
+  const inputs = Array.from(container.querySelectorAll('tbody input'));
+  expect(inputs[0].readOnly).toBe(false);
+  expect(inputs.slice(1).every((input) => input.readOnly)).toBe(true);
+  fireEvent.change(inputs[0], { target: { value: '100' } });
+  expect(props.onLineChange).toHaveBeenCalledWith(0, expect.objectContaining({ target: expect.objectContaining({ name: 'unitPrice' }) }));
+  rerender(<ContentsTab {...props} lines={[{ ...line, unitPrice: '100' }]} />);
+  expect(values()).toEqual(['100', '10800.00', '10800.00', '1296.00', '12096.00', '90.00']);
 });

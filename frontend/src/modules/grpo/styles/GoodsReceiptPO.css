@@ -26,8 +26,51 @@
   flex-basis: 128px;
 }
 
-.grpo-page .po-tab-panel {
-  padding: 18px;
+.grpo-accounting-layout {
+  display: flex;
+  gap: 20px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.grpo-accounting-layout__column {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: calc(50% - 10px);
+}
+
+.grpo-reference-control {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.grpo-reference-control .grpo-reference-control__input {
+  flex: 1 1 0;
+  width: 0;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.grpo-reference-control .grpo-reference-control__button {
+  flex: 0 0 28px;
+  width: 28px;
+  min-width: 28px;
+  padding: 2px 0;
+  font-size: 12px;
+}
+
+@media (max-width: 768px) {
+  .grpo-accounting-layout {
+    flex-direction: column;
+  }
+
+  .grpo-accounting-layout__column {
+    max-width: 100%;
+  }
 }
 
 .grpo-page .po-grid th,

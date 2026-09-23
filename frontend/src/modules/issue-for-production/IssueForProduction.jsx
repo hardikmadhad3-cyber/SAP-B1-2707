@@ -7,6 +7,7 @@ import ProductionOrderSearchModal from "./components/ProductionOrderSearchModal"
 import CopyItemsModal from "./components/CopyItemsModal";
 import {
   fetchIssueReferenceData,
+  fetchIssueSeries,
   fetchProductionOrderForIssue,
   fetchIssueByDocEntry,
   createIssue,
@@ -27,6 +28,7 @@ const EMPTY_HEADER = {
   remarks: "",
   journal_remark: "Issue for Production",
   qr_code_from: "",
+  branch: "",
 };
 
 const pickDefaultSeries = (seriesRows = [], postingDate = today()) =>
@@ -61,8 +63,10 @@ const decorateIssueLine = (line, orderNo = "") => ({
   base_type: line.base_type ?? 202,
   manage_batch: Boolean(line.manage_batch),
   manage_serial: Boolean(line.manage_serial),
+  enable_bin_locations: Boolean(line.enable_bin_locations),
   batch_numbers: line.batch_numbers || [],
   serial_numbers: line.serial_numbers || [],
+  bin_allocations: line.bin_allocations || [],
   account_code: line.account_code || "",
 });
 
@@ -79,8 +83,13 @@ export default function IssueForProductionModule() {
   const [distRules, setDistRules] = useState([]);
   const [projects, setProjects] = useState([]);
   const [series, setSeries] = useState([]);
+  const [branches, setBranches] = useState([]);
   const [poModal, setPoModal] = useState(null);
   const [copyModal, setCopyModal] = useState(null);
+  const branchWarehouses = useMemo(() => {
+    if (mode !== MODES.ADD || !header.branch) return warehouses;
+    return warehouses.filter((warehouse) => warehouse.BPLID == null || String(warehouse.BPLID) === String(header.branch));
+  }, [header.branch, mode, warehouses]);
 
   const alertTimer = useRef(null);
   const visibleSeries = useMemo(() => getSapVisibleDocumentSeries(series, {
@@ -95,14 +104,39 @@ export default function IssueForProductionModule() {
         setWarehouses(data.warehouses || []);
         setDistRules(data.distribution_rules || []);
         setProjects(data.projects || []);
+        const nextBranches = data.branches || [];
+        setBranches(nextBranches);
         setSeries(nextSeries);
         const defaultSeries = pickDefaultSeries(nextSeries, today());
         if (defaultSeries?.Series != null) {
-          setHeader((prev) => prev.series ? prev : { ...prev, series: String(defaultSeries.Series) });
+          setHeader((prev) => ({
+            ...prev,
+            series: prev.series || String(defaultSeries.Series),
+            branch: prev.branch || (nextBranches[0]?.BPLID != null ? String(nextBranches[0].BPLID) : ""),
+          }));
         }
       })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (mode !== MODES.ADD || !header.posting_date) return undefined;
+    let active = true;
+    fetchIssueSeries(header.posting_date, header.branch)
+      .then((context) => {
+        if (!active) return;
+        const nextSeries = context.series || [];
+        const preferred = context.defaultSeries != null ? String(context.defaultSeries) : "";
+        setSeries(nextSeries);
+        setHeader((prev) => {
+          const valid = nextSeries.some((entry) => String(entry.Series) === String(prev.series));
+          const fallback = preferred || (pickDefaultSeries(nextSeries, prev.posting_date)?.Series ?? "");
+          return { ...prev, series: valid ? prev.series : String(fallback) };
+        });
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [header.branch, header.posting_date, mode]);
 
   const showAlert = useCallback((type, msg) => {
     clearTimeout(alertTimer.current);
@@ -117,6 +151,7 @@ export default function IssueForProductionModule() {
       series: defaultSeries?.Series != null ? String(defaultSeries.Series) : "",
       posting_date: today(),
       document_date: today(),
+      branch: branches[0]?.BPLID != null ? String(branches[0].BPLID) : "",
     });
     setLines([]);
     setPoInfo(null);
@@ -125,7 +160,7 @@ export default function IssueForProductionModule() {
     setPoModal(null);
     setCopyModal(null);
     setMode(MODES.ADD);
-  }, [series]);
+  }, [branches, series]);
 
   const handleHeaderChange = useCallback((event) => {
     const { name, value } = event.target;
@@ -147,7 +182,11 @@ export default function IssueForProductionModule() {
       warehouse: data.warehouse,
       due_date: data.due_date,
       start_date: data.start_date,
+      branch: data.branch || "",
     });
+    if (data.branch != null && data.branch !== "") {
+      setHeader((prev) => ({ ...prev, branch: String(data.branch) }));
+    }
     setLines((selectedLines || data.lines || []).map((line) => {
       const decorated = decorateIssueLine(line, data.doc_num);
       return {
@@ -253,6 +292,7 @@ export default function IssueForProductionModule() {
         ref_2: header.ref_2,
         remarks: header.remarks,
         journal_remark: header.journal_remark,
+        branch: header.branch,
         lines: lines
           .filter((line) => line.item_code && Number(line.issue_qty) > 0)
           .map((line) => ({
@@ -269,6 +309,7 @@ export default function IssueForProductionModule() {
             manage_serial: line.manage_serial,
             batch_numbers: line.batch_numbers || [],
             serial_numbers: line.serial_numbers || [],
+            bin_allocations: line.bin_allocations || [],
             account_code: line.account_code || "",
           })),
       };
@@ -299,6 +340,7 @@ export default function IssueForProductionModule() {
         remarks: issue.remarks || "",
         journal_remark: issue.journal_remark || "Issue for Production",
         qr_code_from: issue.qr_code_from || "",
+        branch: issue.branch || "",
       });
 
       setPoInfo(issue.prod_order_entry ? {
@@ -413,8 +455,19 @@ export default function IssueForProductionModule() {
                 <option value="">--</option>
                 {visibleSeries.map((entry) => (
                   <option key={entry.Series} value={entry.Series}>
-                    {entry.Name}
+                    {entry.DisplayName || entry.SeriesName || entry.Name}
                   </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="im-field">
+              <label className="im-field__label ifp-lbl">Branch</label>
+              <select className="im-field__select" name="branch" value={header.branch}
+                onChange={handleHeaderChange} disabled={isView} style={{ width: 200 }}>
+                <option value="">--</option>
+                {branches.map((branch) => (
+                  <option key={branch.BPLID} value={branch.BPLID}>{branch.BPLName}</option>
                 ))}
               </select>
             </div>
@@ -491,7 +544,7 @@ export default function IssueForProductionModule() {
             {lines.length > 0 && (
               <IssueLines
                 lines={lines}
-                warehouses={warehouses}
+                warehouses={branchWarehouses}
                 distRules={distRules}
                 projects={projects}
                 readOnly={isView}

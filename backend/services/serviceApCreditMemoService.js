@@ -1,4 +1,6 @@
+const { buildDocumentConfirmationPayload, updateDocumentConfirmationOnly } = require('./documentConfirmationUtils');
 const sapService = require('./sapService');
+const { buildDocumentRoundingPayload } = require('./documentRoundingPayloadUtils');
 const serviceApCreditMemoDb = require('./serviceApCreditMemoDbService');
 const apInvoiceService = require('./apInvoiceService');
 const hsnCodeDbService = require('./hsnCodeDbService');
@@ -358,7 +360,8 @@ const buildSapPayload = async (payload, includeSeries = true, docEntry = null) =
     Comments: optString(header.remarks || header.otherInstruction || header.comments),
     JournalMemo: optString(header.journalRemark),
     DiscountPercent: header.discount ? parseNum(header.discount) : undefined,
-    Rounding: yesNo(header.rounding),
+    ...buildDocumentRoundingPayload(header),
+    ...buildDocumentConfirmationPayload(header),
     DocumentLines: [],
   };
   const currencyReferenceData = await loadDocumentCurrencyReferenceData(header);
@@ -407,6 +410,8 @@ const submitServiceAPCreditMemo = async (payload) => {
 };
 
 const updateServiceAPCreditMemo = async (docEntry, payload) => {
+  const confirmationResult = await updateDocumentConfirmationOnly(docEntry, payload, 'PurchaseCreditNotes', sapService);
+  if (confirmationResult) return confirmationResult;
   const sapPayload = await buildSapPayload(payload, false, docEntry);
   await sapService.request({
     method: 'patch',

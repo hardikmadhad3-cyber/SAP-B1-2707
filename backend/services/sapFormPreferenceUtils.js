@@ -166,6 +166,22 @@ const createServiceDocumentCprfDefinitions = () => [
   { title: 'Tax Amount (LC)', fieldName: 'VatSum', aliases: ['Tax Amount (LC)', 'Tax Amount'], sapColumnIds: ['VatSum', 'TaxAmount', 'Tax Amount (LC)'], width: 125, dataType: 'number' },
 ];
 
+const createPurchaseRequestCprfDefinitions = () => [
+  { title: '#', fieldName: 'LineNum', aliases: ['#', 'LineNum'], sapColumnIds: ['0', '#', 'LineNum'], width: 42, dataType: 'number' },
+  { title: 'Item No.', fieldName: 'ItemCode', aliases: ['Item No.', 'ItemNo'], sapColumnIds: ['1', 'ItemCode', 'Item No.', 'ItemNo'], width: 130, dataType: 'string' },
+  { title: 'Item Description', fieldName: 'Dscription', aliases: ['Item Description', 'Description'], sapColumnIds: ['3', 'Dscription', 'ItemDescription', 'Item Description'], width: 220, dataType: 'string' },
+  { title: 'Vendor', fieldName: 'LineVendor', aliases: ['Vendor', 'Preferred Vendor'], sapColumnIds: ['LineVendor', 'Vendor', 'Preferred Vendor'], width: 120, dataType: 'string' },
+  { title: 'Required Date', fieldName: 'ReqDate', aliases: ['Required Date'], sapColumnIds: ['5', 'ReqDate', 'RequiredDate', 'Required Date'], width: 125, dataType: 'date' },
+  { title: 'Required Qty.', fieldName: 'Quantity', aliases: ['Required Qty.', 'Required Qty', 'Required Quantity', 'Quantity', 'Qty'], sapColumnIds: ['11', 'Quantity', 'ReqQty', 'Required Qty.', 'Required Qty'], width: 100, dataType: 'number' },
+  { title: 'Info Price', fieldName: 'Price', aliases: ['Info Price', 'Unit Price'], sapColumnIds: ['14', 'Price', 'PriceBefDi', 'UnitPrice', 'Info Price'], width: 100, dataType: 'number' },
+  { title: 'Discount %', fieldName: 'DiscPrcnt', aliases: ['Discount %', 'Disc%'], sapColumnIds: ['15', 'DiscPrcnt', 'Discount %', 'Disc%'], width: 95, dataType: 'number' },
+  { title: 'Tax Code', fieldName: 'TaxCode', aliases: ['Tax Code'], sapColumnIds: ['160', '234000377', 'VatGroup', 'TaxCode', 'Tax Code'], width: 105, dataType: 'string' },
+  { title: 'Total (LC)', fieldName: 'LineTotal', aliases: ['Total (LC)', 'Total LC', 'Total'], sapColumnIds: ['17', 'LineTotal', 'Total (LC)', 'Total LC', 'Total'], width: 110, dataType: 'number' },
+  { title: 'Distr. Rule', fieldName: 'OcrCode', aliases: ['Distr. Rule', 'Distribution Rule'], sapColumnIds: ['21', 'OcrCode', 'Distr. Rule', 'DistributionRule'], width: 105, dataType: 'string' },
+  { title: 'UoM Code', fieldName: 'UomCode', aliases: ['UoM Code', 'UoM'], sapColumnIds: ['1470002149', 'UomCode', 'UoMCode', 'UoM Code'], width: 100, dataType: 'string' },
+  { title: 'Whse', fieldName: 'WhsCode', aliases: ['Whse', 'Warehouse'], sapColumnIds: ['24', 'WhsCode', 'WarehouseCode', 'Warehouse', 'Whse'], width: 85, dataType: 'string' },
+];
+
 const DOCUMENT_CPRF_COLUMN_DEFS = {
   SALES_QUOTATION: createSalesDocumentCprfDefinitions({
     totalLcColumnIds: ['17'],
@@ -204,13 +220,7 @@ const DOCUMENT_CPRF_COLUMN_DEFS = {
     uomCodeColumnIds: ['1470002149'],
     uomNameColumnIds: ['1470002145'],
   }),
-  PURCHASE_REQUEST: createSalesDocumentCprfDefinitions({
-    totalLcColumnIds: ['17'],
-    totalDocColumnIds: ['23'],
-    warehouseColumnIds: ['24'],
-    uomCodeColumnIds: ['1470002149'],
-    uomNameColumnIds: ['1470002145'],
-  }),
+  PURCHASE_REQUEST: createPurchaseRequestCprfDefinitions(),
   PURCHASE_QUOTATION: createSalesDocumentCprfDefinitions({
     totalLcColumnIds: ['17'],
     totalDocColumnIds: ['23'],

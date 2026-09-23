@@ -296,6 +296,36 @@ describe('buildSalesOrderMatrixColumnsFromLayout', () => {
     expect(columns.map((column) => column.label)).toEqual(['UoM Name', 'HSN']);
   });
 
+  it('omits SAP LineNum when the page renders its own fixed row-number column', () => {
+    const columns = buildSalesOrderMatrixColumnsFromLayout({
+      includeLineNumber: false,
+      layoutColumns: [],
+      liveMatrixColumns: [
+        { key: '__lineNumber', fieldName: 'LineNum', label: '#' },
+        { key: 'itemNo', fieldName: 'ItemCode', label: 'Item No.' },
+      ],
+    });
+
+    expect(columns.map((column) => column.key)).toEqual(['itemNo']);
+  });
+
+  it('does not append SAP LineNum to a page-managed row-number column', () => {
+    const columns = buildSalesOrderMatrixColumnsFromLayout({
+      includeLineNumber: false,
+      appendMissingLiveColumns: true,
+      layoutColumns: [
+        { fieldName: 'ItemCode', columnTitle: 'Item No.', visible: true, editable: true, columnOrder: 1 },
+      ],
+      liveMatrixColumns: [
+        { key: '__lineNumber', fieldName: 'LineNum', label: '#' },
+        { key: 'itemNo', fieldName: 'ItemCode', label: 'Item No.' },
+        { key: 'quantity', fieldName: 'Quantity', label: 'Quantity' },
+      ],
+    });
+
+    expect(columns.map((column) => column.key)).toEqual(['itemNo', 'quantity']);
+  });
+
   it('adds and pins the SAP row number when a live matrix response omits it', () => {
     const columns = buildSalesOrderMatrixColumnsFromLayout({
       layoutColumns: [],
@@ -624,4 +654,28 @@ describe('buildSalesOrderMatrixColumnsFromSchema', () => {
     expect(rowUdfs[0].lookupSource).toBe('udf:INV1:U_Source');
     expect(column.lookupSource).toBe('udf:INV1:U_Source');
   });
+});
+
+
+test('SAP physical Price with a Price caption keeps the standard unit-price calculation input', () => {
+  const [column] = buildSalesOrderMatrixColumnsFromLayout({
+    includeLineNumber: false,
+    layoutColumns: [{ fieldName: 'Price', columnTitle: 'Price', editable: true, visible: true }],
+    liveMatrixColumns: [{ key: 'unitPrice', sapField: 'Price', label: 'Unit Price', type: 'number' }],
+  });
+  expect(column.key).toBe('unitPrice');
+});
+
+test('shows one standard Item Description when a live SAP layout contains duplicate description aliases', () => {
+  const columns = buildSalesOrderMatrixColumnsFromLayout({
+    includeLineNumber: false,
+    layoutColumns: [
+      { fieldName: 'Dscription', columnTitle: 'Item Description', editable: true, visible: true, columnOrder: 1 },
+      { fieldName: 'Description', columnTitle: 'Item Description', editable: true, visible: true, columnOrder: 2 },
+    ],
+    liveMatrixColumns: [{ key: 'itemDescription', sapField: 'Dscription', label: 'Item Description', type: 'text' }],
+  });
+
+  expect(columns).toHaveLength(1);
+  expect(columns[0]).toMatchObject({ key: 'itemDescription', rendererKey: 'itemDescription' });
 });

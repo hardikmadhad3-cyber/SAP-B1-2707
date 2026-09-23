@@ -1,7 +1,9 @@
+const { buildDocumentConfirmationPayload, updateDocumentConfirmationOnly } = require('./documentConfirmationUtils');
 const sapService = require('./sapService');
 const salesQuotationDb = require('./salesQuotationDbService');
 const salesOrderDb = require('./salesOrderDbService');
 const { buildDocumentAdditionalExpenses } = require('./freightPayloadUtils');
+const { buildDocumentRoundingPayload } = require('./documentRoundingPayloadUtils');
 const { buildMarketingDocumentAddressPayload } = require('./documentAddressPayloadUtils');
 const { getUdfDefinitions } = require('./udfMetadataService');
 const { normalizeUdfValue, applyUdfsRobust } = require('./udfPayloadUtils');
@@ -65,6 +67,26 @@ const findAddressByCode = (addresses, value) => {
   return normalizeAddressList(addresses).find((address) => (
     normalizeTextValue(address?.Address || address?.AddressName).toUpperCase() === normalizedValue
   ));
+};
+
+const validateSubmittedBranch = (branchId, refData = {}) => {
+  const configuredBranchIds = (Array.isArray(refData.branches) ? refData.branches : [])
+    .map((branch) => normalizeBranchId(
+      branch?.BPLId ?? branch?.BPLID ?? branch?.BPLid ?? branch?.BranchID ?? branch?.branchId,
+    ))
+    .filter((branch) => branch !== undefined);
+
+  if (!configuredBranchIds.length) return;
+  if (branchId === undefined) {
+    const error = new Error('Select a branch before submitting a Sales Quotation.');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (!configuredBranchIds.includes(branchId)) {
+    const error = new Error('The selected branch is not available for this SAP company. Refresh the form and select a valid branch.');
+    error.statusCode = 400;
+    throw error;
+  }
 };
 
 const firstAddressCode = (addresses) => {
@@ -294,6 +316,7 @@ const buildDocumentLines = async (lines = [], includeLineNum = false) => {
         fieldMetadata,
         includeLineNum,
         resolveUomEntry: salesOrderDb.resolveSalesOrderLineUomEntry,
+        resolveDefaultUomWhenMissing: true,
         resolveHsnEntry: hsnCodeDbService.resolveHSNCodeToAbsEntry,
         resolveSacEntry: hsnCodeDbService.resolveSACCodeToAbsEntry,
       });
@@ -529,6 +552,7 @@ const submitSalesQuotation = async (payload) => {
     const documentAdditionalExpenses = buildDocumentAdditionalExpenses(payload.freightCharges);
     const documentLines = await buildDocumentLines(payload.lines);
     const branchId = resolveSubmittedBranchId(payload.header, payload.lines, refData);
+    validateSubmittedBranch(branchId, refData);
 
     const sapPayload = {
       CardCode: payload.header.vendor.trim(),
@@ -545,10 +569,11 @@ const submitSalesQuotation = async (payload) => {
       ...(OwnerCode !== null && OwnerCode !== undefined ? { DocumentsOwner: OwnerCode } : {}),
       ...(Remarks ? { Comments: Remarks } : {}),
       ...(Freight > 0 ? { TotalExpenses: Freight } : {}),
-      Rounding: toSapYesNo(payload.header.rounding),
+      ...buildDocumentRoundingPayload(payload.header),
+      ...buildDocumentConfirmationPayload(payload.header),
       DocumentAdditionalExpenses: documentAdditionalExpenses,
       ...buildMarketingDocumentAddressPayload(payload.header),
-      NumAtCard: payload.header.customerRefNo || undefined,
+      NumAtCard: payload.header.customerRefNo ?? payload.header.salesContractNo ?? undefined,
       DocumentLines: documentLines,
     };
     applySapDocumentCurrency(sapPayload, payload.header, refData);
@@ -600,6 +625,8 @@ const submitSalesQuotation = async (payload) => {
 // ───────── UPDATE (SERVICE LAYER) ─────────
 
 const updateSalesQuotation = async (docEntry, payload) => {
+  const confirmationResult = await updateDocumentConfirmationOnly(docEntry, payload, 'Quotations', sapService);
+  if (confirmationResult) return confirmationResult;
   try {
     const refData = await getReferenceData();
     const customerDetails = await getCustomerDetails(payload.header?.vendor).catch((error) => {
@@ -640,9 +667,11 @@ const updateSalesQuotation = async (docEntry, payload) => {
       ...(OwnerCode !== null && OwnerCode !== undefined && { DocumentsOwner: OwnerCode }),
       ...(Remarks && { Comments: Remarks }),
       ...(Freight > 0 && { TotalExpenses: Freight }),
-      Rounding: toSapYesNo(payload.header.rounding),
+      ...buildDocumentRoundingPayload(payload.header),
+      ...buildDocumentConfirmationPayload(payload.header),
       DocumentAdditionalExpenses: documentAdditionalExpenses,
       ...buildMarketingDocumentAddressPayload(payload.header),
+      NumAtCard: payload.header.customerRefNo ?? payload.header.salesContractNo ?? undefined,
       DocumentLines: documentLines,
     };
     applySapDocumentCurrency(sapPayload, payload.header, refData);
@@ -690,7 +719,7 @@ const getDocumentSeries = async (targetDate = null, { branch = '' } = {}) => {
     return { series };
   } catch (error) {
     console.error('[Sales Quotation Service] Failed to load document series:', error);
-    return { series: [] };
+    throw error;
   }
 };
 

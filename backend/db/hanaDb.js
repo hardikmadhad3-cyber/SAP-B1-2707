@@ -230,6 +230,13 @@ const replaceInformationSchemaViews = (sqlText) =>
           IS_NULLABLE,
           POSITION AS ORDINAL_POSITION
         FROM SYS.TABLE_COLUMNS
+        WHERE SCHEMA_NAME = CURRENT_SCHEMA
+        UNION ALL
+        SELECT SCHEMA_NAME AS TABLE_SCHEMA, VIEW_NAME AS TABLE_NAME,
+          COLUMN_NAME, DATA_TYPE_NAME AS DATA_TYPE,
+          LENGTH AS CHARACTER_MAXIMUM_LENGTH, LENGTH AS NUMERIC_PRECISION,
+          SCALE AS NUMERIC_SCALE, IS_NULLABLE, POSITION AS ORDINAL_POSITION
+        FROM SYS.VIEW_COLUMNS
         WHERE SCHEMA_NAME = CURRENT_SCHEMA)`,
       )
       .replace(
@@ -239,6 +246,11 @@ const replaceInformationSchemaViews = (sqlText) =>
           TABLE_NAME,
           TABLE_TYPE
         FROM SYS.TABLES
+        WHERE SCHEMA_NAME = CURRENT_SCHEMA
+        UNION ALL
+        SELECT SCHEMA_NAME AS TABLE_SCHEMA, VIEW_NAME AS TABLE_NAME,
+          'VIEW' AS TABLE_TYPE
+        FROM SYS.VIEWS
         WHERE SCHEMA_NAME = CURRENT_SCHEMA)`,
       ));
 
@@ -494,45 +506,9 @@ const replaceConcatCalls = (sqlText) => {
 };
 
 const replaceIsNumericCalls = (sqlText) =>
-  withSqlSegments(sqlText, (segment) => {
-    let output = '';
-    let index = 0;
-
-    while (index < segment.length) {
-      const match = segment.slice(index).match(/\bISNUMERIC\s*\(/i);
-      if (!match) {
-        output += segment.slice(index);
-        break;
-      }
-
-      const start = index + match.index;
-      const openParen = start + match[0].length - 1;
-      let depth = 0;
-      let closeParen = -1;
-
-      for (let cursor = openParen; cursor < segment.length; cursor += 1) {
-        if (segment[cursor] === '(') depth += 1;
-        if (segment[cursor] === ')') {
-          depth -= 1;
-          if (depth === 0) {
-            closeParen = cursor;
-            break;
-          }
-        }
-      }
-
-      if (closeParen === -1) {
-        output += segment.slice(index);
-        break;
-      }
-
-      const expression = segment.slice(openParen + 1, closeParen).trim();
-      output += segment.slice(index, start);
-      output += `(CASE WHEN CAST(${expression} AS NVARCHAR(5000)) LIKE_REGEXPR '^[+-]?[0-9]+([.][0-9]+)?$' THEN 1 ELSE 0 END)`;
-      index = closeParen + 1;
-    }
-
-    return output;
+  replaceFunctionCalls(sqlText, 'ISNUMERIC', (args, original) => {
+    if (args.length !== 1) return original;
+    return "(CASE WHEN CAST(" + args[0] + " AS NVARCHAR(5000)) LIKE_REGEXPR '^[+-]?[0-9]+([.][0-9]+)?$' THEN 1 ELSE 0 END)";
   });
 
 const normalizeSql = (sqlText) => {
@@ -594,21 +570,60 @@ const buildConnectionParams = (connectionConfig) => {
   return params;
 };
 
+// One pool per company connection, mirroring the SQL Server pool in dbService.
+// Without this every metadata query paid a fresh TCP + authentication round
+// trip, which is what pushed HANA companies past the schema-load timeout.
+const POOL_MAX_SIZE = 10;
+const POOL_IDLE_SECONDS = 300;
+const POOL_WAIT_MS = 15000;
+const pools = new Map();
+
+// The password is part of the key so a rotated credential opens a new pool
+// instead of reusing connections authenticated with the old one.
+const getPoolKey = (params) => JSON.stringify([
+  params.serverNode,
+  params.uid,
+  params.pwd,
+  params.currentSchema,
+  params.encrypt || '',
+  params.sslValidateCertificate || '',
+]);
+
+const getPool = (params) => {
+  const poolKey = getPoolKey(params);
+  const existing = pools.get(poolKey);
+  if (existing) return existing;
+
+  // The explicit pool API rejects the implicit `pooling` connection property,
+  // so sizing lives here and nowhere in the connection string. poolCapacity is
+  // how many idle connections are retained; leaving it at its default of 0
+  // would keep the pool from reusing anything at all.
+  const pool = hanaClient.createPool(params, {
+    poolCapacity: POOL_MAX_SIZE,
+    maxConnectedOrPooled: POOL_MAX_SIZE * 2,
+    maxPooledIdleTime: POOL_IDLE_SECONDS,
+    pingCheck: true,
+    maxWaitTimeoutIfPoolExhausted: POOL_WAIT_MS,
+  });
+  pools.set(poolKey, pool);
+  console.log(`[DB] HANA pool created for ${params.serverNode}/${params.currentSchema}`);
+  return pool;
+};
+
 const connect = (connectionConfig) => new Promise((resolve, reject) => {
   if (!hanaClient) {
     reject(new Error('SAP HANA client is not installed. Install @sap/hana-client in the backend package before using HANA companies.'));
     return;
   }
 
-  const connection = hanaClient.createConnection();
-  connection.connect(buildConnectionParams(connectionConfig), (error) => {
-    if (error) {
-      reject(error);
-      return;
-    }
+  const params = buildConnectionParams(connectionConfig);
+  if (typeof hanaClient.createPool !== 'function') {
+    const connection = hanaClient.createConnection();
+    connection.connect(params, (error) => (error ? reject(error) : resolve(connection)));
+    return;
+  }
 
-    resolve(connection);
-  });
+  getPool(params).getConnection((error, connection) => (error ? reject(error) : resolve(connection)));
 });
 
 const exec = (connection, sqlText, values = []) => new Promise((resolve, reject) => {
@@ -622,6 +637,43 @@ const exec = (connection, sqlText, values = []) => new Promise((resolve, reject)
   });
 });
 
+// mssql reports the shape of a result set on `recordset.columns`; the HANA
+// driver only exposes it through a prepared statement. Callers that infer a
+// column's type (published SQL Content layouts, for one) were falling back to
+// guessing from the first row's JavaScript value, which typed every HANA
+// DECIMAL as text and typed an empty result set as text across the board.
+const execWithMetadata = (connection, sqlText, values = []) => new Promise((resolve, reject) => {
+  connection.prepare(sqlText, (prepareError, statement) => {
+    if (prepareError) {
+      // SET SCHEMA and other session statements cannot be prepared.
+      exec(connection, sqlText, values).then(
+        (rows) => resolve({ rows, columns: [] }),
+        reject,
+      );
+      return;
+    }
+
+    statement.exec(values, (execError, rows) => {
+      let columns = [];
+      try {
+        columns = statement.getColumnInfo() || [];
+      } catch (_error) {
+        columns = [];
+      }
+      try {
+        statement.drop();
+      } catch (_error) {
+        // A dropped statement must never mask the query's own outcome.
+      }
+      if (execError) {
+        reject(execError);
+        return;
+      }
+      resolve({ rows: Array.isArray(rows) ? rows : [], columns });
+    });
+  });
+});
+
 const normalizeDateValue = (value) => {
   if (typeof value !== 'string') return value;
   if (HANA_DATE_PATTERN.test(value)) return new Date(`${value}T00:00:00.000Z`);
@@ -629,13 +681,64 @@ const normalizeDateValue = (value) => {
   return value;
 };
 
-const normalizeRowValues = (row) => {
+// The HANA driver hands back DECIMAL and BIGINT as strings to preserve
+// precision, while mssql hands back JavaScript numbers. Aligning them keeps a
+// company's Price, Quantity and total columns numeric on both platforms.
+const HANA_NUMERIC_TYPE = /^(?:SMALL)?DECIMAL$|^(?:TINY|SMALL|BIG)?INT(?:EGER)?$|^REAL$|^DOUBLE$|^FLOAT$/i;
+const NUMERIC_TEXT_PATTERN = /^[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
+
+const normalizeNumericValue = (value) => {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  if (!NUMERIC_TEXT_PATTERN.test(trimmed)) return value;
+  const parsed = Number(trimmed);
+  // A DECIMAL(38,x) can exceed what a double holds exactly. Keep the original
+  // text in that case rather than silently rounding a company's figures.
+  if (!Number.isFinite(parsed) || Math.abs(parsed) > Number.MAX_SAFE_INTEGER) return value;
+  return parsed;
+};
+
+const numberOrNull = (value) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+};
+
+const buildColumnMetadata = (columnInfo = []) => {
+  const columns = {};
+  const numericColumns = new Set();
+
+  (Array.isArray(columnInfo) ? columnInfo : []).forEach((column, index) => {
+    const name = String(column?.columnName ?? column?.name ?? '').trim();
+    if (!name) return;
+    const typeName = String(column?.typeName ?? column?.nativeTypeName ?? '').trim();
+    if (HANA_NUMERIC_TYPE.test(typeName)) numericColumns.add(name);
+    columns[name] = {
+      index,
+      name,
+      // Shaped like an mssql column so shared callers read one field set.
+      type: { name: typeName, declaration: typeName.toLowerCase() },
+      length: numberOrNull(column?.length),
+      scale: numberOrNull(column?.scale),
+      precision: numberOrNull(column?.precision ?? column?.length),
+      nullable: Boolean(column?.nullable),
+    };
+  });
+
+  return { columns, numericColumns };
+};
+
+const normalizeRowValues = (row, numericColumns = new Set()) => {
   if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
   return Object.fromEntries(
-    Object.entries(row).map(([key, value]) => [key, normalizeDateValue(value)]),
+    Object.entries(row).map(([key, value]) => [
+      key,
+      numericColumns.has(key) ? normalizeNumericValue(value) : normalizeDateValue(value),
+    ]),
   );
 };
 
+// A pooled connection is returned to its pool here rather than torn down, so
+// the next query on the same company reuses the established session.
 const disconnect = (connection) => {
   try {
     connection.disconnect();
@@ -655,8 +758,14 @@ const query = async (queryStr, params = {}, options = {}) => {
       await exec(connection, `SET SCHEMA ${quoteIdentifier(schema)}`);
     }
 
-    const rows = await exec(connection, sql, values);
-    const recordset = isReadQuery(sql) ? rows.map(normalizeRowValues) : [];
+    const { rows, columns: columnInfo } = await execWithMetadata(connection, sql, values);
+    const { columns, numericColumns } = buildColumnMetadata(columnInfo);
+    const recordset = isReadQuery(sql)
+      ? rows.map((row) => normalizeRowValues(row, numericColumns))
+      : [];
+    // Non-enumerable so the recordset still spreads and serialises as a plain
+    // array of rows, exactly as the mssql driver's recordset does.
+    Object.defineProperty(recordset, 'columns', { value: columns, enumerable: false });
     return {
       recordset,
       rowsAffected: isReadQuery(sql) ? [0] : [rows?.length || 0],
@@ -668,6 +777,9 @@ const query = async (queryStr, params = {}, options = {}) => {
 
 module.exports = {
   bindParams,
+  buildColumnMetadata,
+  normalizeNumericValue,
+  normalizeRowValues,
   normalizeSql,
   query,
 };

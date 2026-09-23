@@ -1,3 +1,4 @@
+const { getReportTableColumns } = require('../reportMetadataService');
 const db = require("../../services/dbService");
 
 const queryRows = async (sql, params = {}) => {
@@ -301,6 +302,13 @@ const buildEmployeeRequesterCondition = (params, selector, paramPrefix = "reques
 };
 
 const getPurchaseRequestReport = async (criteria = {}) => {
+  const columns = await getReportTableColumns('OPRQ');
+  const textColumn = (name) => columns.has(name.toUpperCase()) ? 'CAST(H.[' + name + '] AS NVARCHAR(50))' : "''";
+  const branchExpression = "COALESCE(NULLIF(" + textColumn('Branch') + ", ''), " + textColumn('BPLId') + ", '')";
+  const departmentExpression = "ISNULL(" + textColumn('Department') + ", '')";
+  const originExpression = "ISNULL(" + textColumn('OriginType') + ", '')";
+  const validUntilExpression = columns.has('TODATE') ? 'H.[ToDate]' : 'H.DocDueDate';
+  const requiredDateExpression = columns.has('REQDATE') ? 'H.[ReqDate]' : 'H.DocDueDate';
   const params = {};
   const headerWhere = ["ISNULL(H.CANCELED, 'N') <> 'Y'"];
   const lineWhere = ["1 = 1"];
@@ -368,12 +376,12 @@ const getPurchaseRequestReport = async (criteria = {}) => {
 
   if (criteria.branch?.enabled && criteria.branch.code) {
     params.branchCode = criteria.branch.code;
-    headerWhere.push("CAST(ISNULL(NULLIF(H.Branch, ''), H.BPLId) AS NVARCHAR(50)) = @branchCode");
+    headerWhere.push(`${branchExpression} = @branchCode`);
   }
 
   if (criteria.department?.enabled && criteria.department.code) {
     params.departmentCode = criteria.department.code;
-    headerWhere.push("CAST(ISNULL(H.Department, '') AS NVARCHAR(50)) = @departmentCode");
+    headerWhere.push(`${departmentExpression} = @departmentCode`);
   }
 
   if (criteria.project?.enabled && criteria.project.code) {
@@ -392,7 +400,7 @@ const getPurchaseRequestReport = async (criteria = {}) => {
   headerWhere.push(...buildDateRangeCondition("H.DocDate", criteria.postingDateRange, params, "postingDate"));
   headerWhere.push(
     ...buildDateRangeCondition(
-      "ISNULL(H.ToDate, H.DocDueDate)",
+      `ISNULL(${validUntilExpression}, H.DocDueDate)`,
       criteria.validUntilRange,
       params,
       "validUntil",
@@ -401,7 +409,7 @@ const getPurchaseRequestReport = async (criteria = {}) => {
   headerWhere.push(...buildDateRangeCondition("H.TaxDate", criteria.documentDateRange, params, "documentDate"));
   headerWhere.push(
     ...buildDateRangeCondition(
-      "ISNULL(H.ReqDate, H.DocDueDate)",
+      `ISNULL(${requiredDateExpression}, H.DocDueDate)`,
       criteria.requiredDateRange,
       params,
       "requiredDate",
@@ -415,7 +423,7 @@ const getPurchaseRequestReport = async (criteria = {}) => {
   if (criteria.displayMrpOnly) {
     headerWhere.push(`
       (
-        UPPER(CAST(ISNULL(H.OriginType, '') AS NVARCHAR(50))) IN ('MRP', 'M')
+        UPPER(${originExpression}) IN ('MRP', 'M')
         OR ISNULL(H.Comments, '') LIKE '%Origin: MRP%'
       )
     `);
@@ -449,14 +457,14 @@ const getPurchaseRequestReport = async (criteria = {}) => {
         H.DocDate,
         H.TaxDate,
         H.DocDueDate,
-        H.ToDate,
-        H.ReqDate,
+        ${validUntilExpression} AS ToDate,
+        ${requiredDateExpression} AS ReqDate,
         H.Requester,
         H.ReqName,
         H.Project,
-        CAST(ISNULL(NULLIF(H.Branch, ''), H.BPLId) AS NVARCHAR(50)) AS BranchCode,
-        CAST(ISNULL(H.Department, '') AS NVARCHAR(50)) AS DepartmentCode,
-        CAST(ISNULL(H.OriginType, '') AS NVARCHAR(50)) AS OriginType,
+        ${branchExpression} AS BranchCode,
+        ${departmentExpression} AS DepartmentCode,
+        ${originExpression} AS OriginType,
         FL.MatchingLineCount,
         FL.RequestedQuantity,
         FL.OpenQuantity,
@@ -478,16 +486,8 @@ const getPurchaseRequestReport = async (criteria = {}) => {
         ))) AS EmployeeName
       FROM OPRQ H
       INNER JOIN FilteredLines FL ON FL.DocEntry = H.DocEntry
-      LEFT JOIN OBPL B ON B.BPLId = CASE
-        WHEN ISNUMERIC(CAST(ISNULL(NULLIF(H.Branch, ''), H.BPLId) AS NVARCHAR(50))) = 1
-          THEN CAST(CAST(ISNULL(NULLIF(H.Branch, ''), H.BPLId) AS NVARCHAR(50)) AS INT)
-        ELSE NULL
-      END
-      LEFT JOIN OUDP D ON D.Code = CASE
-        WHEN ISNUMERIC(CAST(H.Department AS NVARCHAR(50))) = 1
-          THEN CAST(CAST(H.Department AS NVARCHAR(50)) AS INT)
-        ELSE NULL
-      END
+      LEFT JOIN OBPL B ON CAST(B.BPLId AS NVARCHAR(50)) = ${branchExpression}
+      LEFT JOIN OUDP D ON CAST(D.Code AS NVARCHAR(50)) = ${departmentExpression}
       LEFT JOIN OPRJ P ON P.PrjCode = H.Project
       LEFT JOIN OUSR U
         ON CAST(U.USERID AS NVARCHAR(50)) = CAST(H.Requester AS NVARCHAR(50))
@@ -498,7 +498,7 @@ const getPurchaseRequestReport = async (criteria = {}) => {
       WHERE ${headerWhere.join("\n        AND ")}
       ORDER BY
         CASE WHEN ISNULL(H.DocType, 'I') = 'S' THEN FL.FirstAccountCode ELSE FL.FirstItemCode END,
-        ISNULL(H.ReqDate, H.DocDueDate),
+        ISNULL(${requiredDateExpression}, H.DocDueDate),
         H.DocNum,
         H.DocEntry
     `,

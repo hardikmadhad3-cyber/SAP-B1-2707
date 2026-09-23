@@ -1,4 +1,6 @@
+const { buildDocumentConfirmationPayload, updateDocumentConfirmationOnly } = require('./documentConfirmationUtils');
 const sapService = require('./sapService');
+const { buildDocumentRoundingPayload } = require('./documentRoundingPayloadUtils');
 const serviceArInvoiceDb = require('./serviceArInvoiceDbService');
 const arInvoiceService = require('./arInvoiceService');
 const hsnCodeDbService = require('./hsnCodeDbService');
@@ -266,7 +268,8 @@ const buildSapPayload = async (payload, includeSeries = true) => {
     Comments: optString(header.remarks || header.otherInstruction || header.comments),
     JournalMemo: optString(header.journalRemark),
     DiscountPercent: header.discount ? parseNum(header.discount) : undefined,
-    Rounding: yesNo(header.rounding),
+    ...buildDocumentRoundingPayload(header),
+    ...buildDocumentConfirmationPayload(header),
     DocumentLines: [],
   };
   const currencyReferenceData = await loadDocumentCurrencyReferenceData(header);
@@ -315,6 +318,8 @@ const submitServiceARInvoice = async (payload) => {
 };
 
 const updateServiceARInvoice = async (docEntry, payload) => {
+  const confirmationResult = await updateDocumentConfirmationOnly(docEntry, payload, 'Invoices', sapService);
+  if (confirmationResult) return confirmationResult;
   const sapPayload = await buildSapPayload(payload, false);
   await sapService.request({
     method: 'patch',

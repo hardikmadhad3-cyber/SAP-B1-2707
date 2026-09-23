@@ -48,3 +48,38 @@ test('opens a usable purchase-order picker with selection actions', async () => 
   await waitFor(() => expect(screen.queryByRole('dialog', { name: 'List of Purchase Orders' })).not.toBeInTheDocument());
   expect(screen.getByDisplayValue('44')).toBeInTheDocument();
 });
+
+test('closes before restoring later and never persists the modal as open', async () => {
+  const onClose = jest.fn();
+  const onOpenDocument = jest.fn().mockResolvedValue(true);
+
+  render(
+    <ReferenceDocumentsModal
+      isOpen
+      referenceDocuments={[{
+        direction: 'to',
+        transactionType: '22',
+        docEntry: '44',
+        docNumber: '23',
+        extDocNumber: '',
+      }]}
+      onClose={onClose}
+      onSave={jest.fn()}
+      onOpenDocument={onOpenDocument}
+    />,
+  );
+
+  const openButton = screen.getByTitle('Open referenced document');
+  fireEvent.click(openButton);
+  fireEvent.click(openButton);
+
+  await waitFor(() => expect(onOpenDocument).toHaveBeenCalledWith(
+    expect.objectContaining({ docEntry: '44', docNumber: '23' }),
+    expect.objectContaining({
+      referenceDocumentsModalOpen: false,
+      referenceDocumentsChanged: true,
+    }),
+  ));
+  expect(onOpenDocument).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+});

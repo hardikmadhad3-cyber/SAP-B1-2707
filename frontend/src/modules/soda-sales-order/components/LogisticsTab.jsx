@@ -189,7 +189,7 @@ export default function LogisticsTab({
               <input
                 type="checkbox"
                 name="confirmed"
-                checked={header.confirmed}
+                checked={header.confirmed ?? true} title={header.confirmed == null ? "SAP company default; click to choose explicitly" : undefined}
                 onChange={onHeaderChange}
               />
               <span>Confirmed</span>

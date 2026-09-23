@@ -207,6 +207,8 @@ export default function OpportunitiesReportPage() {
   const criteriaWindow = useFloatingWindow({
     isOpen: true,
     defaultTop: 22,
+    bounds: 'parent',
+    allowPersistedMinimized: false,
     taskId: 'opportunities-report-criteria',
     taskTitle: 'Opportunities Report - Selection Criteria',
     taskPath: '/reports/crm/opportunities/report',
@@ -214,6 +216,7 @@ export default function OpportunitiesReportPage() {
   const reportWindow = useFloatingWindow({
     isOpen: hasReport,
     defaultTop: 12,
+    bounds: 'parent',
     taskId: 'opportunities-report',
     taskTitle: 'Opportunities Report',
     taskPath: '/reports/crm/opportunities/report',
@@ -417,7 +420,8 @@ export default function OpportunitiesReportPage() {
               onChange={handleCriteriaChange}
               onOpenExternalLookup={handleOpenExternalLookup}
               onSubmit={handleSubmit}
-              onCancel={handleCancel}
+              onClear={handleCancel}
+              onClose={handleCloseCriteriaWindow}
               loading={loading}
               filterRows={OPPORTUNITIES_FILTER_ROWS}
               showGroupBy={false}

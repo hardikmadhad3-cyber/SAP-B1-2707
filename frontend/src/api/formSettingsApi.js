@@ -8,3 +8,7 @@ export const fetchFormSettings = (formKey) =>
 
 export const saveFormSettings = (formKey, settings) =>
   apiClient.put(buildFormSettingsUrl(formKey), { settings }).then((response) => response.data);
+
+export const runCompanyFormQuery = (formKey, context = {}, { signal } = {}) =>
+  apiClient.post(`${buildFormSettingsUrl(formKey)}/query`, { context }, { signal })
+    .then((response) => response.data);

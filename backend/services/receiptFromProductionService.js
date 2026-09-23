@@ -77,11 +77,10 @@ const mapToForm = (doc) => ({
   document_date: formatDate(doc.TaxDate),
   ref_2: doc.Reference2 || '',
   branch: doc.BPL_IDAssignedToInvoice != null ? String(doc.BPL_IDAssignedToInvoice) : '',
-  uop: doc.U_UoP || '',
+  uop: '',
   remarks: doc.Comments || '',
   journal_remark: doc.JournalMemo || '',
   prod_order_entry:
-    doc.U_BaseEntry ??
     doc.BaseEntry ??
     doc.DocumentLines?.find((line) => line.BaseEntry != null)?.BaseEntry ??
     null,
@@ -95,29 +94,29 @@ const mapToForm = (doc) => ({
       line_num: line.LineNum ?? 0,
       item_code: line.ItemCode || '',
       item_name: line.ItemDescription || '',
-      trans_type: line.U_TransType || 'Complete',
+      trans_type: line.TransactionType === 'botrntReject' ? 'Reject' : 'Complete',
       quantity: line.Quantity ?? 0,
       unit_price: line.Price ?? 0,
       value: line.LineTotal ?? 0,
       item_cost: line.StockPrice ?? 0,
-      planned: line.U_Planned ?? 0,
-      completed: line.U_Completed ?? 0,
+      planned: 0,
+      completed: 0,
       inventory_uom: line.InventoryUOM || '',
       uom_code: line.UoMCode || line.MeasureUnit || '',
-      uom_name: line.U_UoMName || line.MeasureUnit || '',
+      uom_name: line.MeasureUnit || '',
       items_per_unit: line.NumPerMsr ?? 1,
       warehouse: line.WarehouseCode || '',
-      location: line.U_Location || '',
-      branch: line.U_Branch || '',
+      location: '',
+      branch: '',
       uom_group: line.UoMEntry || '',
-      by_product: line.U_ByProduct === 'Y' || false,
+      by_product: false,
       base_entry: line.BaseEntry ?? null,
       base_line: line.BaseLine ?? null,
       base_type: line.BaseType ?? 202,
       distribution_rule: line.DistributionRule || '',
       project: line.Project || '',
-      order_no: line.U_OrderNo || '',
-      series_no: line.U_SeriesNo || '',
+      order_no: line.BaseReference || '',
+      series_no: '',
       manage_batch: batchNumbers.length > 0,
       manage_serial: serialNumbers.length > 0,
       enable_bin_locations: binAllocations.length > 0,
@@ -249,9 +248,65 @@ const getReceiptByDocEntry = async (docEntry) => {
 };
 
 const createReceipt = async (body) => {
-  _validate(body);
-
-  const payload = _buildPayload(body);
+  const currentOrder = await productionDbService.getProductionOrderForReceipt(body.prod_order_entry);
+  if (!currentOrder) {
+    const error = new Error('Production order not found.');
+    error.statusCode = 404;
+    throw error;
+  }
+  const orderDetail = await productionDbService.getProductionOrderByDocEntry(body.prod_order_entry);
+  const componentLines = orderDetail?.production_order?.lines || [];
+  const allowedComponents = new Map(componentLines.map((line) => [Number(line.base_line ?? line.line_num), line]));
+  const isDisassembly = currentOrder.type === 'bopotDisassemble';
+  const lines = [];
+  for (const submitted of (Array.isArray(body.lines) ? body.lines : [])) {
+    const baseLine = Number(submitted.base_line ?? 0);
+    const isParent = !isDisassembly && baseLine === 0
+      && String(submitted.item_code || '') === String(currentOrder.item_code || '');
+    const component = allowedComponents.get(baseLine);
+    const isAllowedComponent = Boolean(component)
+      && String(component.item_code || '') === String(submitted.item_code || '')
+      && (isDisassembly || Number(component.planned_qty || 0) < 0);
+    if (!isParent && !isAllowedComponent) {
+      const error = new Error('Production order lines changed or contain an invalid receipt line. Reload before posting.');
+      error.statusCode = 409;
+      throw error;
+    }
+    const quantity = toQty(submitted.quantity);
+    const openQuantity = isParent
+      ? Number(currentOrder.remaining_qty || 0)
+      : Math.max(0, Math.abs(Number(component.planned_qty || 0)) - Number(component.issued_qty || 0));
+    if (quantity <= 0 || quantity > openQuantity + EPSILON) {
+      const error = new Error(`Receipt quantity for "${submitted.item_code}" exceeds the current open quantity.`);
+      error.statusCode = 422;
+      throw error;
+    }
+    const warehouse = submitted.warehouse || (isParent ? currentOrder.warehouse : component.warehouse);
+    const allocation = await productionDbService.getAllocationOptions(submitted.item_code, warehouse, 'receipt');
+    lines.push({
+      ...submitted,
+      quantity,
+      warehouse,
+      base_entry: currentOrder.doc_entry,
+      base_line: baseLine,
+      base_type: 202,
+      by_product: !isParent,
+      manage_batch: allocation.manageBatch,
+      manage_serial: allocation.manageSerial,
+      enable_bin_locations: allocation.binEnabled,
+    });
+  }
+  const trustedBody = {
+    ...body,
+    prod_order_entry: currentOrder.doc_entry,
+    item_code: currentOrder.item_code,
+    remaining_qty: currentOrder.remaining_qty,
+    return_components: isDisassembly,
+    lines,
+  };
+  await productionDbService.validateBranchWarehouses(body.branch, lines.map((line) => line.warehouse));
+  _validate(trustedBody);
+  const payload = _buildPayload(trustedBody);
 
   const resp = await sapService.request({
     method: 'POST',
@@ -425,8 +480,8 @@ function _validate(body) {
       if (serialNumbers.length === 0) {
         throw new Error(`Item "${line.item_code}" requires serial numbers.`);
       }
-      if (serialNumbers.length !== Math.floor(lineQty)) {
-        throw new Error(`Item "${line.item_code}" serial count (${serialNumbers.length}) must equal receipt quantity (${Math.floor(lineQty)}).`);
+      if (!Number.isInteger(lineQty) || serialNumbers.length !== lineQty) {
+        throw new Error(`Item "${line.item_code}" serial count (${serialNumbers.length}) must equal the integer receipt quantity (${lineQty}).`);
       }
     }
 
@@ -471,8 +526,6 @@ function _buildPayload(body) {
   if (opt(body.series)) payload.Series = Number(body.series);
   if (opt(body.ref_2)) payload.Reference2 = body.ref_2;
   if (opt(body.branch)) payload.BPL_IDAssignedToInvoice = Number(body.branch);
-  if (opt(body.uop)) payload.U_UoP = body.uop;
-
   if (Array.isArray(body.lines) && body.lines.length > 0) {
     payload.DocumentLines = body.lines
       .filter((line) => line.item_code && toQty(line.quantity) > 0)
@@ -488,7 +541,6 @@ function _buildPayload(body) {
           : [];
 
         const docLine = {
-          ItemCode: line.item_code,
           Quantity: toQty(line.quantity),
           WarehouseCode: line.warehouse || undefined,
           LineNum: idx,
@@ -499,17 +551,16 @@ function _buildPayload(body) {
           docLine.BaseEntry = baseEntry;
           docLine.BaseLine = opt(line.base_line) ? Number(line.base_line) : 0;
           docLine.BaseType = opt(line.base_type) ? Number(line.base_type) : 202;
+        } else {
+          docLine.ItemCode = line.item_code;
         }
 
         if (opt(line.uom_code)) docLine.UoMCode = line.uom_code;
         if (opt(line.distribution_rule)) docLine.DistributionRule = line.distribution_rule;
         if (opt(line.project)) docLine.Project = line.project;
         if (opt(line.unit_price)) docLine.Price = Number(line.unit_price);
-        if (opt(line.trans_type)) docLine.U_TransType = line.trans_type;
-        if (opt(line.location)) docLine.U_Location = line.location;
-        if (opt(line.order_no)) docLine.U_OrderNo = line.order_no;
-        if (opt(line.series_no)) docLine.U_SeriesNo = line.series_no;
-        if (line.by_product) docLine.U_ByProduct = 'Y';
+        const transactionType = String(line.trans_type || 'Complete').toLowerCase();
+        docLine.TransactionType = transactionType === 'reject' ? 'botrntReject' : 'botrntComplete';
 
         if (batchNumbers.length > 0) {
           docLine.BatchNumbers = batchNumbers.map((row) => ({
@@ -570,11 +621,14 @@ function _buildPayload(body) {
   return payload;
 }
 
-const getReferenceDataByOdbc = () => productionDbService.getReceiptReferenceData();
+const getReferenceDataByOdbc = (options) => productionDbService.getReceiptReferenceData(options);
+const getSeries = (date, branch) => productionDbService.lookupSeriesContext('59', date, branch);
+const getAllocationOptions = (itemCode, warehouse) =>
+  productionDbService.getAllocationOptions(itemCode, warehouse, 'receipt');
 
 const getProductionOrderForReceiptByOdbc = async (docEntry) => {
   const data = await productionDbService.getProductionOrderForReceipt(docEntry);
-  if (!data) throw new Error('Production order not found.');
+  if (!data) throw Object.assign(new Error('Production order not found.'), { statusCode: 404 });
   return data;
 };
 
@@ -582,7 +636,7 @@ const getReceiptListByOdbc = (query) => productionDbService.getReceiptList(query
 
 const getReceiptByDocEntryByOdbc = async (docEntry) => {
   const data = await productionDbService.getReceiptByDocEntry(docEntry);
-  if (!data) throw new Error('Receipt from production not found.');
+  if (!data) throw Object.assign(new Error('Receipt from production not found.'), { statusCode: 404 });
   return data;
 };
 
@@ -596,4 +650,7 @@ module.exports = {
   getReceiptByDocEntry: getReceiptByDocEntryByOdbc,
   createReceipt,
   lookupProductionOrders: lookupProductionOrdersByOdbc,
+  getSeries,
+  getAllocationOptions,
+  _private: { _validate, _buildPayload, _assertManagedBinBreakdown },
 };

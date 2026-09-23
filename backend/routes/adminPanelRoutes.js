@@ -9,6 +9,12 @@ const router = express.Router();
 router.use(requireAdminPanelAccess);
 
 router.get('/entities', adminPanelController.listEntities);
+router.get('/form-settings/bootstrap', adminPanelController.getCompanyFormSettingsBootstrap);
+router.post('/form-settings/preview', adminPanelController.previewCompanyFormQuery);
+router.put('/form-settings', adminPanelController.publishCompanyFormQuery);
+router.delete('/form-settings', adminPanelController.unpublishCompanyFormQuery);
+router.post('/form-settings/copy-sales-purchase', adminPanelController.copySalesPurchaseLayouts);
+router.put('/legacy-form-settings', adminPanelController.saveCompanyFormSettings);
 router.get('/field-configuration/bootstrap', fieldConfigController.getBootstrap);
 router.put('/field-configuration', fieldConfigController.saveConfiguration);
 router.post('/field-configuration/custom-lookups/preview', fieldConfigController.previewCustomLookup);

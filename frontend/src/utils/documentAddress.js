@@ -23,6 +23,34 @@ export const resolveAddressForModal = (addressCode, addresses = [], fallbackText
   return null;
 };
 
+export const resolveBuyerBillToAddress = ({
+  warehouse,
+  companyAddress,
+  formatAddress,
+} = {}) => {
+  const format = typeof formatAddress === 'function' ? formatAddress : () => '';
+  const sources = [
+    { value: warehouse, code: warehouse?.WhsCode },
+    {
+      value: companyAddress,
+      code: companyAddress?.AddressName || companyAddress?.Address,
+    },
+  ];
+
+  for (const source of sources) {
+    if (!source.value) continue;
+    const address = String(format(source.value) || source.value.Address || '').trim();
+    if (!address) continue;
+    return {
+      code: String(source.code || '').trim(),
+      address,
+      source: source.value,
+    };
+  }
+
+  return { code: '', address: '', source: companyAddress || warehouse || {} };
+};
+
 const normalizeAddressKey = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 
 const getAddressValue = (address, aliases = []) => {

@@ -63,7 +63,7 @@ test('normalizes one atomic order across matrix fields and row UDFs', () => {
   expect(initial.matrixColumns.itemNo.order).toBe(1);
 });
 
-test('combines actual matrix and row-UDF fields once and removes structural controls', () => {
+test('combines actual matrix and row-UDF fields once while retaining mandatory #', () => {
   const merged = mergeContentSettingsFields(
     [
       { key: 'itemNo', label: 'Item No.' },
@@ -77,6 +77,63 @@ test('combines actual matrix and row-UDF fields once and removes structural cont
     ],
   );
 
-  expect(merged.map((field) => field.key)).toEqual(['itemNo', 'U_Packing', 'U_Current']);
-  expect(merged[2].settingsGroup).toBe('rowUdfs');
+  expect(merged.map((field) => field.key)).toEqual(['itemNo', 'U_Packing', '__lineNumber', 'U_Current']);
+  expect(merged[2].settingsGroup).toBe('matrixColumns');
+  expect(isRequiredVisibleMatrixField(merged[2], {})).toBe(true);
+});
+
+test('pins the mandatory # column before saved user/company order', () => {
+  const ordered = getOrderedVisibleMatrixColumns([
+    { key: 'itemNo', label: 'Item No.' },
+    { key: '__lineNumber', fieldName: 'LineNum', label: '#' },
+    { key: 'quantity', label: 'Quantity' },
+  ], {
+    matrixColumns: {
+      itemNo: { order: 1 },
+      quantity: { order: 2 },
+      __lineNumber: { order: 99, visible: false },
+    },
+  });
+
+  expect(ordered.map((field) => field.key)).toEqual(['__lineNumber', 'itemNo', 'quantity']);
+  expect(ordered[0].visible).toBe(true);
+});
+
+test('keeps # first after a grid re-sorts the resolved columns by order', () => {
+  const ordered = getOrderedVisibleMatrixColumns([
+    { key: 'itemNo', label: 'Item No.' },
+    { key: '__lineNumber', fieldName: 'LineNum', label: '#' },
+    { key: 'brockSeller', label: 'Brock Seller' },
+    { key: 'quantity', label: 'Quantity' },
+  ], {
+    matrixColumns: {
+      itemNo: { order: 1 },
+      quantity: { order: 2 },
+      brockSeller: { order: 40 },
+      __lineNumber: { order: 41 },
+    },
+  });
+
+  const regridded = [...ordered]
+    .sort((left, right) => Number(left.columnOrder ?? left.order ?? 0) - Number(right.columnOrder ?? right.order ?? 0));
+
+  expect(regridded.map((field) => field.key)).toEqual(['__lineNumber', 'itemNo', 'quantity', 'brockSeller']);
+});
+
+test('persists # as order one even when a layout supplies it later', () => {
+  const reordered = reorderFormSettingPreferences({
+    matrixColumns: {
+      itemNo: { visible: true, order: 1 },
+      __lineNumber: { visible: true, order: 2 },
+      quantity: { visible: true, order: 3 },
+    },
+  }, [
+    { key: 'itemNo', settingsGroup: 'matrixColumns' },
+    { key: '__lineNumber', settingsGroup: 'matrixColumns' },
+    { key: 'quantity', settingsGroup: 'matrixColumns' },
+  ]);
+
+  expect(reordered.matrixColumns.__lineNumber.order).toBe(1);
+  expect(reordered.matrixColumns.itemNo.order).toBe(2);
+  expect(reordered.matrixColumns.quantity.order).toBe(3);
 });

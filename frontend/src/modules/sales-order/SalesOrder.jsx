@@ -1,3 +1,5 @@
+import useConfirmationOnlyUpdate from '../../utils/useConfirmationOnlyUpdate';
+import useDocumentSeries from '../../hooks/useDocumentSeries';
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import '../../modules/item-master/styles/itemMaster.css';
 import './styles/salesOrder.css';
@@ -29,11 +31,18 @@ import FreightChargesModal from '../../components/freight/FreightChargesModal';
 import { summarizeFreightRows } from '../../components/freight/freightUtils';
 import { useSapWindowTaskbarActions } from '../../components/SapWindowTaskbarContext';
 import useDocumentDraftTask from '../../hooks/useDocumentDraftTask';
-import { determineTaxCode, recalculateAllTaxCodes, getGSTTypeLabel } from '../../utils/taxEngine';
+import {
+    determineTaxCode,
+    getGSTTypeLabel,
+    isGstRelevantItem,
+    normalizeTaxCodeSelection,
+    recalculateAllTaxCodes,
+} from '../../utils/taxEngine';
 import { filterWarehousesByBranch } from '../../utils/warehouseBranch';
 import { hydrateDocumentLineFromItem, mergeItemMaster } from '../../utils/documentItemHydration';
-import { calculateDocumentRounding } from '../../utils/documentRounding';
-import { getDefaultSeriesForCurrentYear, getSapVisibleDocumentSeries } from '../../utils/seriesDefaults';
+import { applyUomCodeSelection, getLineUomOptions } from '../../utils/documentUom';
+import { calculateDocumentRounding, getDocumentRoundingPolicy } from '../../utils/documentRounding';
+import { getSapVisibleDocumentSeries, pickDocumentSeries, canUseManualSeries } from '../../utils/seriesDefaults';
 import {
     SAP_MANUAL_SERIES_VALUE,
     isManualDocumentSeries,
@@ -41,11 +50,13 @@ import {
 } from '../../utils/documentSeries';
 import { readGeneralSettings } from '../../utils/generalSettingsStorage';
 import { useCompanyScopedFormSettings } from '../../utils/formSettingsStorage';
+import { buildCompanyFormQueryContext } from '../../utils/companyFormQueryContext';
 import { updateFormSettingPreference } from '../../utils/formSettingsPreferences';
 import { buildVisibleEnteredRowUdfPayload } from '../../utils/rowUdfPayload';
 import { hydrateWorkbookDocumentLine, normalizeLineUdfAliases } from '../../utils/workbookLineHydration';
+import { applyDocumentTablePaste } from '../../utils/documentTableClipboard';
 import { getStateCodeValue, getStateDisplayName } from '../../utils/stateDisplay';
-import { findTaxCode, getTaxComponentCodes, taxCodeHasComponent } from '../../utils/taxCodeComponents';
+import { findTaxCode, getTaxComponentCodes } from '../../utils/taxCodeComponents';
 import { getCalculatedForRate } from '../../utils/lineTotals';
 import {
     convertDocumentAmountForDisplay,
@@ -71,7 +82,6 @@ import {
     submitSalesOrder,
     updateSalesOrder,
     fetchDocumentSeries,
-    fetchNextNumber,
     fetchItemsForModal,
     fetchFreightCharges,
     createSalesOrderLookupValue,
@@ -101,6 +111,16 @@ import {
     isSalesDocumentFieldMetadataReady,
     loadSalesDocumentFieldLookupOptions,
 } from '../../utils/salesDocumentLiveFields';
+import { getBOM } from '../../api/bomApi';
+import {
+    calculateSalesBomComponentQuantity,
+    createEmptySalesBomMetadata,
+    expandSalesBomLines,
+    isSalesBomComponentLine,
+    isSalesBomDefinition,
+    normalizeSalesBomDocumentLines,
+    replaceSalesBomSelection,
+} from '../../utils/salesBomLines';
 
 // â”€â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const getErrMsg = (e, fb) => {
@@ -315,6 +335,7 @@ const createLine = (rowUdfDefinitions = []) => ({
     openQty: '', deliveredQty: '', taxAmount: '', wTaxLiable: '', taxLiable: '', lineShippingType: '', lineDeliveryDate: '',
     withoutQtyPosting: '', enableSettingCost: '', returnCost: '', documentCreated: '',
     loc: '', branch: '', lineNum: undefined, baseEntry: null, baseType: null, baseLine: null,
+    ...createEmptySalesBomMetadata(),
     udf: createUdfState(rowUdfDefinitions),
 });
 
@@ -323,7 +344,7 @@ const INIT_HEADER = {
     docNo: '', status: 'Open', series: '', nextNumber: '',
     postingDate: today(), deliveryDate: '', documentDate: today(), contractDate: '',
     branchRegNo: '', shipTo: '', shipToCode: '', payTo: '', payToCode: '',
-    shippingType: '', confirmed: true, language: '8', printPickingSheet: false,
+    shippingType: '', confirmed: undefined, language: '8', printPickingSheet: false,
     procureNonDropShipItems: false, procureDropShipItems: true, allowPartialDelivery: true,
     pickAndPackRemarks: '', bpChannelName: '', bpChannelContact: '',
     journalRemark: '', paymentTerms: '',
@@ -403,6 +424,41 @@ const resolveFormSettingFlag = (field = {}, setting = {}, prop = 'visible') => (
     setting?.[prop] !== undefined ? setting[prop] !== false : field[prop] !== false
 );
 
+const normalizeMatrixFieldToken = (value) => String(value || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '');
+
+const UOM_CODE_FIELD_TOKENS = new Set(['UOMCODE', 'UOMENTRY']);
+
+const isUomCodeFieldEditable = (matrixFields = [], formSettings = {}) => {
+    const matchingField = (Array.isArray(matrixFields) ? matrixFields : []).find((field) => {
+        const fieldTokens = [
+            field?.key,
+            field?.valueKey,
+            field?.rendererKey,
+            field?.fieldName,
+            field?.layoutFieldName,
+            field?.sapField,
+            field?.sapColumnId,
+            field?.columnUid,
+            field?.columnTitle,
+            field?.label,
+        ].map(normalizeMatrixFieldToken).filter(Boolean);
+        return fieldTokens.some((token) => UOM_CODE_FIELD_TOKENS.has(token));
+    });
+
+    if (!matchingField) return true;
+
+    const setting = formSettings?.matrixColumns?.[matchingField.key]
+        || formSettings?.matrixColumns?.[matchingField.valueKey]
+        || {};
+    const isVisible = resolveFormSettingFlag(matchingField, setting, 'visible');
+    const isActive = resolveFormSettingFlag(matchingField, setting, 'active');
+    const isReadOnly = matchingField.readOnly === true || matchingField.editable === false;
+    return isVisible && isActive && !isReadOnly;
+};
+
 const buildVisibleHeaderUdfPayload = (definitions = [], values = {}, settings = {}) => {
     const normalized = normalizeUdfState(definitions, values);
     return (definitions || []).reduce((acc, field) => {
@@ -418,6 +474,8 @@ const buildVisibleHeaderUdfPayload = (definitions = [], values = {}, settings = 
 
 // â”€â”€â”€ Main Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function SalesOrder() {
+  const [seriesRevision, setSeriesRevision] = useState(0);
+
     const location = useLocation();
     const navigate = useNavigate();
     const { company } = useAuth();
@@ -430,6 +488,7 @@ function SalesOrder() {
     const { removeTask, upsertTask } = useSapWindowTaskbarActions();
     const formRef = useRef(null);
     const handledCopyFromRef = useRef('');
+    const itemSelectionRequestsRef = useRef(new Map());
     const generalSettingsRef = useRef(readGeneralSettings());
     const defaultWarehouseAppliedRef = useRef(false);
     const restoringDraftRef = useRef(false);
@@ -499,6 +558,10 @@ function SalesOrder() {
     );
     useValidationHighlights(valErrors, { enabled: !copyFromMode, rootRef: formRef });
 
+    useEffect(() => {
+        itemSelectionRequestsRef.current.clear();
+    }, [activeCompanyDb, activeCompanyId]);
+
     const [addressForm, setAddressForm] = useState({
         shipToCode: '', shipToAddress: '', billToCode: '', billToAddress: '',
         streetPoBox: '', streetNo: '', buildingFloorRoom: '', block: '', city: '', zipCode: '', county: '',
@@ -531,26 +594,7 @@ function SalesOrder() {
         }
     }, [header.placeOfSupply, refData.states]);
 
-    const resolvePreferredSeries = (seriesList, postingDateValue, selectedSeries = '') => {
-        if (!Array.isArray(seriesList) || !seriesList.length) return null;
-
-        const normalizedSeries = String(selectedSeries || '').trim();
-        const matchedSeries = normalizedSeries
-            ? seriesList.find((series) => String(series.Series) === normalizedSeries)
-            : null;
-
-        if (matchedSeries) return matchedSeries;
-
-        const preferredSeries = String(generalSettingsRef.current.salesSeries || '').trim();
-        const settingsSeries = preferredSeries
-            ? seriesList.find((series) => String(series.Series) === preferredSeries)
-            : null;
-
-        if (settingsSeries) return settingsSeries;
-
-        const seriesDate = postingDateValue ? new Date(`${postingDateValue}T00:00:00`) : new Date();
-        return getDefaultSeriesForCurrentYear(seriesList, seriesDate) || seriesList[0];
-    };
+    const resolvePreferredSeries = (seriesList, postingDateValue, selectedSeries = '') => pickDocumentSeries(seriesList, selectedSeries);
 
     // Close dropdown when clicking outside
     useEffect(() => {
@@ -647,7 +691,9 @@ function SalesOrder() {
         setReferenceDocumentsChanged(Boolean(draft.referenceDocumentsChanged));
         setActiveTab(draft.activeTab || 'Contents');
         setIsDirty(Boolean(draft.isDirty));
-        setReferenceDocumentsModal(Boolean(draft.referenceDocumentsModalOpen));
+        // Reference Information is transient UI and must not reopen when a
+        // minimized document window is restored.
+        setReferenceDocumentsModal(false);
         if (Array.isArray(draft.freightCharges)) {
             setFreightModal((prev) => ({
                 ...prev,
@@ -677,7 +723,7 @@ function SalesOrder() {
                 ? overrides.referenceDocuments
                 : referenceDocuments,
             referenceDocumentsChanged: overrides.referenceDocumentsChanged ?? referenceDocumentsChanged,
-            referenceDocumentsModalOpen: overrides.referenceDocumentsModalOpen ?? referenceDocumentsModal,
+            referenceDocumentsModalOpen: false,
             freightCharges: freightModal.freightCharges,
             activeTab,
             isDirty,
@@ -1039,53 +1085,7 @@ function SalesOrder() {
     }, [companyFormSettingsReady, formSettingsStatus.hasUnsavedChanges, formSettingsStorageKey, headerUdfDefinitions, matrixColumnDefinitions, replaceFormSettings, rowUdfDefinitions]);
 
     // â”€â”€ load existing order â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    useEffect(() => {
-        if (currentDocEntry) return;
 
-        const seriesDate = String(header.postingDate || '').trim();
-        if (!seriesDate) {
-            setRefData(prev => ({ ...prev, series: [] }));
-            setHeader(prev => ({ ...prev, series: '', nextNumber: '' }));
-            return;
-        }
-
-        let ignore = false;
-
-        const loadSeriesForPostingDate = async () => {
-            try {
-                const seriesResponse = await fetchDocumentSeries(seriesDate, { branch: header.branch || '' });
-                const availableSeries = seriesResponse.data?.series || [];
-
-                if (ignore) return;
-
-                setRefData(prev => ({ ...prev, series: availableSeries }));
-
-                if (isManualDocumentSeries(header.series)) return;
-
-                if (!availableSeries.length) {
-                    setHeader(prev => ({ ...prev, series: '', nextNumber: '' }));
-                    return;
-                }
-
-                const currentSeries = String(header.series || '');
-                const defaultSeries = resolvePreferredSeries(availableSeries, seriesDate, currentSeries);
-
-                if (!defaultSeries?.Series) return;
-
-                if (String(defaultSeries.Series) !== currentSeries || !String(header.nextNumber || '').trim()) {
-                    handleSeriesChange(defaultSeries.Series);
-                }
-            } catch (e) {
-                if (!ignore) {
-                    setPageState(p => ({ ...p, error: getErrMsg(e, 'Failed to load document series.') }));
-                }
-            }
-        };
-
-        loadSeriesForPostingDate();
-
-        return () => { ignore = true; };
-    }, [currentDocEntry, header.branch, header.postingDate]);
 
     useEffect(() => {
         const docEntry =
@@ -1216,46 +1216,44 @@ function SalesOrder() {
                 setReferenceDocumentsChanged(false);
                 setFreightModal({ open: false, freightCharges: [], loading: false });
 
-                setLines(
-                    Array.isArray(so.lines) && so.lines.length
-                        ? so.lines.map((l, index) => {
-                            const hydratedLine = hydrateWorkbookDocumentLine({
-                                line: l,
-                                createLine,
-                                rowUdfDefinitions,
-                                normalizeUdfState,
-                                items: refData.items,
-                                fallbackWarehouse: so.header?.warehouse || '',
-                            });
-                            // If HSN is empty, try to get it from item master
-                            let hsnCode = hydratedLine.hsnCode || '';
-                            if (!hsnCode && hydratedLine.itemNo) {
-                                const item = refData.items.find(it => String(it.ItemCode) === String(hydratedLine.itemNo));
-                                if (item) {
-                                    hsnCode = item.HSNCode || item.SWW || '';
-                                }
+                const loadedLines = Array.isArray(so.lines) && so.lines.length
+                    ? so.lines.map((l, index) => {
+                        const hydratedLine = hydrateWorkbookDocumentLine({
+                            line: l,
+                            createLine,
+                            rowUdfDefinitions,
+                            normalizeUdfState,
+                            items: refData.items,
+                            fallbackWarehouse: so.header?.warehouse || '',
+                        });
+                        let hsnCode = hydratedLine.hsnCode || '';
+                        if (!hsnCode && hydratedLine.itemNo) {
+                            const item = refData.items.find(it => String(it.ItemCode) === String(hydratedLine.itemNo));
+                            if (item) {
+                                hsnCode = item.HSNCode || item.SWW || '';
                             }
+                        }
 
-                            return {
-                                ...hydratedLine,
-                                lineNum: hydratedLine.lineNum ?? index,
-                                hsnCode: hsnCode,
-                                stcode: hydratedLine.stcode || '',
-                                taxCodeManuallyOverridden: Boolean(String(hydratedLine.taxCode || '').trim()),
-                                uomName: hydratedLine.uomName || hydratedLine.uomCode || '',
-                                documentCreated: hydratedLine.documentCreated || so.header?.documentCreated || '',
-                                loc: hydratedLine.loc || resolveLineLocation(
-                                    hydratedLine.whse,
-                                    hydratedLine.branch || so.header?.branch || header.branch,
-                                ),
-                                udf: normalizeLineUdfAliases(
-                                    normalizeUdfState(rowUdfDefinitions, hydratedLine.udf || {}, { preserveExtra: false }),
-                                    hydratedLine
-                                )
-                            };
-                        })
-                        : [createLine(rowUdfDefinitions)]
-                );
+                        return {
+                            ...hydratedLine,
+                            lineNum: hydratedLine.lineNum ?? index,
+                            hsnCode,
+                            stcode: hydratedLine.stcode || '',
+                            taxCodeManuallyOverridden: Boolean(String(hydratedLine.taxCode || '').trim()),
+                            uomName: hydratedLine.uomName || hydratedLine.uomCode || '',
+                            documentCreated: hydratedLine.documentCreated || so.header?.documentCreated || '',
+                            loc: hydratedLine.loc || resolveLineLocation(
+                                hydratedLine.whse,
+                                hydratedLine.branch || so.header?.branch || header.branch,
+                            ),
+                            udf: normalizeLineUdfAliases(
+                                normalizeUdfState(rowUdfDefinitions, hydratedLine.udf || {}, { preserveExtra: false }),
+                                hydratedLine
+                            )
+                        };
+                    })
+                    : [createLine(rowUdfDefinitions)];
+                setLines(normalizeSalesBomDocumentLines(loadedLines, `sales-order-${so.doc_entry || docEntry}`));
                 const loadedHeaderUdfs = so.header_udfs || {};
                 const applyLoadedTaxInfo = () => setTaxInfoForm(current => buildTaxInfoFormFromUdfs(loadedHeaderUdfs, current));
                 setHeaderUdfs(normalizeUdfState(headerUdfDefinitions, loadedHeaderUdfs, { preserveExtra: false }));
@@ -1285,14 +1283,7 @@ function SalesOrder() {
     }, [activeFieldMetadataScope, hydratedFieldMetadataScope, location.pathname, location.state, navigate]);
 
     useEffect(() => {
-        if (!currentDocEntry) {
-            setFreightModal(prev => (
-                prev.freightCharges.length || prev.loading
-                    ? { ...prev, freightCharges: [], loading: false }
-                    : prev
-            ));
-            return;
-        }
+        if (!currentDocEntry) return;
 
         let ignore = false;
         const loadSavedFreightCharges = async () => {
@@ -1335,11 +1326,33 @@ function SalesOrder() {
     const selectedBranch = branchesEnabled
         ? refData.branches.find(b => String(b.BPLId || '') === String(header.branch || ''))
         : null;
-    const uomGroupMap = (refData.uom_groups || []).reduce((acc, g) => { acc[g.AbsEntry] = g.uomCodes || []; return acc; }, {});
-
-    const effectiveTaxCodes = refData.tax_codes || [];
+    const effectiveTaxCodes = useMemo(() => {
+        return Array.isArray(refData.tax_codes) ? refData.tax_codes : [];
+    }, [refData.tax_codes]);
     const effectiveWarehouses = refData.warehouses || [];
     const freightTotals = summarizeFreightRows(freightModal.freightCharges, effectiveTaxCodes);
+    const companyState = refData.company_address?.State || selectedBranch?.State || '';
+    const resolveSalesOrderLineTaxCode = useCallback((line) => {
+        const item = refData.items.find((it) => String(it.ItemCode || '') === String(line?.itemNo || ''));
+        const selectedTaxCode = normalizeTaxCodeSelection(line?.taxCode, item);
+        if (selectedTaxCode) return selectedTaxCode;
+        if (!item) return '';
+        if (isGstRelevantItem(item) === false) return '';
+
+        const resolvedTaxCode = determineTaxCode(
+            item,
+            header.placeOfSupply,
+            header.placeOfSupply,
+            false,
+            companyState,
+            effectiveTaxCodes,
+        );
+        return normalizeTaxCodeSelection(resolvedTaxCode, item);
+    }, [companyState, effectiveTaxCodes, header.placeOfSupply, refData.items]);
+    const isSalesOrderLineTaxCodeRequired = useCallback((line) => {
+        const item = refData.items.find((it) => String(it.ItemCode || '') === String(line?.itemNo || ''));
+        return !item || isGstRelevantItem(item) !== false;
+    }, [refData.items]);
 
     // Filter warehouses by selected branch
     const branchFilteredWarehouses = branchesEnabled
@@ -1418,14 +1431,12 @@ function SalesOrder() {
 
     const getUomOptions = useCallback((line) => {
         const item = refData.items.find(i => String(i.ItemCode || '') === String(line.itemNo || ''));
-        if (item) {
-            const codes = uomGroupMap[item.UoMGroupEntry];
-            if (codes && codes.length) return codes;
-            const fb = String(item.SalesUnit || item.InventoryUOM || '').trim();
-            if (fb) return [fb];
-        }
-        return [];
-    }, [refData.items, uomGroupMap]);
+        return getLineUomOptions(line, item, refData.uom_groups).map((uom) => uom.uomCode);
+    }, [refData.items, refData.uom_groups]);
+    const requiresEditableUomCode = useMemo(
+        () => isUomCodeFieldEditable(matrixColumnDefinitions, formSettings),
+        [matrixColumnDefinitions, formSettings],
+    );
 
     const lineItemOptions = lines.reduce((acc, line, i) => {
         const code = String(line.itemNo || '').trim();
@@ -1466,6 +1477,7 @@ function SalesOrder() {
 
     // â”€â”€ calculations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const calcLineTotal = (line) => {
+        if (isSalesBomComponentLine(line)) return 0;
         const qty = parseNum(line.quantity), price = parseNum(line.unitPrice), disc = parseNum(line.stdDiscount);
         return roundTo(qty * price * (1 - disc / 100), numDec.total);
     };
@@ -1500,8 +1512,7 @@ function SalesOrder() {
         const rounding = calculateDocumentRounding(
             discSub + freight + taxAmt,
             header.rounding,
-            numDec.totalPaymentDue,
-        );
+            numDec.totalPaymentDue, currentDocEntry ? header : null, getDocumentRoundingPolicy(refData, header));
         return { subtotal, discAmt, discSub, freight, freightTaxAmt, taxAmt, ...rounding, taxBreakdown: Array.from(taxMap.values()) };
     };
 
@@ -1534,36 +1545,6 @@ function SalesOrder() {
         } else {
             return 'IGST';
         }
-    };
-
-    const getApplicableTaxCode = (gstType, itemTaxRate = 18) => {
-        // Find tax codes based on GST type
-        const taxCodes = effectiveTaxCodes.filter(code => {
-            const rate = Number(code.Rate || 0);
-            const gstTypeValue = String(code.GSTType || '').trim().toUpperCase();
-
-            if (gstType === 'CGST_SGST') {
-                if (gstTypeValue === 'INTRASTATE' && Math.abs(rate - itemTaxRate) < 0.01) {
-                    return true;
-                }
-                // For CGST+SGST, we need CGST or SGST with half the rate
-                const halfRate = itemTaxRate / 2;
-                return (
-                    taxCodeHasComponent(effectiveTaxCodes, code.Code, 'CGST')
-                    || taxCodeHasComponent(effectiveTaxCodes, code.Code, 'SGST')
-                ) && Math.abs(rate - halfRate) < 0.01;
-            } else if (gstType === 'IGST') {
-                if (gstTypeValue === 'INTERSTATE' && Math.abs(rate - itemTaxRate) < 0.01) {
-                    return true;
-                }
-                // For IGST, we need IGST with full rate
-                return taxCodeHasComponent(effectiveTaxCodes, code.Code, 'IGST') && Math.abs(rate - itemTaxRate) < 0.01;
-            }
-            return false;
-        });
-
-        // Return the first matching tax code
-        return taxCodes.length > 0 ? taxCodes[0].Code : '';
     };
 
     // â”€â”€ address sync â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1717,24 +1698,28 @@ function SalesOrder() {
         const gstType = determineGSTType();
         console.log('Auto-updating tax codes based on GST type:', gstType);
 
-        // Update tax codes for all lines that have items
+        // Update tax codes for all lines with items using the item's SAP tax setup.
         setLines(prevLines =>
             prevLines.map(line => {
                 if (!line.itemNo || line.taxCodeManuallyOverridden) return line; // Skip empty or preserved lines
 
-                // Get item's default tax rate (assume 18% if not specified)
                 const item = refData.items.find(it => String(it.ItemCode || '') === String(line.itemNo || ''));
-                const itemTaxRate = item?.TaxRate || 18;
-
-                const applicableTaxCode = getApplicableTaxCode(gstType, itemTaxRate);
+                const nextTaxCode = determineTaxCode(
+                    item,
+                    header.placeOfSupply,
+                    header.placeOfSupply,
+                    false,
+                    refData.company_address?.State || '',
+                    effectiveTaxCodes,
+                );
 
                 return {
                     ...line,
-                    taxCode: applicableTaxCode || line.taxCode
+                    taxCode: nextTaxCode || line.taxCode
                 };
             })
         );
-    }, [currentDocEntry, header.placeOfSupply, header.vendor]);
+    }, [currentDocEntry, header.placeOfSupply, header.vendor, refData.items, refData.company_address, effectiveTaxCodes]);
 
     // â”€â”€ vendor details â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const updateTaxInfoFromAddress = useCallback((address = null) => {
@@ -1985,6 +1970,7 @@ function SalesOrder() {
                 paymentMethod: getDefaultPaymentMethod(m) || hdr.paymentMethod,
                 currencyMode: nextCurrencyMode,
                 currency: nextDocumentCurrency,
+                exchangeRate: '',
                 contactPerson: '',
             },
         };
@@ -2030,7 +2016,14 @@ function SalesOrder() {
         }
 
         if (name === 'currencyMode') {
-            setHeader(p => ({ ...p, currencyMode: value }));
+            markDirty();
+            const nextCurrency = resolveHeaderCurrency(value, header.vendor, header.currency);
+            setHeader(p => ({
+                ...p,
+                currencyMode: value,
+                currency: nextCurrency,
+                exchangeRate: nextCurrency === p.currency ? p.exchangeRate : '',
+            }));
             return;
         }
 
@@ -2040,6 +2033,18 @@ function SalesOrder() {
                 ...p,
                 currency: String(value || '').trim(),
                 exchangeRate: '',
+            }));
+            return;
+        }
+
+        if (name === 'postingDate') {
+            markDirty();
+            setHeader(p => ({
+                ...p,
+                postingDate: value,
+                exchangeRate: String(p.currency || '').trim().toUpperCase() === String(refData.local_currency || '').trim().toUpperCase()
+                    ? p.exchangeRate
+                    : '',
             }));
             return;
         }
@@ -2125,159 +2130,294 @@ function SalesOrder() {
         }
     };
 
-    const handleSeriesChange = async (seriesValue) => {
-        if (!seriesValue) return;
+    const handleSeriesChange = (seriesValue) => {
+      const manual = ['-1', 'manual', '__sap_manual__'].includes(String(seriesValue).toLowerCase());
+      if (manual && !canUseManualSeries(refData)) return;
+      const selected = (refData.series || []).find(row => String(row.Series) === String(seriesValue));
+      setHeader(prev => ({ ...prev, series: manual ? '-1' : selected ? String(selected.Series) : '', nextNumber: manual ? '' : String(selected?.NextNumber ?? ''), docNo: '' }));
+      setPageState(prev => ({ ...prev, error: '', success: '' }));
+    };
 
-        if (isManualDocumentSeries(seriesValue)) {
-            setHeader(p => ({ ...p, series: SAP_MANUAL_SERIES_VALUE, nextNumber: '' }));
-            setPageState(p => ({ ...p, seriesLoading: false, error: '', success: '' }));
-            return;
+    const hydrateSalesOrderItemLine = (line, item, hsnCode = '', { hydrateQuantityAndPrice = true } = {}) => {
+        const existingQuantity = line.quantity;
+        const existingUnitPrice = line.unitPrice;
+        const next = hydrateDocumentLineFromItem({
+            ...line,
+            forRate: '',
+            taxCode: '',
+            taxCodeManuallyOverridden: false,
+        }, item, {
+            side: 'sales',
+            hsnCode,
+            fallbackWarehouse: header.warehouse,
+            resolveLineLocation,
+            headerBranch: header.branch,
+            calcLineTotal,
+            formatTotal: (total) => fmtDec(total, numDec.total),
+            uomGroups: refData.uom_groups,
+        });
+        if (!hydrateQuantityAndPrice) {
+            next.quantity = existingQuantity;
+            next.unitPrice = existingUnitPrice;
+        }
+        const gstState = header.placeOfSupply;
+        const companyState = refData.company_address?.State || selectedBranch?.State || '';
+
+        if (gstState && companyState) {
+            next.taxCode = determineTaxCode(
+                item,
+                gstState,
+                gstState,
+                false,
+                companyState,
+                effectiveTaxCodes
+            ) || '';
         }
 
-        setPageState(p => ({ ...p, seriesLoading: true }));
-        setHeader(p => ({ ...p, series: seriesValue, nextNumber: '...' }));
+        next.stcode = next.stcode || '';
+        next.total = fmtDec(calcLineTotal(next), numDec.total);
+        return next;
+    };
 
-        try {
-            const res = await fetchNextNumber(seriesValue);
-            setHeader(p => ({ ...p, nextNumber: String(res.data.nextNumber || '') }));
-        } catch (err) {
-            setHeader(p => ({ ...p, nextNumber: 'Error' }));
-            setPageState(p => ({ ...p, error: 'Failed to get next document number' }));
-        } finally {
-            setPageState(p => ({ ...p, seriesLoading: false }));
+    const selectAndExpandSalesBomItem = async (
+        lineIndex,
+        selectedItem,
+        { hydrateQuantityAndPrice = true } = {},
+    ) => {
+        const mergedItem = mergeItemMaster(selectedItem, refData.items);
+        const itemCode = String(mergedItem.ItemCode || '').trim();
+        if (!itemCode) return;
+
+        const requestToken = Symbol(itemCode);
+        itemSelectionRequestsRef.current.set(lineIndex, requestToken);
+
+        setLines(prev => {
+            const currentLine = prev[lineIndex];
+            if (!currentLine || currentLine.bomRole === 'component') return prev;
+            const hydratedLine = hydrateSalesOrderItemLine(
+                currentLine,
+                mergedItem,
+                '',
+                { hydrateQuantityAndPrice },
+            );
+            return replaceSalesBomSelection(prev, lineIndex, {
+                ...hydratedLine,
+                salesBomSelectionToken: requestToken,
+            });
+        });
+
+        const [hsnResult, bomResult] = await Promise.all([
+            fetchHSNCodeFromItem(itemCode)
+                .then(response => ({ data: response?.data || {}, error: null }))
+                .catch(error => ({ data: null, error })),
+            getBOM(itemCode)
+                .then(data => ({ data, error: null }))
+                .catch(error => ({ data: null, error })),
+        ]);
+
+        if (itemSelectionRequestsRef.current.get(lineIndex) !== requestToken) return;
+
+        if (hsnResult.error) {
+            console.error('Error fetching HSN code for Sales Order item:', hsnResult.error);
         }
+
+        const bomNotFound = bomResult.error?.response?.status === 404;
+        if (bomResult.error && !bomNotFound) {
+            setPageState(prev => ({
+                ...prev,
+                error: getErrMsg(bomResult.error, `Failed to check Sales BOM for item ${itemCode}.`),
+                success: '',
+            }));
+        }
+
+        const hsnCode = hsnResult.data?.hsnCode
+            || hsnResult.data?.hsn_sww
+            || mergedItem.HSNCode
+            || mergedItem.SWW
+            || mergedItem.U_HSNCode
+            || '';
+        const bom = bomResult.data;
+        const bomParentQuantity = Number(bom?.Quantity);
+        if (isSalesBomDefinition(bom) && (!Number.isFinite(bomParentQuantity) || bomParentQuantity <= 0)) {
+            setPageState(prev => ({
+                ...prev,
+                error: `Sales BOM ${itemCode} has an invalid parent quantity and cannot be expanded.`,
+                success: '',
+            }));
+        }
+
+        setLines(prev => {
+            const resolvedLineIndex = prev.findIndex(line => line.salesBomSelectionToken === requestToken);
+            const currentLine = prev[resolvedLineIndex];
+            if (!currentLine || String(currentLine.itemNo || '') !== itemCode) return prev;
+
+            const hydratedParent = hydrateSalesOrderItemLine(
+                currentLine,
+                mergedItem,
+                hsnCode,
+                { hydrateQuantityAndPrice },
+            );
+            if (
+                !isSalesBomDefinition(bom)
+                || !Number.isFinite(bomParentQuantity)
+                || bomParentQuantity <= 0
+            ) {
+                return replaceSalesBomSelection(prev, resolvedLineIndex, {
+                    ...hydratedParent,
+                    salesBomSelectionToken: null,
+                });
+            }
+
+            const salesBomParent = hydrateQuantityAndPrice
+                ? hydratedParent
+                : hydrateSalesOrderItemLine({
+                    ...currentLine,
+                    quantity: String(currentLine.quantity || '').trim() ? currentLine.quantity : '1',
+                }, mergedItem, hsnCode);
+            return expandSalesBomLines({
+                lines: prev,
+                lineIndex: resolvedLineIndex,
+                parentLine: {
+                    ...salesBomParent,
+                    salesBomSelectionToken: null,
+                },
+                bom,
+                createComponentLine: (bomLine, { documentQuantity, parent }) => {
+                    const componentItemCode = String(bomLine?.ItemCode || '').trim();
+                    const componentMaster = mergeItemMaster({
+                        ItemCode: componentItemCode,
+                        ...(bomLine?.ItemName ? { ItemName: bomLine.ItemName } : {}),
+                        ...(bomLine?.InventoryUOM ? { InventoryUOM: bomLine.InventoryUOM } : {}),
+                    }, refData.items);
+                    const componentWarehouse = bomLine?.Warehouse
+                        || parent.whse
+                        || header.warehouse
+                        || componentMaster.DefaultWarehouse
+                        || '';
+                    const componentBase = {
+                        ...createLine(rowUdfDefinitions),
+                        branch: parent.branch || header.branch || '',
+                        whse: componentWarehouse,
+                        quantity: documentQuantity === null ? '' : fmtDec(documentQuantity, numDec.quantity),
+                    };
+                    const component = hydrateSalesOrderItemLine(
+                        componentBase,
+                        componentMaster,
+                        componentMaster.HSNCode || componentMaster.SWW || componentMaster.U_HSNCode || ''
+                    );
+                    return {
+                        ...component,
+                        // SAP B1 bills a Sales BOM on its parent line; component
+                        // rows are informational and must not carry a sales amount.
+                        unitPrice: '0',
+                        stdDiscount: '0',
+                        total: fmtDec(0, numDec.total),
+                    };
+                },
+            });
+        });
     };
 
     const handleLineChange = async (i, e) => {
         const { name, value } = e.target;
+        const currentLine = lines[i];
+
+        if (name === 'itemNo' && currentLine?.bomRole === 'component') {
+            setPageState(p => ({
+                ...p,
+                error: 'Sales BOM component item codes cannot be changed.',
+                success: '',
+            }));
+            return;
+        }
+
         markDirty();
         setValErrors(p => ({ ...p, lines: { ...p.lines, [i]: { ...(p.lines[i] || {}), [name]: '' } }, form: '' }));
         setPageState(p => ({ ...p, error: '', success: '' }));
 
-        if (name === 'itemNo' && value) {
-            // Fetch HSN code from database via API
-            try {
-                const item = refData.items.find(it => String(it.ItemCode || '') === String(value || ''));
-
-                if (item) {
-                    // Fetch HSN code from OCHP table via JOIN query
-                    const hsnResponse = await fetchHSNCodeFromItem(value);
-                    const hsnData = hsnResponse.data;
-
-                    console.log('ðŸ” Item Selected - HSN Data:', {
-                        itemCode: value,
-                        hsnCode: hsnData.hsnCode,
-                        hsnDescription: hsnData.hsnDescription,
-                        hsn_sww: hsnData.hsn_sww,
-                    });
-
-                    setLines(prev => prev.map((line, idx) => {
-                        if (idx !== i) return line;
-                        const next = { ...line, itemNo: value, forRate: '', taxCodeManuallyOverridden: false };
-
-                        // Step 1: Set Item Details
-                        next.itemDescription = item.ItemName || next.itemDescription;
-                        next.uomCode = String(item.SalesUnit || item.InventoryUOM || '').trim();
-                        next.uomName = next.uomName || next.uomCode;
-                        next.countryOfOrigin = item.ItemCountryOrg || next.countryOfOrigin || '';
-                        next.sacCode = item.SACEntry || next.sacCode || '';
-                        next.distRule = next.distRule || item.DistributionRule || '';
-                        next.whse = next.whse || item.DefaultWarehouse || header.warehouse || '';
-                        next.loc = resolveLineLocation(next.whse, next.branch || header.branch);
-                        next.openQty = next.openQty || '';
-
-                        // Step 2: Set HSN Code from API response (OCHP.ChapterID via JOIN)
-                        next.hsnCode = hsnData.hsnCode || hsnData.hsn_sww || '';
-
-                        // Step 3: Get Base Tax Code from Item Master
-                        const baseTaxCode = item.TaxCodeAR || item.SalTaxCode || '';
-
-                        console.log('ðŸ” Item Selected:', {
-                            itemCode: item.ItemCode,
-                            itemName: item.ItemName,
-                            hsnCode: next.hsnCode,
-                            baseTaxCode: baseTaxCode,
-                            placeOfSupply: header.placeOfSupply,
-                        });
-
-                        // Step 4: Determine GST State (Place of Supply)
-                        const gstState = header.placeOfSupply;
-                        const companyState = refData.company_address?.State || selectedBranch?.State || '';
-
-                        // Step 5: Validate States
-                        if (!gstState || !companyState) {
-                            console.warn('âš ï¸ Missing state information for tax determination');
-                            next.taxCode = '';
-                            next.stcode = next.stcode || '';
-                        } else {
-                            // Step 6: Determine Tax Code using Tax Engine
-                            const determinedTaxCode = determineTaxCode(
-                                { ...item, TaxCodeAR: baseTaxCode },
-                                gstState,        // shipToState (using Place of Supply)
-                                gstState,        // billToState (same as POS for now)
-                                false,           // useBillToForTax (not used in current flow)
-                                companyState,
-                                effectiveTaxCodes
-                            );
-
-                            if (determinedTaxCode) {
-                                next.taxCode = determinedTaxCode;
-                                next.stcode = next.stcode || '';
-                                console.log('âœ… Tax Code Auto-Selected:', {
-                                    gstType: getGSTTypeLabel(companyState, gstState),
-                                    taxCode: determinedTaxCode
-                                });
-                            } else {
-                                console.warn('âš ï¸ Could not determine tax code');
-                                next.taxCode = '';
-                                next.stcode = next.stcode || '';
-                            }
-                        }
-
-                        next.total = fmtDec(calcLineTotal(next), numDec.total);
-                        return next;
-                    }));
-                }
-            } catch (error) {
-                console.error('âŒ Error fetching HSN code:', error);
-                // Fallback to reference data if API fails
-                setLines(prev => prev.map((line, idx) => {
-                    if (idx !== i) return line;
-                    const next = { ...line, itemNo: value, forRate: '', taxCodeManuallyOverridden: false };
-                    const item = refData.items.find(it => String(it.ItemCode || '') === String(value || ''));
-                    if (item) {
-                        next.itemDescription = item.ItemName || next.itemDescription;
-                        next.uomCode = String(item.SalesUnit || item.InventoryUOM || '').trim();
-                        next.uomName = next.uomName || next.uomCode;
-                        next.hsnCode = item.HSNCode || item.SWW || item.U_HSNCode || next.hsnCode || '';
-                        next.countryOfOrigin = item.ItemCountryOrg || next.countryOfOrigin || '';
-                        next.sacCode = item.SACEntry || next.sacCode || '';
-                        next.distRule = next.distRule || item.DistributionRule || '';
-                        next.whse = next.whse || item.DefaultWarehouse || header.warehouse || '';
-                        next.loc = resolveLineLocation(next.whse, next.branch || header.branch);
-                        next.stcode = next.stcode || '';
-                    }
-                    next.total = fmtDec(calcLineTotal(next), numDec.total);
-                    return next;
-                }));
+        if (name === 'itemNo') {
+            const item = refData.items.find(it => String(it.ItemCode || '') === String(value || ''));
+            if (item) {
+                await selectAndExpandSalesBomItem(i, item, { hydrateQuantityAndPrice: false });
+                return;
             }
-        } else {
-            // For non-itemNo changes, update synchronously
-            setLines(prev => prev.map((line, idx) => {
+
+            itemSelectionRequestsRef.current.set(i, Symbol(String(value || '')));
+            setLines(prev => {
+                const line = prev[i];
+                if (!line) return prev;
+                return replaceSalesBomSelection(prev, i, {
+                    ...line,
+                    itemNo: value,
+                    itemDescription: '',
+                    hsnCode: '',
+                    taxCode: '',
+                    forRate: '',
+                    total: '',
+                    salesBomSelectionToken: Symbol(String(value || '')),
+                });
+            });
+            return;
+        }
+
+        setLines(prev => {
+            const editedLine = prev[i];
+            if (!editedLine) return prev;
+
+            const updatedLines = prev.map((line, idx) => {
                 if (idx !== i) return line;
                 const next = { ...line, [name]: numDec[name] !== undefined ? sanitize(value, numDec[name]) : value };
                 if (name === 'uomName') next.uomNameEdited = true;
                 if (['unitPrice', 'stdDiscount', 'taxCode'].includes(name)) next.forRate = '';
-                if (name === 'uomCode') { next.uomName = value; next.uomNameEdited = false; }
+                if (name === 'uomCode') {
+                    const item = refData.items.find(it => String(it.ItemCode || '') === String(next.itemNo || ''));
+                    Object.assign(next, applyUomCodeSelection(next, value, getLineUomOptions(next, item, refData.uom_groups)));
+                }
+                if (name === 'quantity' && next.bomRole === 'component') {
+                    next.bomQuantityManuallyEdited = true;
+                }
+                if (next.bomRole === 'component') {
+                    next.bomComponentManuallyEdited = true;
+                }
                 if (name === 'taxCode') {
+                    const item = refData.items.find((it) => String(it.ItemCode || '') === String(next.itemNo || ''));
+                    next.taxCode = normalizeTaxCodeSelection(next.taxCode, item);
                     next.stcode = next.stcode || '';
                     next.taxCodeManuallyOverridden = Boolean(String(next.taxCode || '').trim());
                 }
                 if (name === 'whse') next.loc = resolveLineLocation(next.whse, next.branch || header.branch);
                 next.total = fmtDec(calcLineTotal(next), numDec.total);
                 return next;
-            }));
-        }
+            });
+
+            if (name !== 'quantity' || editedLine.bomRole !== 'parent' || !editedLine.bomGroupId) {
+                return updatedLines;
+            }
+
+            return updatedLines.map((line) => {
+                if (
+                    line.bomRole !== 'component'
+                    || line.bomGroupId !== editedLine.bomGroupId
+                    || line.bomQuantityManuallyEdited
+                ) {
+                    return line;
+                }
+
+                const componentQuantity = calculateSalesBomComponentQuantity(
+                    value,
+                    line.bomComponentQuantity,
+                    line.bomBaseQuantity,
+                );
+                if (componentQuantity === null) return line;
+
+                const next = {
+                    ...line,
+                    quantity: fmtDec(componentQuantity, numDec.quantity),
+                };
+                next.total = fmtDec(calcLineTotal(next), numDec.total);
+                return next;
+            });
+        });
     };
 
     const handleDistributionRuleChange = (lineIndex, valuesByDimension = {}) => {
@@ -2299,6 +2439,7 @@ function SalesOrder() {
                 const fieldName = fieldByDimension[Number(dimensionCode)];
                 if (fieldName) next[fieldName] = ruleCode || '';
             });
+            if (next.bomRole === 'component') next.bomComponentManuallyEdited = true;
             return next;
         }));
     };
@@ -2308,6 +2449,62 @@ function SalesOrder() {
         if (d === undefined) return;
         if (target === 'header') { setHeader(p => ({ ...p, [field]: fmtDec(p[field], d) })); return; }
         setLines(p => p.map((l, idx) => idx === i ? { ...l, [field]: fmtDec(l[field], d) } : l));
+    };
+
+    const handleTablePaste = ({ startRowIndex, patches }) => {
+        if (!isDocumentEditable) return;
+        markDirty();
+        setPageState(p => ({ ...p, error: '', success: '' }));
+        setValErrors(p => ({ ...p, form: '' }));
+        setLines(previous => applyDocumentTablePaste({
+            lines: previous,
+            patches,
+            startRowIndex,
+            createLine: () => ({
+                ...createLine(rowUdfDefinitions),
+                branch: header.branch || '',
+                loc: resolveLineLocation(header.warehouse, header.branch),
+                whse: header.warehouse || '',
+            }),
+            transformLine: (pastedLine, _rowIndex, rowPatch) => {
+                let next = { ...pastedLine };
+                const pastedKeys = new Set(rowPatch.cells.map(cell => cell.key));
+                if (pastedKeys.has('itemNo')) {
+                    const item = refData.items.find(candidate => (
+                        String(candidate.ItemCode || '') === String(next.itemNo || '')
+                    ));
+                    if (item) {
+                        const pastedValues = { ...next, udf: { ...(next.udf || {}) } };
+                        next = hydrateSalesOrderItemLine(next, item, '', { hydrateQuantityAndPrice: true });
+                        rowPatch.cells.forEach((cell) => {
+                            if (cell.isUdf) next.udf = { ...(next.udf || {}), [cell.key]: cell.value };
+                            else next[cell.key] = pastedValues[cell.key];
+                        });
+                    }
+                }
+                if (pastedKeys.has('uomCode')) {
+                    const item = refData.items.find(candidate => String(candidate.ItemCode || '') === String(next.itemNo || ''));
+                    Object.assign(next, applyUomCodeSelection(next, next.uomCode, getLineUomOptions(next, item, refData.uom_groups)));
+                }
+                if (pastedKeys.has('taxCode')) {
+                    const item = refData.items.find(candidate => String(candidate.ItemCode || '') === String(next.itemNo || ''));
+                    next.taxCode = normalizeTaxCodeSelection(next.taxCode, item);
+                    next.taxCodeManuallyOverridden = Boolean(String(next.taxCode || '').trim());
+                    next.forRate = '';
+                }
+                if (pastedKeys.has('whse')) next.loc = resolveLineLocation(next.whse, next.branch || header.branch);
+                next.total = fmtDec(calcLineTotal(next), numDec.total);
+                return next;
+            },
+        }));
+    };
+
+    const handleTableClipboardFeedback = (message, type) => {
+        setPageState(previous => ({
+            ...previous,
+            error: type === 'error' ? message : '',
+            success: type === 'error' ? '' : message,
+        }));
     };
 
     const addLine = () => {
@@ -2339,22 +2536,26 @@ function SalesOrder() {
             }
 
             // Check if last line has unit price
-            if (!lastLine.unitPrice || Number(lastLine.unitPrice) <= 0) {
+            if (lastLine.bomRole !== 'component' && (!lastLine.unitPrice || Number(lastLine.unitPrice) <= 0)) {
                 errors.unitPrice = 'Unit Price is required before adding a new line';
             }
 
             // Check if last line has UoM
-            if (!String(lastLine.uomCode || '').trim()) {
+            if (requiresEditableUomCode && lastLine.bomRole !== 'component' && !String(lastLine.uomCode || '').trim()) {
                 errors.uomCode = 'UoM is required before adding a new line';
             }
 
             // Check if last line has HSN Code
-            if (!String(lastLine.hsnCode || '').trim()) {
+            if (lastLine.bomRole !== 'component' && !String(lastLine.hsnCode || '').trim()) {
                 errors.hsnCode = 'HSN Code is required before adding a new line';
             }
 
             // Check if last line has Tax Code
-            if (!String(lastLine.taxCode || '').trim()) {
+            if (
+                lastLine.bomRole !== 'component'
+                && isSalesOrderLineTaxCodeRequired(lastLine)
+                && !resolveSalesOrderLineTaxCode(lastLine)
+            ) {
                 errors.taxCode = 'Tax Code is required before adding a new line';
             }
 
@@ -2390,8 +2591,25 @@ function SalesOrder() {
     };
 
     const removeLine = (i) => {
+        const selectedLine = lines[i];
+        if (selectedLine?.bomRole === 'component') {
+            setPageState(p => ({
+                ...p,
+                error: 'Sales BOM component items cannot be removed individually.',
+                success: '',
+            }));
+            return;
+        }
+
+        markDirty();
         setValErrors(p => { const nl = { ...p.lines }; delete nl[i]; return { ...p, lines: nl, form: '' }; });
-        setLines(p => p.filter((_, idx) => idx !== i));
+        setLines(p => {
+            const line = p[i];
+            if (line?.bomRole === 'parent' && line.bomGroupId) {
+                return p.filter(candidate => candidate.bomGroupId !== line.bomGroupId);
+            }
+            return p.filter((_, idx) => idx !== i);
+        });
     };
 
     const handleHeaderUdfChange = (k, v) => {
@@ -2400,7 +2618,24 @@ function SalesOrder() {
     };
     const handleRowUdfChange = (i, k, v) => {
         markDirty();
-        setLines(p => p.map((l, idx) => idx === i ? { ...l, udf: { ...(l.udf || {}), [k]: v } } : l));
+        setLines(p => p.map((l, idx) => idx === i ? {
+            ...l,
+            bomComponentManuallyEdited: l.bomRole === 'component' ? true : l.bomComponentManuallyEdited,
+            udf: { ...(l.udf || {}), [k]: v },
+        } : l));
+    };
+    const markSalesBomComponentEdited = (lineIndex) => {
+        setLines(previous => previous.map((line, index) => (
+            index === lineIndex && line.bomRole === 'component'
+                ? { ...line, bomComponentManuallyEdited: true }
+                : line
+        )));
+    };
+    const handleSalesOrderLineLookupSelect = (option) => {
+        const lineIndex = lineLookupModal.lineIndex;
+        handleLineLookupSelect(option);
+        markSalesBomComponentEdited(lineIndex);
+        markDirty();
     };
     const updateFormSetting = (g, k, prop, val) => setFormSettings((previous) => (
         updateFormSettingPreference(previous, g, k, prop, val)
@@ -2611,7 +2846,11 @@ function SalesOrder() {
         if (hsnModal.lineIndex >= 0) {
             setLines(prev => prev.map((line, idx) => {
                 if (idx === hsnModal.lineIndex) {
-                    return { ...line, hsnCode: hsn.code || hsn.label || '' };
+                    return {
+                        ...line,
+                        hsnCode: hsn.code || hsn.label || '',
+                        bomComponentManuallyEdited: line.bomRole === 'component' ? true : line.bomComponentManuallyEdited,
+                    };
                 }
                 return line;
             }));
@@ -2625,6 +2864,15 @@ function SalesOrder() {
     };
 
     const openItemModalSafe = async (lineIndex) => {
+        if (lines[lineIndex]?.bomRole === 'component') {
+            setPageState(p => ({
+                ...p,
+                error: 'Sales BOM component item codes cannot be changed.',
+                success: '',
+            }));
+            return;
+        }
+
         const fallbackItems = Array.isArray(refData.items) ? refData.items : [];
 
         setItemModal({
@@ -2663,74 +2911,18 @@ function SalesOrder() {
         if (itemModal.lineIndex < 0) return;
 
         const lineIndex = itemModal.lineIndex;
-        const mergedItem = mergeItemMaster(item, refData.items);
-
-        try {
-            // Fetch HSN code from database
-            const hsnResponse = await fetchHSNCodeFromItem(mergedItem.ItemCode);
-            const hsnData = hsnResponse.data;
-
-            setLines(prev => prev.map((line, idx) => {
-                if (idx !== lineIndex) return line;
-
-                const next = hydrateDocumentLineFromItem(line, mergedItem, {
-                    side: 'sales',
-                    hsnCode: hsnData.hsnCode || hsnData.hsn_sww || '',
-                    fallbackWarehouse: header.warehouse,
-                    resolveLineLocation,
-                    headerBranch: header.branch,
-                    calcLineTotal,
-                    formatTotal: (value) => fmtDec(value, numDec.total),
-                });
-
-                // Auto-determine tax code
-                const gstState = header.placeOfSupply;
-                const companyState = refData.company_address?.State || selectedBranch?.State || '';
-
-                if (gstState && companyState) {
-                    const determinedTaxCode = determineTaxCode(
-                        mergedItem,
-                        gstState,
-                        gstState,
-                        false,
-                        companyState,
-                        effectiveTaxCodes
-                    );
-
-                    if (determinedTaxCode) {
-                        next.taxCode = determinedTaxCode;
-                        next.stcode = next.stcode || '';
-                    }
-                }
-
-                if (!next.stcode) {
-                    next.stcode = next.stcode || '';
-                }
-
-                next.total = fmtDec(calcLineTotal(next), numDec.total);
-                return next;
-            }));
-
-            closeItemModal();
-        } catch (error) {
-            console.error('Error selecting item:', error);
-            // Still set basic item info even if HSN fetch fails
-            setLines(prev => prev.map((line, idx) => {
-                if (idx !== lineIndex) return line;
-                return {
-                    ...line,
-                    ...hydrateDocumentLineFromItem(line, mergedItem, {
-                        side: 'sales',
-                        fallbackWarehouse: header.warehouse,
-                        resolveLineLocation,
-                        headerBranch: header.branch,
-                        calcLineTotal,
-                        formatTotal: (value) => fmtDec(value, numDec.total),
-                    }),
-                };
+        if (lines[lineIndex]?.bomRole === 'component') {
+            setPageState(p => ({
+                ...p,
+                error: 'Sales BOM component item codes cannot be changed.',
+                success: '',
             }));
             closeItemModal();
+            return;
         }
+
+        closeItemModal();
+        await selectAndExpandSalesBomItem(lineIndex, item);
     };
 
     // â”€â”€ Freight Selection Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -2785,6 +2977,8 @@ function SalesOrder() {
 
     // â”€â”€ Copy From Handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const handleCopyFrom = (data, docType) => {
+    setSeriesRevision(value => value + 1);
+
         const copySource = unwrapCopyFromDocument(data);
         const baseType = BASE_TYPE[docType] || 23;
         const normHeader = normaliseDocumentHeader(copySource.header);
@@ -2792,19 +2986,17 @@ function SalesOrder() {
         const sourceFreightCharges = copySource.document?.freightCharges || copySource.source?.freightCharges || data?.freightCharges || [];
 
         const rawLines = copySource.lines;
-        const copiedLines = rawLines.map((line, idx) => ({
+        const copiedLines = normalizeSalesBomDocumentLines(rawLines.map((line, idx) => ({
             ...createLine(rowUdfDefinitions),
             ...normaliseDocumentLine(line, idx, copySource.docEntry, baseType, normHeader.branch),
             stcode: line.STCODE || line.STACode || line.stcode || '',
             taxCodeManuallyOverridden: Boolean(String(line.TaxCode || line.VatGroup || line.taxCode || '').trim()),
             documentCreated: line.DocumentCreated || line.documentCreated || copySource.header.DocumentCreated || normHeader.documentCreated || '',
             loc: line.loc || resolveLineLocation(line.WarehouseCode || line.WhsCode || line.whse || '', normHeader.branch),
-        }));
+        })), `copy-${baseType}-${copySource.docEntry || 'new'}`);
         const firstLineWarehouse = copiedLines.find(line => String(line.whse || '').trim())?.whse || '';
 
         const targetDate = today();
-        const copiedBranch = String(normHeader.branch || '').trim();
-        const targetBranch = /^\\d+$/.test(copiedBranch) && Number(copiedBranch) > 0 ? copiedBranch : '';
         const targetWarehouse = normHeader.warehouse || firstLineWarehouse || '';
 
         setHeader(prev => ({
@@ -2819,22 +3011,7 @@ function SalesOrder() {
             warehouse: targetWarehouse || prev.warehouse || '',
         }));
         setPageState(p => ({ ...p, seriesLoading: true }));
-        fetchDocumentSeries(targetDate, { branch: targetBranch })
-            .then((seriesResponse) => {
-                const availableSeries = seriesResponse.data?.series || [];
-                setRefData(prev => ({ ...prev, series: availableSeries }));
-                const defaultSeries = resolvePreferredSeries(availableSeries, targetDate, '');
-                if (defaultSeries?.Series != null) {
-                    handleSeriesChange(defaultSeries.Series);
-                } else {
-                    setHeader(prev => ({ ...prev, series: '', nextNumber: '' }));
-                    setPageState(p => ({ ...p, seriesLoading: false }));
-                }
-            })
-            .catch((error) => {
-                setHeader(prev => ({ ...prev, series: '', nextNumber: '' }));
-                setPageState(p => ({ ...p, seriesLoading: false, error: getErrMsg(error, 'Failed to load Sales Order series for copied document.') }));
-            });
+        
         setLines(copiedLines.length > 0 ? copiedLines : [createLine(rowUdfDefinitions)]);
         setHeaderUdfs(normalizeUdfState(headerUdfDefinitions, sourceHeaderUdfs, { preserveExtra: false }));
         setFreightModal({ open: false, freightCharges: Array.isArray(sourceFreightCharges) ? sourceFreightCharges : [], loading: false });
@@ -2878,6 +3055,8 @@ function SalesOrder() {
         handleCopyFrom({
             ...(copyFrom.header || {}),
             header: copyFrom.header || {},
+            freightCharges: copyFrom.freightCharges || [],
+            header_udfs: copyFrom.headerUdfs || copyFrom.header_udfs || {},
             DocumentLines: copyFrom.lines || [],
             DocEntry: copyFrom.docEntry,
         }, copyFrom.type);
@@ -2945,7 +3124,7 @@ function SalesOrder() {
             return;
         }
 
-        let sourceSnapshot = { header, lines, headerUdfs };
+        let sourceSnapshot = { header, lines, headerUdfs, freightCharges: freightModal.freightCharges };
         if (targetType === 'delivery' && currentDocEntry) {
             try {
                 const response = await fetchSalesOrderForDeliveryCopy(currentDocEntry);
@@ -2965,6 +3144,7 @@ function SalesOrder() {
                     header: copyDocument.header || header,
                     lines: copyLines,
                     headerUdfs: copyDocument.headerUdfs || copyDocument.header_udfs || headerUdfs,
+                    freightCharges: copyDocument.freightCharges || freightModal.freightCharges,
                 };
             } catch (error) {
                 setPageState(p => ({
@@ -2996,6 +3176,8 @@ function SalesOrder() {
     };
 
     const handleDuplicate = () => {
+    setSeriesRevision(value => value + 1);
+
         const duplicateDate = today();
         const duplicated = duplicateDocumentInPlace({
             currentDocEntry,
@@ -3006,7 +3188,12 @@ function SalesOrder() {
             rowUdfDefinitions,
             setCurrentDocEntry,
             setHeader,
-            setLines,
+            setLines: (duplicateLines) => setLines(
+                normalizeSalesBomDocumentLines(
+                    duplicateLines,
+                    `sales-order-duplicate-${Date.now()}`,
+                ),
+            ),
             setActiveTab,
             setValErrors,
             setPageState,
@@ -3120,6 +3307,7 @@ function SalesOrder() {
         for (let i = 0; i < lines.length; i++) {
             const l = lines[i];
             if (!String(l.itemNo || '').trim()) continue;
+            const isSalesBomComponent = l.bomRole === 'component' && l.bomType === 'S';
 
             if (!l.itemNo) {
                 e.lines[i] = { ...(e.lines[i] || {}), itemNo: 'Item is required' };
@@ -3133,19 +3321,19 @@ function SalesOrder() {
                 return e;
             }
 
-            if (!l.hsnCode && !isUpdate) {
+            if (!isSalesBomComponent && !l.hsnCode && !isUpdate) {
                 e.lines[i] = { ...(e.lines[i] || {}), hsnCode: 'HSN Code is required' };
                 e.form = 'Please correct the highlighted fields.';
                 return e;
             }
 
-            if ((!l.unitPrice || Number(l.unitPrice) <= 0) && !isUpdate) {
+            if (!isSalesBomComponent && (!l.unitPrice || Number(l.unitPrice) <= 0) && !isUpdate) {
                 e.lines[i] = { ...(e.lines[i] || {}), unitPrice: 'Unit Price must be > 0' };
                 e.form = 'Please correct the highlighted fields.';
                 return e;
             }
 
-            if (!l.uomCode && !isUpdate) {
+            if (requiresEditableUomCode && !isSalesBomComponent && !l.uomCode && !isUpdate) {
                 e.lines[i] = { ...(e.lines[i] || {}), uomCode: 'UoM is required' };
                 e.form = 'Please correct the highlighted fields.';
                 return e;
@@ -3157,15 +3345,19 @@ function SalesOrder() {
                 return e;
             }
 
-            if (!l.taxCode || !String(l.taxCode).trim()) {
+            if (isSalesBomComponent) continue;
+
+            const resolvedTaxCode = resolveSalesOrderLineTaxCode(l);
+            if (isSalesOrderLineTaxCodeRequired(l) && !resolvedTaxCode) {
                 e.lines[i] = { ...(e.lines[i] || {}), taxCode: 'Tax Code is required' };
                 e.form = 'Please correct the highlighted fields.';
                 return e;
             }
 
-            const taxCodeExists = effectiveTaxCodes.some(t => String(t.Code) === String(l.taxCode));
+            const taxCodeExists = !resolvedTaxCode
+                || effectiveTaxCodes.some(t => String(t.Code) === String(resolvedTaxCode));
             if (!taxCodeExists) {
-                e.lines[i] = { ...(e.lines[i] || {}), taxCode: `Tax code '${l.taxCode}' is not valid in SAP B1` };
+                e.lines[i] = { ...(e.lines[i] || {}), taxCode: `Tax code '${resolvedTaxCode}' is not valid in SAP B1` };
                 e.form = 'Please correct the highlighted fields.';
                 return e;
             }
@@ -3202,6 +3394,11 @@ function SalesOrder() {
     };
 
     // â”€â”€ submit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    const narrowConfirmationUpdate = useConfirmationOnlyUpdate({
+      docEntry: currentDocEntry, isDirty,
+      state: { header, lines, headerUdfs, referenceDocuments, referenceDocumentsChanged, freightCharges: freightModal.freightCharges, companyDb: activeCompanyDb , company_id: activeCompanyId, companyKey: formSettingsStorageKey },
+    });
+
     const handleSubmit = async (ev) => {
         ev.preventDefault();
         if (!companyFormSettingsReady) {
@@ -3238,6 +3435,9 @@ function SalesOrder() {
                 ...header,
                 customerRefNo: header.customerRefNo || header.salesContractNo || '',
                 deliveryDate: header.deliveryDate || header.postingDate || header.documentDate,
+                // The rounding amount is calculated for display, so persist that
+                // same value instead of the stale/empty value held in header state.
+                roundingAmount: totals.roundingAmount,
                 placeOfSupply: header.placeOfSupply,
                 branch: header.branch,
                 contactPerson: header.contactPerson,
@@ -3289,7 +3489,7 @@ function SalesOrder() {
                 uomEntry: line.uomEntry,
                 stdDiscount: line.stdDiscount,
                 stcode: line.stcode,
-                taxCode: line.taxCode,
+                taxCode: resolveSalesOrderLineTaxCode(line),
                 total: line.total,
                 whse: line.whse,
                 distRule: line.distRule,
@@ -3313,12 +3513,28 @@ function SalesOrder() {
                 commPercent: line.commPercent,
                 lineShippingType: line.lineShippingType,
                 lineDeliveryDate: line.lineDeliveryDate,
+                requiredDate: line.requiredDate,
+                noOfPackages: line.noOfPackages,
                 wTaxLiable: line.wTaxLiable,
                 taxLiable: line.taxLiable,
                 withoutQtyPosting: line.withoutQtyPosting,
                 baseEntry: line.baseEntry,
                 baseType: line.baseType,
                 baseLine: line.baseLine,
+                bomType: line.bomType,
+                bomRole: line.bomRole,
+                bomTreeCode: line.bomTreeCode,
+                bomGroupId: line.bomGroupId,
+                bomParentIndex: line.bomParentIndex,
+                bomParentLineNum: line.bomParentLineNum,
+                bomBaseQuantity: line.bomBaseQuantity,
+                bomComponentQuantity: line.bomComponentQuantity,
+                bomChildNum: line.bomChildNum,
+                bomVisualOrder: line.bomVisualOrder,
+                bomQuantityManuallyEdited: line.bomQuantityManuallyEdited,
+                bomComponentManuallyEdited: line.bomComponentManuallyEdited,
+                treeType: line.treeType,
+                parentLineNum: line.parentLineNum,
                 udf: buildVisibleEnteredRowUdfPayload(
                   rowUdfDefinitions,
                   line.udf || {},
@@ -3346,7 +3562,7 @@ function SalesOrder() {
             console.log('Header UDFs:', headerUdfs);
             console.log('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
 
-            const r = currentDocEntry ? await updateSalesOrder(currentDocEntry, payload) : await submitSalesOrder(payload);
+            const r = currentDocEntry ? await updateSalesOrder(currentDocEntry, narrowConfirmationUpdate(payload)) : await submitSalesOrder(payload);
             const dn = r.data.doc_num ? ` Doc No: ${r.data.doc_num}.` : '';
             defaultWarehouseAppliedRef.current = false;
             const resetHeader = createInitialHeader(generalSettingsRef.current);
@@ -3377,6 +3593,8 @@ function SalesOrder() {
     };
 
     const resetForm = () => {
+    setSeriesRevision(value => value + 1);
+
         defaultWarehouseAppliedRef.current = false;
         const resetHeader = createInitialHeader(generalSettingsRef.current);
         setSnapshotPending(false);
@@ -3402,7 +3620,9 @@ function SalesOrder() {
     const visibleRowUdfs = rowUdfDefinitions.filter((field) => (
         resolveFormSettingFlag(field, formSettings.rowUdfs?.[field.key] || {}, 'visible')
     ));
-    const isRightSidebarOpen = sidebarOpen || formSettingsOpen;
+    // Keep the right-side grid track reserved so closing the panel doesn't
+    // reflow the document body and push form fields out of view.
+    const isRightSidebarOpen = true;
 
     useEffect(() => {
         const handleShortcut = (event) => {
@@ -3424,13 +3644,15 @@ function SalesOrder() {
     // Continue in next part with render...
 
     // â”€â”€ render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    return (
+    useDocumentSeries({ endpoint: '/sales-order', companyKey: String(activeCompanyId), currentDocEntry, header: header, setHeader, setRefData, setPageState, ready: !pageState.loading && !pageState.posting , refreshKey: seriesRevision});
+
+  return (
         <form ref={formRef} className={`so-page sap-document-page so-sales-order-page${isRightSidebarOpen ? ' so-page--sidebar-open' : ''}`} onSubmit={handleSubmit} onChangeCapture={markDirty}>
 
             {/* toolbar */}
             <div className="so-toolbar sap-document-toolbar">
-                <span className="so-toolbar__title">Sales Order{currentDocEntry ? ` â€” #${header.docNo || currentDocEntry}` : ''}</span>
-                <button type="submit" className="so-btn so-btn--primary sap-document-toolbar__primary" disabled={pageState.posting || !isDocumentEditable} title={primaryActionLabel}>
+                <span className="so-toolbar__title">Sales Order{currentDocEntry ? ` - #${header.docNo || currentDocEntry}` : ''}</span>
+                <button type="submit" className="so-btn so-btn--primary sap-document-toolbar__primary" disabled={pageState.posting || !isDocumentEditable || formSettingsStatus.queryModeActive} title={primaryActionLabel}>
                     {primaryActionLabel}
                 </button>
                 <button type="button" className="so-btn sap-document-toolbar__cancel" onClick={resetForm}>
@@ -3439,7 +3661,7 @@ function SalesOrder() {
                 <button type="button" className="so-btn sap-document-toolbar__udf" onClick={toggleHeaderUdfs}>
                     {sidebarOpen ? 'Hide UDFs' : 'Show UDFs'}
                 </button>
-                <button type="button" className="so-btn sap-document-toolbar__settings" onClick={toggleFormSettings} disabled={!companyFormSettingsReady} title={companyFormSettingsReady ? 'Choose document-line fields' : 'Loading company Form Settings'}>
+                <button type="button" className="so-btn sap-document-toolbar__settings" onClick={toggleFormSettings} disabled={!companyFormSettingsReady || formSettingsStatus.queryModeActive} title={formSettingsStatus.queryModeActive ? 'Company SQL Content layout is active' : (companyFormSettingsReady ? 'Choose document-line fields' : 'Loading company Form Settings')}>
                     Form Settings
                 </button>
                 <PrintSalesOrderActions
@@ -3457,7 +3679,7 @@ function SalesOrder() {
                     <button
                         type="button"
                         className="so-btn"
-                        disabled={!isDocumentEditable || !!currentDocEntry || !hasBuyerCode}
+                        disabled={!isDocumentEditable || !!currentDocEntry || !hasBuyerCode || formSettingsStatus.queryModeActive}
                         onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
@@ -3537,7 +3759,7 @@ function SalesOrder() {
                     <button
                         type="button"
                         className="so-btn"
-                        disabled={!canAttemptCopyTo}
+                        disabled={!canAttemptCopyTo || formSettingsStatus.queryModeActive}
                         title={!currentDocEntry
                             ? 'Open a saved sales order before using Copy To.'
                             : hasKnownCopyQuantityState && !hasOpenCopyQuantity
@@ -3566,7 +3788,7 @@ function SalesOrder() {
                     </div>
                 </div>
                 {currentDocEntry && (
-                    <button type="button" className="so-btn sap-document-toolbar__duplicate" onClick={handleDuplicate}>
+                    <button type="button" className="so-btn sap-document-toolbar__duplicate" onClick={handleDuplicate} disabled={formSettingsStatus.queryModeActive}>
                         Duplicate
                     </button>
                 )}
@@ -3776,10 +3998,10 @@ function SalesOrder() {
                                                 onChange={handleHeaderChange}
                                                 disabled={!!currentDocEntry || pageState.seriesLoading}
                                             >
-                                                <option value="">Select Series</option>
-                                                <option value={SAP_MANUAL_SERIES_VALUE}>Manual</option>
+                                                <option value="">{pageState.seriesLoading ? 'Loading series...' : pageState.seriesError ? 'Series unavailable' : 'Select Series'}</option>
+                                                {(canUseManualSeries(refData) || (currentDocEntry && ['-1','manual','__sap_manual__'].includes(String(header.series)))) && (<option value={SAP_MANUAL_SERIES_VALUE}>Manual</option>)}
                                                 {getSapVisibleDocumentSeries(refData.series, {
-                                                    selectedSeries: header.series,
+                                                    selectedSeries: header.series, includeHistorical: Boolean(currentDocEntry),
                                                     postingDate: header.postingDate || header.documentDate,
                                                 }).map(s => (
                                                     <option key={s.Series} value={s.Series}>
@@ -3873,6 +4095,7 @@ function SalesOrder() {
                         {/* â•â• TAB CONTENT â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
                         {activeTab === 'Contents' && (
                             <ContentsTab
+                                companyQueryContext={buildCompanyFormQueryContext(currentDocEntry, header)}
                                 lines={lines}
                                 onLineChange={handleLineChange}
                                 onNumBlur={handleNumBlur}
@@ -3908,6 +4131,9 @@ function SalesOrder() {
                                 displayCurrency={displayCurrency}
                                 documentCurrency={documentCurrency}
                                 formatDisplayMoney={formatMoneyWithCurrency}
+                                canPasteTable={isDocumentEditable}
+                                onPasteTable={handleTablePaste}
+                                onClipboardFeedback={handleTableClipboardFeedback}
                             />
                         )}
 
@@ -3954,6 +4180,7 @@ function SalesOrder() {
                                 onBrowseAttachment={handleBrowseAttachment}
                             />
                         )}
+                        </fieldset>
 
                         {/* â•â• TOTALS FOOTER â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
                         <div className="so-header-card so-document-summary">
@@ -3966,7 +4193,7 @@ function SalesOrder() {
                                             className="so-field__select"
                                             value={header.purchaser || ''}
                                             onChange={handleHeaderChange}
-                                            disabled={!refData.sales_employees || refData.sales_employees.length === 0}
+                                            disabled={!isDocumentEditable || !refData.sales_employees || refData.sales_employees.length === 0}
                                         >
                                             <option value="">No Sales Employee / Buyer</option>
                                             {effectiveSalesEmployees.map(emp => (
@@ -3984,7 +4211,7 @@ function SalesOrder() {
                                             className="so-field__select"
                                             value={header.owner || ''}
                                             onChange={handleHeaderChange}
-                                            disabled={!refData.owners || refData.owners.length === 0}
+                                            disabled={!isDocumentEditable || !refData.owners || refData.owners.length === 0}
                                         >
                                             <option value="">No Owner</option>
                                             {(refData.owners || []).map(owner => (
@@ -3996,7 +4223,7 @@ function SalesOrder() {
                                     </div>
                                     <div className="so-field">
                                         <label className="so-field__label">Remarks</label>
-                                        <textarea className="so-textarea" rows={3} name="otherInstruction" value={header.otherInstruction || ''} onChange={handleHeaderChange} />
+                                        <textarea className="so-textarea" rows={3} name="otherInstruction" value={header.otherInstruction || ''} onChange={handleHeaderChange} disabled={!isDocumentEditable} />
                                     </div>
                                 </div>
                                 <div className="so-header-column">
@@ -4020,7 +4247,7 @@ function SalesOrder() {
                                                 </tr>
                                                 <tr>
                                                     <td>Discount %</td>
-                                                    <td className="so-grid__cell--num"><input className="so-grid__input" name="discount" value={header.discount} onChange={handleHeaderChange} onBlur={() => handleNumBlur('discount', 'header')} /></td>
+                                                    <td className="so-grid__cell--num"><input className="so-grid__input" name="discount" value={header.discount} onChange={handleHeaderChange} onBlur={() => handleNumBlur('discount', 'header')} disabled={!isDocumentEditable} /></td>
                                                 </tr>
                                                 <tr>
                                                     <td>Freight</td>
@@ -4031,12 +4258,14 @@ function SalesOrder() {
                                                             value={header.freight}
                                                             onChange={handleHeaderChange}
                                                             onBlur={() => handleNumBlur('freight', 'header')}
+                                                            disabled={!isDocumentEditable}
                                                             style={{ flex: 1 }}
                                                         />
                                                         <span style={{ fontSize: 11, color: '#1f2937', minWidth: 28 }}>{displayCurrency}</span>
                                                         <button
                                                             type="button"
                                                             onClick={openFreightModal}
+                                                            disabled={!isDocumentEditable}
                                                             style={{
                                                                 padding: '2px 8px',
                                                                 fontSize: '11px',
@@ -4055,7 +4284,7 @@ function SalesOrder() {
                                                 <tr>
                                                     <td>
                                                         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, margin: 0 }}>
-                                                            <input type="checkbox" name="rounding" checked={header.rounding} onChange={handleHeaderChange} />
+                                                            <input type="checkbox" name="rounding" checked={header.rounding} onChange={handleHeaderChange} disabled={!isDocumentEditable} />
                                                             Rounding
                                                         </label>
                                                     </td>
@@ -4180,8 +4409,6 @@ function SalesOrder() {
                             </div>
                         </div>
                         )}
-                        </fieldset>
-
                     </div>
 
                     <HeaderUdfSidebar
@@ -4292,7 +4519,7 @@ function SalesOrder() {
             <LineValueLookupModal
                 isOpen={lineLookupModal.open}
                 onClose={closeLineLookupModal}
-                onSelect={handleLineLookupSelect}
+                onSelect={handleSalesOrderLineLookupSelect}
                 onCreate={handleLineLookupCreate}
                 options={lineLookupModal.options}
                 title={lineLookupModal.title}

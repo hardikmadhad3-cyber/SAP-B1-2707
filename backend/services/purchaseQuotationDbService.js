@@ -3,6 +3,9 @@
  * Reads data directly from SAP B1 SQL Server database
  */
 const db = require('./dbService');
+const { createPhysicalColumnSetReader, findPhysicalColumnName, selectPhysicalOptionalColumn } = require('./salesDocumentDbCompatibility');
+const { getDocumentUnitPriceSql } = require('./documentUnitPriceDbUtils');
+const { getDocumentUomSql, loadCompanyUomGroups } = require('./documentUomDbUtils');
 const { loadBusinessPartnerAddresses } = require('./businessPartnerAddressDbUtils');
 const masterDataDbService = require('./masterDataDbService');
 const { getHeaderUdfValues, getLineUdfValues, getMarketingDocumentUdfs } = require('./udfMetadataService');
@@ -28,15 +31,7 @@ const formatDateForInput = (value) => {
   return String(value).split('T')[0].split(' ')[0];
 };
 
-const getTableColumns = async (tableName) => {
-  const rows = await safe(db.query(`
-    SELECT COLUMN_NAME
-    FROM INFORMATION_SCHEMA.COLUMNS
-    WHERE TABLE_NAME = @tableName
-  `, { tableName }));
-
-  return new Set(rows.map((row) => String(row.COLUMN_NAME || '').trim()));
-};
+const getTableColumns = createPhysicalColumnSetReader(db);
 
 // ── REFERENCE DATA QUERIES ────────────────────────────────────────────────────
 
@@ -84,16 +79,21 @@ const searchVendors = async ({ query = '', cardCode = '', cardName = '', top, so
 };
 
 const getItems = () => safe(db.query(`
-  SELECT ItemCode, ItemName,
-         BuyUnitMsr  AS PurchaseUnit,
-         InvntryUom  AS InventoryUOM,
-         PUoMEntry   AS UoMGroupEntry,
-         DfltWH      AS DefaultWarehouse,
-         SWW         AS HSNCode
-  FROM   OITM
-  WHERE  PrchseItem = 'Y'
-    AND  validFor  <> 'N'
-  ORDER  BY ItemCode
+  SELECT T0.ItemCode, T0.ItemName,
+         T0.BuyUnitMsr  AS PurchaseUnit,
+         T0.InvntryUom  AS InventoryUOM,
+         T0.UgpEntry    AS UoMGroupEntry,
+         T0.PUoMEntry   AS PurchaseUomEntry,
+         PU.UomCode     AS PurchaseUomCode,
+         PU.UomName     AS PurchaseUomName,
+         T0.DfltWH      AS DefaultWarehouse,
+         CAST(COALESCE(NULLIF(T0.LastPurPrc, 0), NULLIF(T0.AvgPrice, 0), 0) AS DECIMAL(19,6)) AS UnitPrice,
+         T0.SWW         AS HSNCode
+  FROM   OITM T0
+  LEFT JOIN OUOM PU ON PU.UomEntry = T0.PUoMEntry
+  WHERE  T0.PrchseItem = 'Y'
+    AND  T0.validFor  <> 'N'
+  ORDER  BY T0.ItemCode
 `));
 
 const getWarehouses = () => safe(db.query(`
@@ -139,16 +139,7 @@ const getStates = () => safe(db.query(`
 
 const getTaxCodes = () => masterDataDbService.searchDocumentTaxCodes('', 'purchase', 500, 0);
 
-const getUomGroups = () => safe(db.query(`
-  SELECT g.UgpEntry AS AbsEntry,
-         g.UgpCode  AS Name,
-         u.UomCode
-  FROM   OUGP g
-  LEFT JOIN UGP1 d ON d.UgpEntry = g.UgpEntry
-  LEFT JOIN OUOM u ON u.UomEntry = d.UomEntry
-  WHERE  g.Locked <> 'Y'
-  ORDER  BY g.UgpEntry, d.LineNum
-`));
+const getUomGroups = () => loadCompanyUomGroups(db);
 
 const getDecimalSettings = () => safe(db.query(`
   SELECT TOP 1
@@ -297,7 +288,7 @@ const getPurchaseQuotation = async (docEntry) => {
       T0.DocDueDate AS DeliveryDate,
       T0.ReqDate AS RequiredDate,
       T0.TaxDate AS DocumentDate,
-      T0.BPLId AS Branch,
+      ${selectPhysicalOptionalColumn(await getTableColumns('OPQT'), 'T0', 'BPLId', 'Branch')},
       T0.DocCur AS Currency,
       T0.DocRate AS ExchangeRate,
       T0.GroupNum AS PaymentTerms,
@@ -332,26 +323,29 @@ const getPurchaseQuotation = async (docEntry) => {
   ]);
 
   const lineColumns = await getTableColumns('PQT1');
+  const documentUom = await getDocumentUomSql(db, 'PQT1');
   const firstExistingLineColumn = (...columns) =>
-    columns.find((column) => lineColumns.has(column));
+    columns.map((column) => findPhysicalColumnName(lineColumns, column)).find(Boolean);
   const optionalLineColumn = (columns, alias, fallback = "''") => {
     const column = firstExistingLineColumn(...(Array.isArray(columns) ? columns : [columns]));
-    return column ? `T0.${column} AS ${alias}` : `${fallback} AS ${alias}`;
+    return selectPhysicalOptionalColumn(lineColumns, 'T0', column, alias, fallback);
   };
 
   // Get lines
-  const lineRows = await safe(db.query(`
+  const lineResult = await db.query(`
     SELECT 
       T0.LineNum,
       T0.ItemCode,
       T0.Dscription AS ItemDescription,
       T0.Quantity,
-      T0.Price AS UnitPrice,
+      ${await getDocumentUnitPriceSql(db, 'PQT1', 'T0')} AS UnitPrice,
       T0.DiscPrcnt AS DiscountPercent,
       T0.TaxCode,
       T0.LineTotal,
       T0.WhsCode AS Warehouse,
-      T0.unitMsr AS UoMCode,
+      ${documentUom.entrySql} AS UoMEntry,
+      ${documentUom.codeSql} AS UoMCode,
+      ${documentUom.nameSql} AS UoMName,
       ${optionalLineColumn(['ReqDate', 'RequiredDate'], 'RequiredDate')},
       ${optionalLineColumn('ShipDate', 'ShipDate')},
       ${optionalLineColumn('OcrCode', 'DistributionRule')},
@@ -359,9 +353,14 @@ const getPurchaseQuotation = async (docEntry) => {
       ${optionalLineColumn('LocCode', 'LocationCode')},
       ${optionalLineColumn('AgrNo', 'BlanketAgreementNo')}
     FROM PQT1 T0
+    ${documentUom.joinSql}
     WHERE T0.DocEntry = @docEntry
     ORDER BY T0.LineNum
-  `, { docEntry }));
+  `, { docEntry });
+  const lineRows = lineResult.recordset || [];
+  if (!lineRows.length) {
+    throw new Error(`Purchase Quotation ${docEntry} exists but its content lines could not be loaded.`);
+  }
 
   // Get HSN codes for items
   const itemCodes = lineRows.map(l => l.ItemCode).filter(Boolean);
@@ -446,7 +445,9 @@ const getPurchaseQuotation = async (docEntry) => {
           total: l.LineTotal != null ? String(l.LineTotal) : '',
           totalLC: l.LineTotal != null ? String(l.LineTotal) : '',
           whse: l.Warehouse || '',
+          uomEntry: l.UoMEntry != null ? Number(l.UoMEntry) : null,
           uomCode: l.UoMCode || '',
+          uomName: l.UoMName || l.UoMCode || '',
           distRule: l.DistributionRule || '',
           countryOfOrigin: l.CountryOfOrigin || '',
           loc: l.LocationCode != null ? String(l.LocationCode) : '',
@@ -529,8 +530,8 @@ const getPurchaseQuotationForCopy = async (docEntry) => {
       T0.CntctCode,
       T0.NumAtCard,
       T0.Comments,
-      T0.BPLId AS BPLId,
-      T0.BPLId AS BPL_IDAssignedToInvoice,
+      ${selectPhysicalOptionalColumn(await getTableColumns('OPQT'), 'T0', 'BPLId', 'BPLId')},
+      ${selectPhysicalOptionalColumn(await getTableColumns('OPQT'), 'T0', 'BPLId', 'BPL_IDAssignedToInvoice')},
       T0.GroupNum,
       T0.DiscPrcnt,
       T0.RoundDif,
@@ -543,17 +544,20 @@ const getPurchaseQuotationForCopy = async (docEntry) => {
     throw new Error(`Purchase Quotation ${docEntry} not found`);
   }
 
+  const documentUom = await getDocumentUomSql(db, 'PQT1');
   const lineRows = await safe(db.query(`
     SELECT
       T0.LineNum,
       T0.ItemCode,
       T0.Dscription AS ItemDescription,
       T0.OpenQty AS Quantity,
-      T0.Price AS UnitPrice,
+      ${await getDocumentUnitPriceSql(db, 'PQT1', 'T0')} AS UnitPrice,
       T0.DiscPrcnt AS DiscountPercent,
       T0.WhsCode AS WarehouseCode,
       T0.TaxCode,
-      T0.unitMsr AS UomCode,
+      ${documentUom.entrySql} AS UomEntry,
+      ${documentUom.codeSql} AS UomCode,
+      ${documentUom.nameSql} AS UomName,
       CHP.ChapterID AS HSNCode,
       T0.DocEntry AS BaseEntry,
       T0.LineNum AS BaseLine,
@@ -561,6 +565,7 @@ const getPurchaseQuotationForCopy = async (docEntry) => {
     FROM PQT1 T0
     LEFT JOIN OITM ITM ON T0.ItemCode = ITM.ItemCode
     LEFT JOIN OCHP CHP ON ITM.ChapterID = CHP.AbsEntry
+    ${documentUom.joinSql}
     WHERE T0.DocEntry = @docEntry
       AND T0.LineStatus = 'O'
       AND T0.OpenQty > 0
@@ -664,21 +669,7 @@ const getReferenceData = async () => {
     getMarketingDocumentUdfs({ headerTable: 'OPQT', lineTable: 'PQT1' }),
   ]);
 
-  // Process UOM groups
-  const uomGroupMap = {};
-  uomGroupsRaw.forEach(row => {
-    if (!uomGroupMap[row.AbsEntry]) {
-      uomGroupMap[row.AbsEntry] = {
-        AbsEntry: row.AbsEntry,
-        Name: row.Name,
-        uomCodes: []
-      };
-    }
-    if (row.UomCode) {
-      uomGroupMap[row.AbsEntry].uomCodes.push(row.UomCode);
-    }
-  });
-  const uom_groups = Object.values(uomGroupMap);
+  const uom_groups = uomGroupsRaw;
 
   // Decimal settings
   const decimalSettings = decimalRows.length > 0 ? {

@@ -1451,13 +1451,13 @@ export default function OutgoingPaymentsPage() {
               </div>
             </FieldRow>
             <FieldRow label="Posting Date">
-              <input value={formatSapDate(header.postingDate)} onChange={(event) => updateHeader("postingDate", event.target.value)} />
+              <input data-sap-date-input="true" aria-label="Posting Date" value={formatSapDate(header.postingDate)} onChange={(event) => updateHeader("postingDate", event.target.value)} readOnly={isFoundDocument} />
             </FieldRow>
             <FieldRow label="Due Date">
-              <input value={formatSapDate(header.dueDate)} onChange={(event) => updateHeader("dueDate", event.target.value)} />
+              <input data-sap-date-input="true" aria-label="Due Date" value={formatSapDate(header.dueDate)} onChange={(event) => updateHeader("dueDate", event.target.value)} readOnly={isFoundDocument} />
             </FieldRow>
             <FieldRow label="Document Date">
-              <input value={formatSapDate(header.documentDate)} onChange={(event) => updateHeader("documentDate", event.target.value)} />
+              <input data-sap-date-input="true" aria-label="Document Date" value={formatSapDate(header.documentDate)} onChange={(event) => updateHeader("documentDate", event.target.value)} readOnly={isFoundDocument} />
             </FieldRow>
             <FieldRow label="Reference">
               <input value={header.referenceNumber} onChange={(event) => updateHeader("referenceNumber", event.target.value)} />

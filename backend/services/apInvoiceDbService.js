@@ -1,4 +1,8 @@
+const { getMarketingDocumentSeries: getSharedDocumentSeries, withSeriesContext } = require('./documentSeriesDbUtils');
 const db = require('./dbService');
+const { createPhysicalColumnSetReader, selectPhysicalOptionalColumn } = require('./salesDocumentDbCompatibility');
+const { getDocumentUnitPriceSql } = require('./documentUnitPriceDbUtils');
+const { getDocumentUomSql, loadCompanyUomGroups } = require('./documentUomDbUtils');
 const { loadBusinessPartnerAddresses } = require('./businessPartnerAddressDbUtils');
 const masterDataDbService = require('./masterDataDbService');
 const { buildMarketingDocumentListFilterQuery } = require('./documentListUtils');
@@ -15,19 +19,10 @@ const safe = async (promise) => {
   }
 };
 
-const getTableColumns = async (tableName) => {
-  const rows = await safe(db.query(`
-    SELECT COLUMN_NAME
-    FROM INFORMATION_SCHEMA.COLUMNS
-    WHERE TABLE_NAME = @tableName
-  `, { tableName }));
-  return new Set(rows.map((row) => String(row.COLUMN_NAME || '').trim()));
-};
+const getTableColumns = createPhysicalColumnSetReader(db);
 
 const optionalColumn = (columns, tableAlias, columnName, alias, fallback = 'NULL') => (
-  columns.has(columnName)
-    ? `${tableAlias}.${columnName} AS ${alias}`
-    : `${fallback} AS ${alias}`
+  selectPhysicalOptionalColumn(columns, tableAlias, columnName, alias, fallback)
 );
 
 const parseSeriesDate = (value) => {
@@ -186,106 +181,7 @@ const isDateBetween = (date, fromDate, toDate) => {
   return date >= from && date <= to;
 };
 
-const getMarketingDocumentSeries = async ({ objectCode, date = null, branch = '', transactionType = '' } = {}) => {
-  const docDate = parseSeriesDate(date);
-  const branchId = String(branch || '').trim() === '' ? null : Number.parseInt(branch, 10);
-  const normalizedBranchId = Number.isInteger(branchId) ? branchId : null;
-  const fyTokens = getFinancialYearTokens(docDate);
-  const nnm1Columns = await getTableColumns('NNM1');
-  const hasBranchColumn = nnm1Columns.has('BPLId');
-  const branchSelect = hasBranchColumn ? 'T0.BPLId,' : 'NULL AS BPLId,';
-  const beginStrSelect = optionalColumn(nnm1Columns, 'T0', 'BeginStr', 'BeginStr', "''");
-  const endStrSelect = optionalColumn(nnm1Columns, 'T0', 'EndStr', 'EndStr', "''");
-  const docSubTypeSelect = optionalColumn(nnm1Columns, 'T0', 'DocSubType', 'DocSubType', "''");
-  const branchFilter = hasBranchColumn && normalizedBranchId != null
-    ? 'AND (T0.BPLId IS NULL OR T0.BPLId IN (-1, 0, @branchId))'
-    : '';
-
-  const rows = await safe(db.query(`
-    SELECT
-      T0.Series,
-      T0.SeriesName,
-      T0.Indicator,
-      T0.NextNumber,
-      ${beginStrSelect},
-      ${endStrSelect},
-      ${docSubTypeSelect},
-      ${branchSelect}
-      FY.FinancialYear,
-      FY.FromDate,
-      FY.ToDate,
-      CASE WHEN DEF.DfltSeries = T0.Series THEN 1 ELSE 0 END AS IsDefault
-    FROM NNM1 T0
-    LEFT JOIN ONNM DEF ON DEF.ObjectCode = T0.ObjectCode
-    LEFT JOIN (
-      SELECT
-        Indicator,
-        MAX(Name) AS FinancialYear,
-        MIN(F_RefDate) AS FromDate,
-        MAX(T_RefDate) AS ToDate
-      FROM OFPR
-      GROUP BY Indicator
-    ) FY ON FY.Indicator = T0.Indicator
-    WHERE T0.ObjectCode = @objectCode
-      AND COALESCE(T0.Locked, 'N') <> 'Y'
-      ${branchFilter}
-  `, {
-    objectCode,
-    branchId: normalizedBranchId,
-  }));
-
-  const ranked = rows.map((row) => {
-    const rowText = normalizeSeriesText(`${row.SeriesName || ''} ${row.Indicator || ''}`);
-    return {
-      ...row,
-      IsManual: Number(row.Series) === -1 || String(row.SeriesName || '').trim().toUpperCase() === 'MANUAL' ? 1 : 0,
-      IsDateMatch: isDateBetween(docDate, row.FromDate, row.ToDate) ? 1 : 0,
-      IsYearNameMatch: fyTokens.some((token) => rowText.includes(token)) ? 1 : 0,
-      BranchPreference: hasBranchColumn && normalizedBranchId != null && Number(row.BPLId) === normalizedBranchId ? 0 : 1,
-    };
-  });
-
-  const hasYearMatchedRows = ranked.some((row) => row.IsYearNameMatch === 1);
-  const hasExactBranchRows = hasBranchColumn && normalizedBranchId != null
-    ? ranked.some((row) => Number(row.BPLId) === normalizedBranchId)
-    : false;
-  const bySeriesNameAndIndicator = new Map();
-
-  [...ranked]
-    .sort((left, right) =>
-      left.BranchPreference - right.BranchPreference ||
-      Number(right.IsDefault || 0) - Number(left.IsDefault || 0) ||
-      Number(left.Series || 0) - Number(right.Series || 0))
-    .forEach((row) => {
-      const key = `${String(row.SeriesName || '').trim().toUpperCase()}|${String(row.Indicator || '').trim().toUpperCase()}`;
-      if (!bySeriesNameAndIndicator.has(key)) bySeriesNameAndIndicator.set(key, row);
-    });
-
-  const series = dedupeNumberingSeries([...bySeriesNameAndIndicator.values()]
-    .filter((row) => (
-      row.IsManual === 1 ||
-      row.IsDateMatch === 1 ||
-      row.IsYearNameMatch === 1
-    ))
-    .filter((row) => (
-      !hasBranchColumn ||
-      normalizedBranchId == null ||
-      !hasExactBranchRows ||
-      Number(row.BPLId) === normalizedBranchId ||
-      row.IsManual === 1
-    ))
-    .sort((left, right) =>
-      left.IsManual - right.IsManual ||
-      Number(right.IsDefault || 0) - Number(left.IsDefault || 0) ||
-      String(left.SeriesName || '').localeCompare(String(right.SeriesName || ''))));
-
-  const transactionMatchedSeries = filterSeriesByTransactionType(series, transactionType);
-  return {
-    series: String(transactionType || '').trim()
-      ? keepSapVisibleNumberingSeries(transactionMatchedSeries)
-      : keepSapVisibleNumberingSeries(series),
-  };
-};
+const getMarketingDocumentSeries = async ({ objectCode, date, branch, docSubType, transactionType } = {}) => withSeriesContext(await getSharedDocumentSeries({ db, objectCode, targetDate: date, branch, docSubType, transactionType }));
 
 const getVendors = () => safe(db.query(`
   SELECT CardCode, CardName, CardType, Currency,
@@ -300,10 +196,17 @@ const getItems = () => safe(db.query(`
   SELECT T0.ItemCode, T0.ItemName,
          T0.BuyUnitMsr  AS PurchaseUnit,
          T0.InvntryUom  AS InventoryUOM,
-         T0.PUoMEntry   AS UoMGroupEntry,
+         T0.UgpEntry    AS UoMGroupEntry,
+         T0.PUoMEntry   AS PurchaseUomEntry,
+         PU.UomCode     AS PurchaseUomCode,
+         PU.UomName     AS PurchaseUomName,
          T0.DfltWH      AS DefaultWarehouse,
-         CHP.ChapterID  AS HSNCode
+         CAST(COALESCE(NULLIF(T0.LastPurPrc, 0), NULLIF(T0.AvgPrice, 0), 0) AS DECIMAL(19,6)) AS UnitPrice,
+         CHP.ChapterID  AS HSNCode,
+         T0.ManBtchNum  AS BatchManaged,
+         T0.ManSerNum   AS SerialManaged
   FROM   OITM T0
+  LEFT JOIN OUOM PU ON PU.UomEntry = T0.PUoMEntry
   LEFT JOIN OCHP CHP ON CHP.AbsEntry = T0.ChapterID
   WHERE  T0.PrchseItem = 'Y'
     AND  T0.validFor  <> 'N'
@@ -319,13 +222,18 @@ const getItemsForModal = () => safe(db.query(`
     CAST(T0.OnHand AS DECIMAL(19,2)) AS InStock,
     T0.BuyUnitMsr      AS PurchaseUnit,
     T0.InvntryUom      AS InventoryUOM,
-    T0.PUoMEntry       AS UoMGroupEntry,
+    T0.UgpEntry        AS UoMGroupEntry,
+    T0.PUoMEntry       AS PurchaseUomEntry,
+    PU.UomCode         AS PurchaseUomCode,
+    PU.UomName         AS PurchaseUomName,
     T0.DfltWH          AS DefaultWarehouse,
+    CAST(COALESCE(NULLIF(T0.LastPurPrc, 0), NULLIF(T0.AvgPrice, 0), 0) AS DECIMAL(19,6)) AS UnitPrice,
     CHP.ChapterID      AS HSNCode,
     T0.ManBtchNum      AS BatchManaged,
     T0.ManSerNum       AS SerialManaged
   FROM OITM T0
   LEFT JOIN OITB T1  ON T1.ItmsGrpCod = T0.ItmsGrpCod
+  LEFT JOIN OUOM PU  ON PU.UomEntry = T0.PUoMEntry
   LEFT JOIN OCHP CHP ON CHP.AbsEntry  = T0.ChapterID
   WHERE T0.PrchseItem = 'Y'
     AND T0.validFor  <> 'N'
@@ -378,16 +286,7 @@ const getTaxCodes = () => masterDataDbService.searchDocumentTaxCodes('', 'purcha
 const getWithholdingTaxCodes = () => masterDataDbService.lookupWithholdingTaxCodes('');
 const getGLAccounts = () => masterDataDbService.lookupGLAccounts('', 5000);
 
-const getUomGroups = () => safe(db.query(`
-  SELECT g.UgpEntry AS AbsEntry,
-         g.UgpCode  AS Name,
-         u.UomCode
-  FROM   OUGP g
-  LEFT JOIN UGP1 d ON d.UgpEntry = g.UgpEntry
-  LEFT JOIN OUOM u ON u.UomEntry = d.UomEntry
-  WHERE  g.Locked <> 'Y'
-  ORDER  BY g.UgpEntry, d.LineNum
-`));
+const getUomGroups = () => loadCompanyUomGroups(db);
 
 const getDecimalSettings = () => safe(db.query(`
   SELECT TOP 1
@@ -532,8 +431,37 @@ const getOpenGRPO = async (vendorCode = null) => {
   return { orders: result };
 };
 
-const getGRPOTargetInvoices = async (docEntry, lineNum = null) => {
-  const params = { docEntry };
+// SAP B1 allows an A/P Invoice to be drawn from an open Goods Receipt PO or
+// straight from an open Purchase Order. Both behave identically here apart from
+// their tables, their wording, and whether stock is received by the invoice.
+const AP_INVOICE_BASE_DOCUMENTS = Object.freeze({
+  20: Object.freeze({
+    baseType: 20,
+    label: 'Goods Receipt PO',
+    headerTable: 'OPDN',
+    lineTable: 'PDN1',
+    // The goods are already in stock, so the invoice must not re-allocate them.
+    allowsBatchAllocation: false,
+  }),
+  22: Object.freeze({
+    baseType: 22,
+    label: 'Purchase Order',
+    headerTable: 'OPOR',
+    lineTable: 'POR1',
+    // Invoicing a Purchase Order directly is what receives the stock, so a
+    // batch-managed item still needs its allocation on the invoice.
+    allowsBatchAllocation: true,
+  }),
+});
+
+const resolveApInvoiceBaseDocument = (baseType) => (
+  AP_INVOICE_BASE_DOCUMENTS[Number(baseType)] || null
+);
+
+const getBaseDocumentTargetInvoices = async (baseType, docEntry, lineNum = null) => {
+  const baseDocument = resolveApInvoiceBaseDocument(baseType);
+  if (!baseDocument) return [];
+  const params = { docEntry, baseType: baseDocument.baseType };
   const lineFilter = lineNum == null ? '' : 'AND T1.BaseLine = @lineNum';
   if (lineNum != null) params.lineNum = lineNum;
 
@@ -548,13 +476,17 @@ const getGRPOTargetInvoices = async (docEntry, lineNum = null) => {
     FROM PCH1 T1
     INNER JOIN OPCH T0 ON T0.DocEntry = T1.DocEntry
     LEFT JOIN NNM1 NNM ON NNM.Series = T0.Series AND NNM.ObjectCode = '18'
-    WHERE T1.BaseType = 20
+    WHERE T1.BaseType = @baseType
       AND T1.BaseEntry = @docEntry
       ${lineFilter}
       AND T0.CANCELED <> 'Y'
     ORDER BY T0.DocEntry DESC
   `, params));
 };
+
+const getGRPOTargetInvoices = (docEntry, lineNum = null) => (
+  getBaseDocumentTargetInvoices(20, docEntry, lineNum)
+);
 
 const formatTargetInvoiceReference = (target) => {
   if (!target) return '';
@@ -563,7 +495,16 @@ const formatTargetInvoiceReference = (target) => {
   return `A/P Invoice ${invoiceNumber}${seriesName ? ` (series ${seriesName})` : ''}`;
 };
 
-const getGRPOForCopy = async (docEntry) => {
+const getBaseDocumentForCopy = async (docEntry, baseTypeValue = 20) => {
+  const baseDocument = resolveApInvoiceBaseDocument(baseTypeValue);
+  if (!baseDocument) {
+    throw createBaseDocumentError(
+      'INVALID_BASE_DOCUMENT_TYPE',
+      `A/P Invoice cannot be copied from document type ${baseTypeValue}.`,
+      { baseType: baseTypeValue, docEntry },
+    );
+  }
+  const { headerTable, lineTable, label, baseType } = baseDocument;
   const headerRows = await safe(db.query(`
     SELECT 
       T0.DocEntry,
@@ -575,7 +516,7 @@ const getGRPOForCopy = async (docEntry) => {
       T0.DocDate AS PostingDate,
       T0.DocDueDate AS DeliveryDate,
       T0.TaxDate AS DocumentDate,
-      T0.BPLId AS Branch,
+      ${selectPhysicalOptionalColumn(await getTableColumns(headerTable), 'T0', 'BPLId', 'Branch')},
       T0.DocCur AS Currency,
       T0.DocRate AS ExchangeRate,
       T0.GroupNum AS PaymentTerms,
@@ -588,19 +529,20 @@ const getGRPOForCopy = async (docEntry) => {
       T0.TotalExpns AS Freight,
       T0.VatSum AS Tax,
       T0.DocTotal AS TotalPaymentDue
-    FROM OPDN T0
+    FROM ${headerTable} T0
     LEFT JOIN OSLP T1 ON T1.SlpCode = T0.SlpCode
     WHERE T0.DocEntry = @docEntry
   `, { docEntry }));
 
   if (!headerRows.length) {
-    throw new Error(`GRPO ${docEntry} not found`);
+    throw new Error(`${label} ${docEntry} not found`);
   }
 
   const header = headerRows[0];
-  const lineUdfsByLineNum = await getLineUdfValues({ tableId: 'PDN1', keyValue: docEntry });
+  const lineUdfsByLineNum = await getLineUdfValues({ tableId: lineTable, keyValue: docEntry });
 
-  const lineColumns = await getTableColumns('PDN1');
+  const lineColumns = await getTableColumns(lineTable);
+  const documentUom = await getDocumentUomSql(db, lineTable);
   const lineRows = await safe(db.query(`
     SELECT 
       T0.LineNum,
@@ -608,20 +550,23 @@ const getGRPOForCopy = async (docEntry) => {
       T0.Dscription AS ItemDescription,
       T0.Quantity,
       T0.OpenQty,
-      T0.Price AS UnitPrice,
+      ${await getDocumentUnitPriceSql(db, lineTable, 'T0')} AS UnitPrice,
       T0.DiscPrcnt AS DiscountPercent,
       T0.TaxCode,
       'N' AS WTLiable,
       T0.LineTotal,
       T0.WhsCode AS Warehouse,
       ${optionalColumn(lineColumns, 'T0', 'AcctCode', 'GLAccount', "''")},
-      T0.unitMsr AS UoMCode,
+      ${documentUom.entrySql} AS UoMEntry,
+      ${documentUom.codeSql} AS UoMCode,
+      ${documentUom.nameSql} AS UoMName,
       ${optionalColumn(lineColumns, 'T0', 'StockPrice', 'ItemCost', '0')},
       ${optionalColumn(lineColumns, 'T0', 'OcrCode', 'DistributionRule', "''")},
       ${optionalColumn(lineColumns, 'T0', 'CountryOrg', 'CountryOfOrigin', "''")},
       ${optionalColumn(lineColumns, 'T0', 'LocCode', 'LocationCode', "''")},
       ${optionalColumn(lineColumns, 'T0', 'AgrNo', 'BlanketAgreementNo', "''")}
-    FROM PDN1 T0
+    FROM ${lineTable} T0
+    ${documentUom.joinSql}
     WHERE T0.DocEntry = @docEntry
       AND T0.LineStatus = 'O'
       AND T0.OpenQty > 0
@@ -629,14 +574,14 @@ const getGRPOForCopy = async (docEntry) => {
   `, { docEntry }));
 
   if (!lineRows.length) {
-    const targetInvoices = await getGRPOTargetInvoices(docEntry);
+    const targetInvoices = await getBaseDocumentTargetInvoices(baseType, docEntry);
     const targetReference = formatTargetInvoiceReference(targetInvoices[0]);
     throw createBaseDocumentError(
-      'GRPO_ALREADY_INVOICED',
+      'BASE_DOCUMENT_ALREADY_INVOICED',
       targetReference
-        ? `This Goods Receipt PO has no open quantity left. It was already copied to ${targetReference}.`
-        : 'This Goods Receipt PO is closed or has no open quantity left to copy to an A/P Invoice.',
-      { docEntry, targetInvoices },
+        ? `This ${label} has no open quantity left. It was already copied to ${targetReference}.`
+        : `This ${label} is closed or has no open quantity left to copy to an A/P Invoice.`,
+      { docEntry, baseType, targetInvoices },
     );
   }
 
@@ -681,7 +626,7 @@ const getGRPOForCopy = async (docEntry) => {
       const itemInfo = itemInfoMap[l.ItemCode] || { hsnCode: '', batchManaged: false, wtaxLiable: false };
       return {
         baseEntry: docEntry,
-        baseType: 20,
+        baseType,
         baseLine: l.LineNum,
         itemNo: l.ItemCode || '',
         itemDescription: l.ItemDescription || '',
@@ -695,7 +640,9 @@ const getGRPOForCopy = async (docEntry) => {
         total: l.LineTotal != null ? String(l.LineTotal) : '',
         whse: l.Warehouse || '',
         glAccount: l.GLAccount || '',
+        uomEntry: l.UoMEntry != null ? Number(l.UoMEntry) : null,
         uomCode: l.UoMCode || '',
+        uomName: l.UoMName || l.UoMCode || '',
         itemCost: l.ItemCost != null ? String(l.ItemCost) : '',
         distRule: l.DistributionRule || '',
         countryOfOrigin: l.CountryOfOrigin || '',
@@ -708,6 +655,8 @@ const getGRPOForCopy = async (docEntry) => {
     }),
   };
 };
+
+const getGRPOForCopy = (docEntry) => getBaseDocumentForCopy(docEntry, 20);
 
 const getAPInvoiceList = async ({
   query = '',
@@ -803,6 +752,7 @@ const getAPInvoiceList = async ({
 };
 
 const getAPInvoice = async (docEntry) => {
+  const headerColumns = await getTableColumns('OPCH');
   const headerRows = await safe(db.query(`
     SELECT 
       T0.DocEntry,
@@ -819,7 +769,7 @@ const getAPInvoice = async (docEntry) => {
       T0.DocDate AS PostingDate,
       T0.DocDueDate AS DeliveryDate,
       T0.TaxDate AS DocumentDate,
-      T0.BPLId AS Branch,
+      ${selectPhysicalOptionalColumn(headerColumns, 'T0', 'BPLId', 'Branch')},
       T0.DocCur AS Currency,
       T0.DocRate AS ExchangeRate,
       T0.GroupNum AS PaymentTerms,
@@ -831,6 +781,10 @@ const getAPInvoice = async (docEntry) => {
       T0.VatSum AS Tax,
       T0.WTSum AS WTaxAmount,
       T0.DocTotal AS TotalPaymentDue,
+      ${optionalColumn(headerColumns, 'T0', 'ShipToCode', 'ShipToCode', "''")},
+      ${optionalColumn(headerColumns, 'T0', 'PayToCode', 'PayToCode', "''")},
+      ${optionalColumn(headerColumns, 'T0', 'Address', 'BillToAddress', "''")},
+      ${optionalColumn(headerColumns, 'T0', 'Address2', 'PayToAddress', "''")},
       CASE T0.DocStatus
         WHEN 'O' THEN 'Open'
         WHEN 'C' THEN 'Closed'
@@ -856,20 +810,23 @@ const getAPInvoice = async (docEntry) => {
     getTableColumns('PCH1'),
     getTableColumns('PCH5'),
   ]);
-  const lineRows = await safe(db.query(`
+  const documentUom = await getDocumentUomSql(db, 'PCH1');
+  const lineResult = await db.query(`
     SELECT 
       T0.LineNum,
       T0.ItemCode,
       T0.Dscription AS ItemDescription,
       T0.Quantity,
-      T0.Price AS UnitPrice,
+      ${await getDocumentUnitPriceSql(db, 'PCH1', 'T0')} AS UnitPrice,
       T0.DiscPrcnt AS DiscountPercent,
       T0.TaxCode,
       ${optionalColumn(lineColumns, 'T0', 'WTLiable', 'WTLiable', "'N'")},
       T0.LineTotal,
       T0.WhsCode AS Warehouse,
       ${optionalColumn(lineColumns, 'T0', 'AcctCode', 'GLAccount', "''")},
-      T0.unitMsr AS UoMCode,
+      ${documentUom.entrySql} AS UoMEntry,
+      ${documentUom.codeSql} AS UoMCode,
+      ${documentUom.nameSql} AS UoMName,
       ${optionalColumn(lineColumns, 'T0', 'StockPrice', 'ItemCost', '0')},
       ${optionalColumn(lineColumns, 'T0', 'OcrCode', 'DistributionRule', "''")},
       ${optionalColumn(lineColumns, 'T0', 'CountryOrg', 'CountryOfOrigin', "''")},
@@ -879,9 +836,14 @@ const getAPInvoice = async (docEntry) => {
       T0.BaseType,
       T0.BaseLine
     FROM PCH1 T0
+    ${documentUom.joinSql}
     WHERE T0.DocEntry = @docEntry
     ORDER BY T0.LineNum
-  `, { docEntry }));
+  `, { docEntry });
+  const lineRows = lineResult.recordset || [];
+  if (!lineRows.length) {
+    throw new Error(`A/P Invoice ${docEntry} exists but its content lines could not be loaded.`);
+  }
 
   const withholdingRows = await safe(db.query(`
     SELECT
@@ -1060,6 +1022,12 @@ const getAPInvoice = async (docEntry) => {
         tax: header.Tax != null ? String(header.Tax) : '',
         wtaxAmount: header.WTaxAmount != null ? String(header.WTaxAmount) : '',
         totalPaymentDue: header.TotalPaymentDue != null ? String(header.TotalPaymentDue) : '',
+        billToCode: header.ShipToCode || '',
+        billTo: header.BillToAddress || '',
+        billToAddress: header.BillToAddress || '',
+        payToCode: header.PayToCode || '',
+        payTo: header.PayToAddress || '',
+        payToAddress: header.PayToAddress || '',
       },
       lines: lineRows.map((l) => {
         const itemInfo = itemInfoMap[l.ItemCode] || { hsnCode: '', batchManaged: false };
@@ -1082,7 +1050,9 @@ const getAPInvoice = async (docEntry) => {
           total: l.LineTotal != null ? String(l.LineTotal) : '',
           whse: l.Warehouse || '',
           glAccount: l.GLAccount || '',
+          uomEntry: l.UoMEntry != null ? Number(l.UoMEntry) : null,
           uomCode: l.UoMCode || '',
+          uomName: l.UoMName || l.UoMCode || '',
           itemCost: l.ItemCost != null ? String(l.ItemCost) : '',
           distRule: l.DistributionRule || '',
           countryOfOrigin: l.CountryOfOrigin || '',
@@ -1099,8 +1069,8 @@ const getAPInvoice = async (docEntry) => {
   };
 };
 
-const getDocumentSeries = async ({ date = null, branch = '', transactionType = '' } = {}) => {
-  return getMarketingDocumentSeries({ objectCode: '18', date, branch, transactionType });
+const getDocumentSeries = async ({ date = null, branch = '', transactionType = '', docSubType } = {}) => {
+  return getMarketingDocumentSeries({ objectCode: '18', date, branch, transactionType, docSubType });
 };
 
 const getNextNumber = async (series) => {
@@ -1180,15 +1150,7 @@ const getReferenceData = async () => {
     loadReferencePart('Business partners', () => masterDataDbService.searchBP('', '', 5000, 0), [], warnings),
   ]);
 
-  const uomGroupMap = {};
-  uomGroupsRaw.forEach((row) => {
-    if (!uomGroupMap[row.AbsEntry]) {
-      uomGroupMap[row.AbsEntry] = { AbsEntry: row.AbsEntry, Name: row.Name, uomCodes: [] };
-    }
-    if (row.UomCode) {
-      uomGroupMap[row.AbsEntry].uomCodes.push(row.UomCode);
-    }
-  });
+  const uomGroupMap = Object.fromEntries(uomGroupsRaw.map((group) => [group.AbsEntry, group]));
 
   const decimalSettings = decimalRows.length > 0 ? {
     QtyDec: decimalRows[0].QtyDec || 2,
@@ -1233,7 +1195,7 @@ const getReferenceData = async () => {
     items,
     warehouses,
     warehouse_addresses: warehouses,
-    company_address: { State: companyInfo.state },
+    company_address: { Address: companyInfo.address, State: companyInfo.state },
     tax_codes: taxCodes,
     withholding_tax_codes: withholdingTaxCodes,
     gl_accounts: glAccounts,
@@ -1368,7 +1330,10 @@ const getItemValidation = async (itemCode) => {
       ItemCode,
       validFor,
       frozenFor,
-      PrchseItem
+      PrchseItem,
+      ManBtchNum,
+      ManSerNum,
+      InvntryUom
     FROM OITM
     WHERE ItemCode = @itemCode
   `, { itemCode }));
@@ -1420,7 +1385,10 @@ const hasPositiveBatchAssignment = (line = {}) => (
   ))
 );
 
-const getGRPOOpenLineValidation = async (docEntry, lineNum) => {
+const getBaseDocumentOpenLineValidation = async (baseType, docEntry, lineNum) => {
+  const baseDocument = resolveApInvoiceBaseDocument(baseType);
+  if (!baseDocument) return null;
+  const { headerTable, lineTable } = baseDocument;
   const rows = await safe(db.query(`
     SELECT TOP 1
       T0.DocEntry,
@@ -1430,13 +1398,17 @@ const getGRPOOpenLineValidation = async (docEntry, lineNum) => {
       T0.LineNum,
       T0.OpenQty,
       T0.LineStatus
-    FROM PDN1 T0
-    INNER JOIN OPDN H ON H.DocEntry = T0.DocEntry
+    FROM ${lineTable} T0
+    INNER JOIN ${headerTable} H ON H.DocEntry = T0.DocEntry
     WHERE T0.DocEntry = @docEntry
       AND T0.LineNum = @lineNum
   `, { docEntry, lineNum }));
   return rows[0] || null;
 };
+
+const getGRPOOpenLineValidation = (docEntry, lineNum) => (
+  getBaseDocumentOpenLineValidation(20, docEntry, lineNum)
+);
 
 const validateAPInvoiceBaseDocuments = async (lines = []) => {
   for (let index = 0; index < (lines || []).length; index += 1) {
@@ -1457,51 +1429,54 @@ const validateAPInvoiceBaseDocuments = async (lines = []) => {
     const baseLine = parseBaseNumber(rawBaseLine, 'baseLine', details);
     const requestedQty = parseQuantity(line.quantity ?? line.Quantity);
 
-    if (baseType !== 20) {
+    const baseDocument = resolveApInvoiceBaseDocument(baseType);
+    if (!baseDocument) {
+      const allowed = Object.values(AP_INVOICE_BASE_DOCUMENTS).map((item) => item.label).join(' or ');
       throw createBaseDocumentError(
         'INVALID_BASE_DOCUMENT_TYPE',
-        `A/P Invoice can only be copied from an open GRPO. BaseType ${baseType} is not allowed.`,
+        `A/P Invoice can only be copied from an open ${allowed}. BaseType ${baseType} is not allowed.`,
         { ...details, baseType, baseEntry, baseLine },
       );
     }
+    const { label } = baseDocument;
 
-    if (hasPositiveBatchAssignment(line)) {
+    if (!baseDocument.allowsBatchAllocation && hasPositiveBatchAssignment(line)) {
       throw createBaseDocumentError(
         'BATCH_ASSIGNMENT_NOT_REQUIRED',
-        'Batch assignment is not required when creating an A/P Invoice from a GRPO.',
+        `Batch assignment is not required when creating an A/P Invoice from a ${label}.`,
         { ...details, baseType, baseEntry, baseLine },
       );
     }
 
-    const grpoLine = await getGRPOOpenLineValidation(baseEntry, baseLine);
+    const grpoLine = await getBaseDocumentOpenLineValidation(baseType, baseEntry, baseLine);
     if (!grpoLine) {
       throw createBaseDocumentError(
         'BASE_LINE_NOT_FOUND',
-        `GRPO line ${baseLine} was not found.`,
+        `${label} line ${baseLine} was not found.`,
         { ...details, baseType, baseEntry, baseLine },
       );
     }
 
     if (String(grpoLine.CANCELED || '').toUpperCase() === 'Y' || String(grpoLine.DocStatus || '').toUpperCase() !== 'O') {
-      const targetInvoices = await getGRPOTargetInvoices(baseEntry, baseLine);
+      const targetInvoices = await getBaseDocumentTargetInvoices(baseType, baseEntry, baseLine);
       const targetReference = formatTargetInvoiceReference(targetInvoices[0]);
       throw createBaseDocumentError(
-        'GRPO_ALREADY_INVOICED',
+        'BASE_DOCUMENT_ALREADY_INVOICED',
         targetReference
-          ? `GRPO ${grpoLine.DocNum || baseEntry} was already copied to ${targetReference}; it cannot be copied again.`
-          : `GRPO ${grpoLine.DocNum || baseEntry} is closed and cannot be copied to A/P Invoice.`,
+          ? `${label} ${grpoLine.DocNum || baseEntry} was already copied to ${targetReference}; it cannot be copied again.`
+          : `${label} ${grpoLine.DocNum || baseEntry} is closed and cannot be copied to A/P Invoice.`,
         { ...details, baseType, baseEntry, baseLine, docStatus: grpoLine.DocStatus, targetInvoices },
       );
     }
 
     if (String(grpoLine.LineStatus || '').toUpperCase() !== 'O') {
-      const targetInvoices = await getGRPOTargetInvoices(baseEntry, baseLine);
+      const targetInvoices = await getBaseDocumentTargetInvoices(baseType, baseEntry, baseLine);
       const targetReference = formatTargetInvoiceReference(targetInvoices[0]);
       throw createBaseDocumentError(
         'BASE_LINE_CLOSED',
         targetReference
-          ? `GRPO line ${baseLine} was already copied to ${targetReference}; it cannot be invoiced again.`
-          : `GRPO line ${baseLine} is closed and cannot be invoiced again.`,
+          ? `${label} line ${baseLine} was already copied to ${targetReference}; it cannot be invoiced again.`
+          : `${label} line ${baseLine} is closed and cannot be invoiced again.`,
         { ...details, baseType, baseEntry, baseLine, lineStatus: grpoLine.LineStatus, targetInvoices },
       );
     }
@@ -1510,7 +1485,7 @@ const validateAPInvoiceBaseDocuments = async (lines = []) => {
     if (openQty <= 0) {
       throw createBaseDocumentError(
         'NO_OPEN_QUANTITY',
-        'This GRPO line has already been fully invoiced.',
+        `This ${label} line has already been fully invoiced.`,
         { ...details, baseType, baseEntry, baseLine, openQty },
       );
     }
@@ -1518,7 +1493,7 @@ const validateAPInvoiceBaseDocuments = async (lines = []) => {
     if (requestedQty - openQty > 0.000001) {
       throw createBaseDocumentError(
         'QUANTITY_EXCEEDS_OPEN_QUANTITY',
-        `Quantity ${requestedQty} exceeds open quantity ${openQty} on GRPO line ${baseLine}.`,
+        `Quantity ${requestedQty} exceeds open quantity ${openQty} on ${label} line ${baseLine}.`,
         { ...details, baseType, baseEntry, baseLine, requestedQty, openQty },
       );
     }
@@ -1565,7 +1540,11 @@ module.exports = {
   getNextNumber,
   getStateFromWarehouse,
   getOpenGRPO,
+  AP_INVOICE_BASE_DOCUMENTS,
+  getBaseDocumentForCopy,
+  getBaseDocumentOpenLineValidation,
   getGRPOForCopy,
+  resolveApInvoiceBaseDocument,
   getVendorValidation,
   getFallbackNonGstTaxCode,
   getPostingPeriodValidation,

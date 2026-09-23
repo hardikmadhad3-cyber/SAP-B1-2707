@@ -1,4 +1,7 @@
+const { buildDocumentConfirmationPayload, updateDocumentConfirmationOnly } = require('./documentConfirmationUtils');
+const { buildDocumentSeriesPayload } = require('./documentSeriesPayloadUtils');
 const sapService = require('./sapService');
+const { buildDocumentRoundingPayload } = require('./documentRoundingPayloadUtils');
 const arInvoiceDb = require('./arInvoiceDbService');
 const salesOrderDb = require('./salesOrderDbService');
 const { buildDocumentAdditionalExpenses } = require('./freightPayloadUtils');
@@ -37,69 +40,13 @@ const getSapErrorMessage = (error, fallback = '') => {
 const isNumberingSeriesError = (error) => String(getSapErrorMessage(error)).includes('10000521');
 const isManualSeriesSelection = (series) => String(series || '').trim().toLowerCase() === '__sap_manual__';
 
-const resolveARInvoiceSeries = async (header = {}, lines = [], options = {}) => {
-  const selectedSeries = Number(header.series);
-  const preferSubmittedSeries = options.preferSubmittedSeries !== false;
-  let requestedBranchId = normalizeBranchId(header.branch);
-
-  if (!requestedBranchId) {
-    const firstLine = Array.isArray(lines) ? lines[0] || {} : {};
-    const warehouseCode = String(
-      header.warehouse || firstLine.whse || firstLine.warehouse || firstLine.WarehouseCode || '',
-    ).trim();
-    if (warehouseCode) {
-      const warehouseBranch = await arInvoiceDb.getWarehouseBranch(warehouseCode);
-      requestedBranchId = normalizeBranchId(warehouseBranch?.branchId);
-    }
-  }
-
-  if (isManualSeriesSelection(header.series)) {
-    return {
-      series: undefined,
-      branchId: requestedBranchId,
-    };
-  }
-
-  try {
-    const seriesRows = await arInvoiceDb.getDocumentSeries(
-      header.postingDate || header.documentDate || null,
-      header.transactionType || '',
-      requestedBranchId || '',
-    );
-
-    if (!Array.isArray(seriesRows) || !seriesRows.length) {
-      return {
-        series: Number.isFinite(selectedSeries) && selectedSeries > 0 ? selectedSeries : undefined,
-        branchId: requestedBranchId,
-      };
-    }
-
-    const selectedRow = preferSubmittedSeries && Number.isFinite(selectedSeries) && selectedSeries > 0
-      ? seriesRows.find((row) => Number(row.Series) === selectedSeries)
-      : null;
-    const defaultRow = seriesRows.find((row) => row.IsDefault) || seriesRows[0];
-    const resolvedRow = selectedRow || defaultRow;
-    const resolved = Number(resolvedRow?.Series);
-    const seriesBranchId = normalizeBranchId(resolvedRow?.BPLId);
-
-    if (requestedBranchId && seriesBranchId && requestedBranchId !== seriesBranchId) {
-      const mismatchError = new Error('The selected A/R Invoice numbering series belongs to a different branch. Select a matching series or branch.');
-      mismatchError.code = 'AR_INVOICE_SERIES_BRANCH_MISMATCH';
-      throw mismatchError;
-    }
-
-    return {
-      series: Number.isFinite(resolved) && resolved > 0 ? resolved : undefined,
-      branchId: requestedBranchId || seriesBranchId,
-    };
-  } catch (error) {
-    if (error.code === 'AR_INVOICE_SERIES_BRANCH_MISMATCH') throw error;
-    console.warn('[ARInvoiceService] Could not validate invoice series; using submitted value.', error.message);
-    return {
-      series: Number.isFinite(selectedSeries) && selectedSeries > 0 ? selectedSeries : undefined,
-      branchId: requestedBranchId,
-    };
-  }
+const resolveARInvoiceSeries = async (header = {}, lines = []) => {
+ const branchId = normalizeBranchId(header.branch);
+ if (['-1','manual','__sap_manual__'].includes(String(header.series).toLowerCase())) return { series: -1, branchId };
+ const rows = await arInvoiceDb.getDocumentSeries(header.postingDate || header.documentDate, header.transactionType || '', branchId || '');
+ const selected = rows.find(row => Number(row.Series) === Number(header.series));
+ if (!selected) throw new Error('Select an eligible numbering series for the posting date and branch.');
+ return { series: Number(selected.Series), branchId };
 };
 
 const isUdfValuePresent = (value) => {
@@ -501,6 +448,7 @@ const submitARInvoice = async (payload) => {
       const error = new Error(batchResult.errors.join('; '));
       error.status = 400;
       error.code = 'BATCH_SELECTION_REQUIRED';
+      error.details = { lines: batchResult.lineErrors || [] };
       throw error;
     }
     const documentAdditionalExpenses = buildDocumentAdditionalExpenses(payload.freightCharges);
@@ -536,7 +484,7 @@ const submitARInvoice = async (payload) => {
       CardCode: String(customerCode).trim(),
 
       // Series for auto-numbering - only include if explicitly provided and valid
-      ...(resolvedSeries.series ? { Series: resolvedSeries.series } : {}),
+      ...buildDocumentSeriesPayload(payload.header),
 
       DocDate: payload.header.postingDate || payload.header.documentDate,
       DocDueDate: payload.header.deliveryDate || payload.header.dueDate,
@@ -565,12 +513,17 @@ const submitARInvoice = async (payload) => {
       // Comments
       Comments: payload.header.otherInstruction || payload.header.comments || undefined,
       DocumentAdditionalExpenses: documentAdditionalExpenses,
-      Rounding: yesNo(payload.header.rounding),
+      ...buildDocumentRoundingPayload(payload.header),
+      ...buildDocumentConfirmationPayload(payload.header),
       ...buildMarketingDocumentAddressPayload(payload.header),
 
       DocumentLines: documentLines,
     };
-    applySapDocumentCurrency(sapPayload, payload.header, currencyReferenceData);
+    applySapDocumentCurrency(
+      sapPayload,
+      payload.header,
+      await loadDocumentCurrencyReferenceData(payload.header),
+    );
     lastSapPayload = sapPayload;
 
     addIfPresent(sapPayload, 'ShipToCode', payload.header.shipToCode);
@@ -578,9 +531,7 @@ const submitARInvoice = async (payload) => {
     addIfPresent(sapPayload, 'TransportationCode', normalizeOptionalNumber(payload.header.shippingType));
     addIfPresent(sapPayload, 'PaymentMethod', payload.header.paymentMethod);
     addIfPresent(sapPayload, 'DocumentsOwner', normalizeOptionalNumber(payload.header.ownerCode));
-    if (payload.header.confirmed != null) {
-      sapPayload.Confirmed = payload.header.confirmed ? 'tYES' : 'tNO';
-    }
+    // Leave SAP's company default intact unless a confirmation choice is present.
     const placeOfSupplyKey = resolveMetadataUdfKey(
       physicalHeaderUdfDefinitions,
       ['U_PlaceOfSupply', 'U_PLACE_OF_SUPPLY'],
@@ -609,36 +560,7 @@ const submitARInvoice = async (payload) => {
         url: '/Invoices',
         data: sapPayload,
       });
-    } catch (postError) {
-      if (!isNumberingSeriesError(postError)) throw postError;
-
-      const fallbackSeries = await resolveARInvoiceSeries(
-        { ...payload.header, series: '' },
-        payload.lines,
-        { preferSubmittedSeries: false },
-      );
-
-      if (!fallbackSeries.series || fallbackSeries.series === sapPayload.Series) throw postError;
-
-      sapPayload.Series = fallbackSeries.series;
-      if (fallbackSeries.branchId) {
-        sapPayload.BPLId = fallbackSeries.branchId;
-        sapPayload.BPL_IDAssignedToInvoice = fallbackSeries.branchId;
-      } else {
-        delete sapPayload.BPLId;
-        delete sapPayload.BPL_IDAssignedToInvoice;
-      }
-      lastSapPayload = sapPayload;
-      console.warn(
-        '[ARInvoiceService] Retrying A/R Invoice with default numbering series after SAP rejected submitted series.',
-        { series: sapPayload.Series, branchId: sapPayload.BPLId || '' },
-      );
-      response = await sapService.request({
-        method: 'post',
-        url: '/Invoices',
-        data: sapPayload,
-      });
-    }
+    } catch (postError) { throw postError; }
 
     console.log("✅ [ARInvoiceService] SAP AR INVOICE RESPONSE:", JSON.stringify(response.data, null, 2));
 
@@ -678,6 +600,8 @@ const submitARInvoice = async (payload) => {
 // ───────── UPDATE INVOICE (USING SERVICE LAYER) ─────────
 
 const updateARInvoice = async (docEntry, payload) => {
+  const confirmationResult = await updateDocumentConfirmationOnly(docEntry, payload, 'Invoices', sapService);
+  if (confirmationResult) return confirmationResult;
   try {
     console.log("🔥 [ARInvoiceService] UPDATING AR INVOICE:", docEntry, JSON.stringify(payload, null, 2));
 
@@ -729,20 +653,24 @@ const updateARInvoice = async (docEntry, payload) => {
       NumAtCard: payload.header.salesContractNo || payload.header.customerRefNo || undefined,
       Comments: payload.header.otherInstruction || payload.header.comments || undefined,
       DocumentAdditionalExpenses: documentAdditionalExpenses,
+      ...buildDocumentRoundingPayload(payload.header),
+      ...buildDocumentConfirmationPayload(payload.header),
       ...buildMarketingDocumentAddressPayload(payload.header),
 
       DocumentLines: documentLines,
     };
-    applySapDocumentCurrency(sapPayload, payload.header, currencyReferenceData);
+    applySapDocumentCurrency(
+      sapPayload,
+      payload.header,
+      await loadDocumentCurrencyReferenceData(payload.header),
+    );
 
     addIfPresent(sapPayload, 'ShipToCode', payload.header.shipToCode);
     addIfPresent(sapPayload, 'PayToCode', payload.header.billToCode || payload.header.payToCode);
     addIfPresent(sapPayload, 'TransportationCode', normalizeOptionalNumber(payload.header.shippingType));
     addIfPresent(sapPayload, 'PaymentMethod', payload.header.paymentMethod);
     addIfPresent(sapPayload, 'DocumentsOwner', normalizeOptionalNumber(payload.header.ownerCode));
-    if (payload.header.confirmed != null) {
-      sapPayload.Confirmed = payload.header.confirmed ? 'tYES' : 'tNO';
-    }
+    // Preserve the stored SAP confirmation state during an invoice update.
     const placeOfSupplyKey = resolveMetadataUdfKey(
       physicalHeaderUdfDefinitions,
       ['U_PlaceOfSupply', 'U_PLACE_OF_SUPPLY'],
@@ -791,7 +719,7 @@ const getDocumentSeries = async (targetDate = null, transactionType = '', branch
     return { series: result };
   } catch (error) {
     console.error('[AR Invoice Service] Failed to load document series:', error);
-    return { series: [] };
+    throw error;
   }
 };
 

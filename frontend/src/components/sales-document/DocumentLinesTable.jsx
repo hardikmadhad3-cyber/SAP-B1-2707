@@ -24,6 +24,7 @@ export default function DocumentLinesTable({
   rowKey,
   renderTrailingHeaderCell,
   renderTrailingCell,
+  tableProps = {},
   emptyColumnsMessage = DEFAULT_EMPTY_COLUMNS_MESSAGE,
   emptyRowsMessage = DEFAULT_EMPTY_ROWS_MESSAGE,
 }) {
@@ -49,6 +50,7 @@ export default function DocumentLinesTable({
     <div className="so-grid-wrap so-grid-wrap--contents">
       <div className="so-grid-wrap__scroller so-grid-wrap__scroller--contents">
         <table
+          {...tableProps}
           className="so-grid so-grid--contents"
           style={{ width: 'max-content', minWidth: Math.max(minTableWidth, 320) }}
         >

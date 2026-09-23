@@ -75,7 +75,7 @@
 ) {
   flex: 0 0 3px;
   height: 3px;
-  background: var(--sap-primary);
+  background: linear-gradient(90deg, #e0a316 0%, #f3c94f 30%, transparent 30%);
 }
 
 :is(

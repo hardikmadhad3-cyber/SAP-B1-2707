@@ -7,6 +7,20 @@
   position: sticky;
   top: 0;
   z-index: 20;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.je-page .sap-document-toolbar__title {
+  flex: 0 0 auto;
+  min-width: 150px;
+}
+
+.je-page .sap-document-toolbar > button {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .je-page .sap-banking-layout {

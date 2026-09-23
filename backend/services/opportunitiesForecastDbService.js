@@ -1,3 +1,4 @@
+const { reportTableExists, getReportTableColumns } = require('./reportMetadataService');
 const db = require('./dbService');
 
 const text = (value) => String(value || '').trim();
@@ -6,8 +7,8 @@ const numberOrNull = (value) => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
-const tableColumnsCache = new Map();
-const tableExistsCache = new Map();
+
+
 
 const queryRows = async (sql, params = {}, options = {}) => {
   const result = await db.query(sql, params, options);
@@ -27,45 +28,11 @@ const normalizeDateInput = (value) => {
   return `${year.padStart(4, '0')}-${monthText.padStart(2, '0')}-${dayText.padStart(2, '0')}`;
 };
 
-const cacheKey = (name, options = {}) => `${text(options.databaseName)}:${text(name).toUpperCase()}`;
 
-const tableExists = async (tableName, options = {}) => {
-  const table = text(tableName).toUpperCase();
-  const key = cacheKey(table, options);
-  if (tableExistsCache.has(key)) return tableExistsCache.get(key);
 
-  const rows = await queryRows(
-    `
-      SELECT TOP 1 TABLE_NAME
-      FROM INFORMATION_SCHEMA.TABLES
-      WHERE TABLE_NAME = @tableName
-    `,
-    { tableName: table },
-    options,
-  );
-  const exists = rows.length > 0;
-  tableExistsCache.set(key, exists);
-  return exists;
-};
+const tableExists = reportTableExists;
 
-const getColumns = async (tableName, options = {}) => {
-  const table = text(tableName).toUpperCase();
-  const key = cacheKey(table, options);
-  if (tableColumnsCache.has(key)) return tableColumnsCache.get(key);
-
-  const rows = await queryRows(
-    `
-      SELECT COLUMN_NAME
-      FROM INFORMATION_SCHEMA.COLUMNS
-      WHERE TABLE_NAME = @tableName
-    `,
-    { tableName: table },
-    options,
-  );
-  const columns = new Set(rows.map((row) => text(row.COLUMN_NAME).toUpperCase()));
-  tableColumnsCache.set(key, columns);
-  return columns;
-};
+const getColumns = getReportTableColumns;
 
 const firstColumn = async (tableName, candidates, options = {}) => {
   const columns = await getColumns(tableName, options);
@@ -74,6 +41,21 @@ const firstColumn = async (tableName, candidates, options = {}) => {
 
 const quoted = (columnName) => `[${text(columnName).replace(/]/g, ']]')}]`;
 const columnExpr = (alias, columnName) => `${alias}.${quoted(columnName)}`;
+
+// One latest stage per opportunity, including opportunities with no stage rows.
+// A ranked LEFT JOIN is supported by SQL Server and SAP HANA.
+const buildLatestStageJoin = (meta) => {
+  const orderColumn = meta.opr1Line || meta.opr1Stage || meta.opr1OppId;
+  return [
+    'LEFT JOIN (SELECT stageLine.*,',
+    'ROW_NUMBER() OVER (PARTITION BY stageLine.' + quoted(meta.opr1OppId),
+    'ORDER BY stageLine.' + quoted(orderColumn) + ' DESC) AS ReportStageRank',
+    'FROM OPR1 stageLine) lastStageLine',
+    'ON lastStageLine.' + quoted(meta.opr1OppId) + ' = ' + columnExpr('opp', meta.oppId),
+    'AND lastStageLine.ReportStageRank = 1',
+  ].join('\n');
+};
+
 const selectText = (alias, columnName, outputName) =>
   columnName ? `ISNULL(CONVERT(NVARCHAR(255), ${columnExpr(alias, columnName)}), '') AS ${outputName}` : `'' AS ${outputName}`;
 const selectNumber = (alias, columnName, outputName) =>
@@ -703,14 +685,18 @@ const getWonOpportunitiesReport = async (criteria = {}, options = {}) => {
 
     const rows = await queryRows(
       `
-        SELECT
-          CAST(${bucketExpression} AS INT) AS BucketIndex,
-          COUNT(${meta.oppId ? `DISTINCT ${columnExpr('opp', meta.oppId)}` : '1'}) AS OpportunityCount,
-          CAST(SUM(CAST(${amountExpression} AS DECIMAL(19, 2))) AS DECIMAL(19, 2)) AS TotalAmount
-        FROM OOPR opp
-        ${joins.join('\n        ')}
-        ${whereClauses.length ? `WHERE ${whereClauses.join('\n          AND ')}` : ''}
-        GROUP BY CAST(${bucketExpression} AS INT)
+        SELECT buckets.BucketIndex,
+          COUNT(${meta.oppId ? 'DISTINCT buckets.OpportunityId' : '1'}) AS OpportunityCount,
+          CAST(SUM(buckets.Amount) AS DECIMAL(19, 2)) AS TotalAmount
+        FROM (
+          SELECT CAST(${bucketExpression} AS INT) AS BucketIndex,
+            ${meta.oppId ? columnExpr('opp', meta.oppId) : '1'} AS OpportunityId,
+            CAST(${amountExpression} AS DECIMAL(19, 2)) AS Amount
+          FROM OOPR opp
+          ${joins.join('\n        ')}
+          ${whereClauses.length ? `WHERE ${whereClauses.join('\n          AND ')}` : ''}
+        ) buckets
+        GROUP BY buckets.BucketIndex
         ORDER BY BucketIndex
       `,
       params,
@@ -771,26 +757,14 @@ const getOpportunitiesForecastReport = async (criteria = {}, options = {}) => {
     if (meta.hasOSLP && meta.slpCode) joins.push(`LEFT JOIN OSLP mainSe ON mainSe.SlpCode = ${columnExpr('opp', meta.slpCode)}`);
     if (meta.hasOSLP && meta.lastSlpCode) joins.push(`LEFT JOIN OSLP lastSe ON lastSe.SlpCode = ${columnExpr('opp', meta.lastSlpCode)}`);
 
-    if (meta.status) {
-      whereClauses.push(`${columnExpr('opp', meta.status)} = @openStatus`);
-      params.openStatus = 'O';
-    }
 
     const stageSourceExpression = meta.stage ? columnExpr('opp', meta.stage) : '';
     const canUseStageLine = Boolean(meta.hasOPR1 && meta.oppId && meta.opr1OppId);
     if (canUseStageLine) {
-      const orderColumn = meta.opr1Line || meta.opr1Stage || meta.opr1OppId;
-      joins.push(`
-        OUTER APPLY (
-          SELECT TOP 1 *
-          FROM OPR1 stageLine
-          WHERE stageLine.${quoted(meta.opr1OppId)} = ${columnExpr('opp', meta.oppId)}
-          ORDER BY stageLine.${quoted(orderColumn)} DESC
-        ) lastStageLine
-      `);
+      joins.push(buildLatestStageJoin(meta));
     }
     if (meta.hasOOST && meta.oostCode && (meta.opr1Stage || meta.stage)) {
-      const joinStageExpression = meta.opr1Stage ? `lastStageLine.${quoted(meta.opr1Stage)}` : stageSourceExpression;
+      const joinStageExpression = (meta.hasOPR1 && meta.oppId && meta.opr1OppId && meta.opr1Stage) ? `lastStageLine.${quoted(meta.opr1Stage)}` : stageSourceExpression;
       joins.push(`LEFT JOIN OOST stg ON stg.${quoted(meta.oostCode)} = ${joinStageExpression}`);
     }
 
@@ -848,7 +822,7 @@ const getOpportunitiesForecastReport = async (criteria = {}, options = {}) => {
     const stageValue = text(criteria.stage);
     if (stageValue) {
       if (/^-?\d+$/.test(stageValue) && (meta.opr1Stage || meta.stage)) {
-        whereClauses.push(`${meta.opr1Stage ? `lastStageLine.${quoted(meta.opr1Stage)}` : stageSourceExpression} = @stageValue`);
+        whereClauses.push(`${(meta.hasOPR1 && meta.oppId && meta.opr1OppId && meta.opr1Stage) ? `lastStageLine.${quoted(meta.opr1Stage)}` : stageSourceExpression} = @stageValue`);
         params.stageValue = Number(stageValue);
       } else if (meta.hasOOST && meta.oostName) {
         whereClauses.push(`stg.${quoted(meta.oostName)} = @stageName`);
@@ -867,8 +841,6 @@ const getOpportunitiesForecastReport = async (criteria = {}, options = {}) => {
         whereClauses.push(`${columnExpr('opp', meta.closingDate)} <= @closingDateTo`);
         params.closingDateTo = toDate;
       }
-    } else if (meta.closingDate) {
-      whereClauses.push(`CAST(${columnExpr('opp', meta.closingDate)} AS DATE) >= CAST(GETDATE() AS DATE)`);
     }
 
     addNumberRangeFilter(whereClauses, params, meta.amount ? columnExpr('opp', meta.amount) : '', criteria.amount, 'amount');
@@ -1015,18 +987,10 @@ const getOpportunitiesForecastOverTimeReport = async (criteria = {}, options = {
 
     const stageSourceExpression = meta.stage ? columnExpr('opp', meta.stage) : '';
     if (meta.hasOPR1 && meta.oppId && meta.opr1OppId) {
-      const orderColumn = meta.opr1Line || meta.opr1Stage || meta.opr1OppId;
-      joins.push(`
-        OUTER APPLY (
-          SELECT TOP 1 *
-          FROM OPR1 stageLine
-          WHERE stageLine.${quoted(meta.opr1OppId)} = ${columnExpr('opp', meta.oppId)}
-          ORDER BY stageLine.${quoted(orderColumn)} DESC
-        ) lastStageLine
-      `);
+      joins.push(buildLatestStageJoin(meta));
     }
     if (meta.hasOOST && meta.oostCode && (meta.opr1Stage || meta.stage)) {
-      const joinStageExpression = meta.opr1Stage ? `lastStageLine.${quoted(meta.opr1Stage)}` : stageSourceExpression;
+      const joinStageExpression = (meta.hasOPR1 && meta.oppId && meta.opr1OppId && meta.opr1Stage) ? `lastStageLine.${quoted(meta.opr1Stage)}` : stageSourceExpression;
       joins.push(`LEFT JOIN OOST stg ON stg.${quoted(meta.oostCode)} = ${joinStageExpression}`);
     }
 
@@ -1085,7 +1049,7 @@ const getOpportunitiesForecastOverTimeReport = async (criteria = {}, options = {
     const stageValue = text(criteria.stage);
     if (stageValue) {
       if (/^-?\d+$/.test(stageValue) && (meta.opr1Stage || meta.stage)) {
-        whereClauses.push(`${meta.opr1Stage ? `lastStageLine.${quoted(meta.opr1Stage)}` : stageSourceExpression} = @stageValue`);
+        whereClauses.push(`${(meta.hasOPR1 && meta.oppId && meta.opr1OppId && meta.opr1Stage) ? `lastStageLine.${quoted(meta.opr1Stage)}` : stageSourceExpression} = @stageValue`);
         params.stageValue = Number(stageValue);
       } else if (meta.hasOOST && meta.oostName) {
         whereClauses.push(`stg.${quoted(meta.oostName)} = @stageName`);
@@ -1277,18 +1241,10 @@ const getInformationSourceDistributionOverTimeReport = async (criteria = {}, opt
 
     const stageSourceExpression = meta.stage ? columnExpr('opp', meta.stage) : '';
     if (meta.hasOPR1 && meta.oppId && meta.opr1OppId) {
-      const orderColumn = meta.opr1Line || meta.opr1Stage || meta.opr1OppId;
-      joins.push(`
-        OUTER APPLY (
-          SELECT TOP 1 *
-          FROM OPR1 stageLine
-          WHERE stageLine.${quoted(meta.opr1OppId)} = ${columnExpr('opp', meta.oppId)}
-          ORDER BY stageLine.${quoted(orderColumn)} DESC
-        ) lastStageLine
-      `);
+      joins.push(buildLatestStageJoin(meta));
     }
     if (meta.hasOOST && meta.oostCode && (meta.opr1Stage || meta.stage)) {
-      const joinStageExpression = meta.opr1Stage ? `lastStageLine.${quoted(meta.opr1Stage)}` : stageSourceExpression;
+      const joinStageExpression = (meta.hasOPR1 && meta.oppId && meta.opr1OppId && meta.opr1Stage) ? `lastStageLine.${quoted(meta.opr1Stage)}` : stageSourceExpression;
       joins.push(`LEFT JOIN OOST stg ON stg.${quoted(meta.oostCode)} = ${joinStageExpression}`);
     }
 
@@ -1360,7 +1316,7 @@ const getInformationSourceDistributionOverTimeReport = async (criteria = {}, opt
     const stageValue = text(criteria.stage);
     if (stageValue) {
       if (/^-?\d+$/.test(stageValue) && (meta.opr1Stage || meta.stage)) {
-        whereClauses.push(`${meta.opr1Stage ? `lastStageLine.${quoted(meta.opr1Stage)}` : stageSourceExpression} = @stageValue`);
+        whereClauses.push(`${(meta.hasOPR1 && meta.oppId && meta.opr1OppId && meta.opr1Stage) ? `lastStageLine.${quoted(meta.opr1Stage)}` : stageSourceExpression} = @stageValue`);
         params.stageValue = Number(stageValue);
       } else if (meta.hasOOST && meta.oostName) {
         whereClauses.push(`stg.${quoted(meta.oostName)} = @stageName`);
@@ -1458,7 +1414,7 @@ const getInformationSourceDistributionOverTimeReport = async (criteria = {}, opt
         ? `CONCAT(MONTH(${dateExpression}), ' - ', YEAR(${dateExpression}))`
         : `CONCAT(DATEPART(WEEK, ${dateExpression}), ' - ', YEAR(${dateExpression}))`;
     const periodSortExpression = groupBy === 'day' || groupBy === 'days'
-      ? `DATEDIFF(DAY, '19000101', CAST(${dateExpression} AS DATE))`
+      ? `DATEDIFF(DAY, '1900-01-01', CAST(${dateExpression} AS DATE))`
       : groupBy === 'month' || groupBy === 'months'
         ? `(YEAR(${dateExpression}) * 100) + MONTH(${dateExpression})`
         : `(YEAR(${dateExpression}) * 100) + DATEPART(WEEK, ${dateExpression})`;
@@ -1631,18 +1587,10 @@ const getOpportunitiesStatisticsReport = async (criteria = {}, options = {}) => 
 
     const stageSourceExpression = meta.stage ? columnExpr('opp', meta.stage) : '';
     if (meta.hasOPR1 && meta.oppId && meta.opr1OppId) {
-      const orderColumn = meta.opr1Line || meta.opr1Stage || meta.opr1OppId;
-      joins.push(`
-        OUTER APPLY (
-          SELECT TOP 1 *
-          FROM OPR1 stageLine
-          WHERE stageLine.${quoted(meta.opr1OppId)} = ${columnExpr('opp', meta.oppId)}
-          ORDER BY stageLine.${quoted(orderColumn)} DESC
-        ) lastStageLine
-      `);
+      joins.push(buildLatestStageJoin(meta));
     }
     if (meta.hasOOST && meta.oostCode && (meta.opr1Stage || meta.stage)) {
-      const joinStageExpression = meta.opr1Stage ? `lastStageLine.${quoted(meta.opr1Stage)}` : stageSourceExpression;
+      const joinStageExpression = (meta.hasOPR1 && meta.oppId && meta.opr1OppId && meta.opr1Stage) ? `lastStageLine.${quoted(meta.opr1Stage)}` : stageSourceExpression;
       joins.push(`LEFT JOIN OOST stg ON stg.${quoted(meta.oostCode)} = ${joinStageExpression}`);
     }
 
@@ -1701,7 +1649,7 @@ const getOpportunitiesStatisticsReport = async (criteria = {}, options = {}) => 
     const stageValue = text(criteria.stage);
     if (stageValue) {
       if (/^-?\d+$/.test(stageValue) && (meta.opr1Stage || meta.stage)) {
-        whereClauses.push(`${meta.opr1Stage ? `lastStageLine.${quoted(meta.opr1Stage)}` : stageSourceExpression} = @stageValue`);
+        whereClauses.push(`${(meta.hasOPR1 && meta.oppId && meta.opr1OppId && meta.opr1Stage) ? `lastStageLine.${quoted(meta.opr1Stage)}` : stageSourceExpression} = @stageValue`);
         params.stageValue = Number(stageValue);
       } else if (meta.hasOOST && meta.oostName) {
         whereClauses.push(`stg.${quoted(meta.oostName)} = @stageName`);
@@ -1901,18 +1849,10 @@ const getOpportunitiesReport = async (criteria = {}, options = {}) => {
 
     const stageSourceExpression = meta.stage ? columnExpr('opp', meta.stage) : '';
     if (meta.hasOPR1 && meta.oppId && meta.opr1OppId) {
-      const orderColumn = meta.opr1Line || meta.opr1Stage || meta.opr1OppId;
-      joins.push(`
-        OUTER APPLY (
-          SELECT TOP 1 *
-          FROM OPR1 stageLine
-          WHERE stageLine.${quoted(meta.opr1OppId)} = ${columnExpr('opp', meta.oppId)}
-          ORDER BY stageLine.${quoted(orderColumn)} DESC
-        ) lastStageLine
-      `);
+      joins.push(buildLatestStageJoin(meta));
     }
     if (meta.hasOOST && meta.oostCode && (meta.opr1Stage || meta.stage)) {
-      const joinStageExpression = meta.opr1Stage ? `lastStageLine.${quoted(meta.opr1Stage)}` : stageSourceExpression;
+      const joinStageExpression = (meta.hasOPR1 && meta.oppId && meta.opr1OppId && meta.opr1Stage) ? `lastStageLine.${quoted(meta.opr1Stage)}` : stageSourceExpression;
       joins.push(`LEFT JOIN OOST stg ON stg.${quoted(meta.oostCode)} = ${joinStageExpression}`);
     }
 
@@ -1971,7 +1911,7 @@ const getOpportunitiesReport = async (criteria = {}, options = {}) => {
     const stageValue = text(criteria.stage);
     if (stageValue) {
       if (/^-?\d+$/.test(stageValue) && (meta.opr1Stage || meta.stage)) {
-        whereClauses.push(`${meta.opr1Stage ? `lastStageLine.${quoted(meta.opr1Stage)}` : stageSourceExpression} = @stageValue`);
+        whereClauses.push(`${(meta.hasOPR1 && meta.oppId && meta.opr1OppId && meta.opr1Stage) ? `lastStageLine.${quoted(meta.opr1Stage)}` : stageSourceExpression} = @stageValue`);
         params.stageValue = Number(stageValue);
       } else if (meta.hasOOST && meta.oostName) {
         whereClauses.push(`stg.${quoted(meta.oostName)} = @stageName`);
@@ -2132,15 +2072,7 @@ const getOpportunitiesPipelineReport = async (criteria = {}, options = {}) => {
 
     const stageSourceExpression = meta.stage ? columnExpr('opp', meta.stage) : '';
     if (meta.hasOPR1 && meta.oppId && meta.opr1OppId) {
-      const orderColumn = meta.opr1Line || meta.opr1Stage || meta.opr1OppId;
-      joins.push(`
-        OUTER APPLY (
-          SELECT TOP 1 *
-          FROM OPR1 lastStageLine
-          WHERE lastStageLine.${quoted(meta.opr1OppId)} = ${columnExpr('opp', meta.oppId)}
-          ORDER BY lastStageLine.${quoted(orderColumn)} DESC
-        ) lastStageLine
-      `);
+      joins.push(buildLatestStageJoin(meta));
     }
 
     const stageCodeExpression = canUseStageLine && meta.opr1Stage

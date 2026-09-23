@@ -22,6 +22,44 @@ const positiveInt = (v) => {
   return Number.isInteger(n) && n > 0 ? n : undefined;
 };
 
+const productionError = (message, statusCode = 422, code = 'SAP_PRODUCTION_VALIDATION') =>
+  Object.assign(new Error(message), { statusCode, code });
+
+const getProductionOrderState = async (docEntry) => {
+  const response = await sapService.request({ method: 'GET', url: `/ProductionOrders(${docEntry})` });
+  return {
+    order: response.data || {},
+    etag: response.headers?.etag || response.headers?.ETag || response.data?.['@odata.etag'] || '',
+  };
+};
+
+const transitionProductionOrder = async (docEntry, fromStatuses, targetStatus) => {
+  const current = await getProductionOrderState(docEntry);
+  const status = current.order.ProductionOrderStatus;
+  if (!fromStatuses.includes(status)) {
+    throw productionError(`Production order cannot change from "${STATUS_MAP[status] || status}" to "${STATUS_MAP[targetStatus] || targetStatus}".`, 409, 'SAP_PRODUCTION_STATUS');
+  }
+  await sapService.request({
+    method: 'PATCH',
+    url: `/ProductionOrders(${docEntry})`,
+    headers: current.etag ? { 'If-Match': current.etag } : {},
+    data: { ProductionOrderStatus: targetStatus },
+  });
+};
+
+const validateProductionOrderBody = async (body, { create = false } = {}) => {
+  if (!String(body.item_code || '').trim()) throw productionError('Finished goods item is required.', 400);
+  if (!(Number(body.planned_qty) > 0)) throw productionError('Planned quantity must be greater than zero.', 400);
+  if (!body.due_date) throw productionError('Due date is required.', 400);
+  if (!body.posting_date) throw productionError('Posting date is required.', 400);
+  if (!String(body.warehouse || '').trim()) throw productionError('Finished goods warehouse is required.', 400);
+  if (create && !['boposPlanned', 'boposReleased', '', undefined, null].includes(body.status)) {
+    throw productionError('A new production order can only be created as Planned or Released.', 400);
+  }
+  const lineWarehouses = (body.lines || []).map((line) => line.warehouse).filter(Boolean);
+  await productionDbService.validateBranchWarehouses(body.branch, [body.warehouse, ...lineWarehouses]);
+};
+
 const normalizeBranches = (rows = []) =>
   (rows || [])
     .map((row) => ({
@@ -268,6 +306,7 @@ const explodeBOM = async (itemCode, qty = 1) => {
 // ── Create ────────────────────────────────────────────────────────────────────
 const createProductionOrder = async (body) => {
   console.log('[ProductionOrder] Create called with status:', body.status);
+  await validateProductionOrderBody(body, { create: true });
   const isSpecialOrder = body.type === 'bopotSpecial';
   
   // Standard/Disassemble orders need a BOM. Special orders use a normal item
@@ -365,11 +404,7 @@ const createProductionOrder = async (body) => {
   if (docEntry && desiredStatus === 'boposReleased') {
     console.log('[ProductionOrder] Auto-releasing order...');
     try {
-      await sapService.request({
-        method: 'PATCH',
-        url: `/ProductionOrders(${docEntry})`,
-        data: { ProductionOrderStatus: 'boposReleased' },
-      });
+      await transitionProductionOrder(docEntry, ['boposPlanned'], 'boposReleased');
       return {
         message: docNum 
           ? `Production order #${docNum} created and released successfully.`
@@ -378,15 +413,13 @@ const createProductionOrder = async (body) => {
         doc_entry: docEntry,
       };
     } catch (err) {
-      // If release fails, return the planned order
       console.warn('Failed to auto-release production order:', err.message);
-      return {
-        message: docNum
-          ? `Production order #${docNum} created as Planned (auto-release failed).`
-          : 'Production order created as Planned (auto-release failed).',
-        doc_num: docNum,
-        doc_entry: docEntry,
-      };
+      throw Object.assign(
+        new Error(docNum
+          ? `Production order #${docNum} was created as Planned, but release failed: ${err.message}`
+          : `Production order was created as Planned, but release failed: ${err.message}`),
+        { statusCode: 409, code: 'SAP_PRODUCTION_PARTIAL_TRANSITION', docEntry, docNum },
+      );
     }
   } else if (docEntry && desiredStatus === 'boposClosed') {
     console.log('[ProductionOrder] Auto-closing order...');
@@ -435,8 +468,21 @@ const updateProductionOrder = async (docEntry, body) => {
   const n = Number(docEntry);
   if (!Number.isInteger(n) || n <= 0) throw new Error('Invalid DocEntry.');
 
-  const payload = _buildPayload(body, false); // Pass false to indicate update
-  await sapService.request({ method: 'PATCH', url: `/ProductionOrders(${n})`, data: payload });
+  await validateProductionOrderBody(body);
+  const current = await getProductionOrderState(n);
+  if (current.order.ProductionOrderStatus !== 'boposPlanned') {
+    throw productionError('Only Planned production orders can be edited.', 409, 'SAP_PRODUCTION_STATUS');
+  }
+  if (body.status && body.status !== 'boposPlanned') {
+    throw productionError('Use the Release or Close action to change production order status.', 400, 'SAP_PRODUCTION_STATUS');
+  }
+  const payload = _buildPayload({ ...body, status: 'boposPlanned' }, false);
+  await sapService.request({
+    method: 'PATCH',
+    url: `/ProductionOrders(${n})`,
+    headers: current.etag ? { 'If-Match': current.etag } : {},
+    data: payload,
+  });
 
   const updated = await productionDbService.getProductionOrderByDocEntry(n);
   return { message: 'Production order updated.', production_order: updated?.production_order || null };
@@ -447,12 +493,7 @@ const releaseProductionOrder = async (docEntry) => {
   const n = Number(docEntry);
   if (!Number.isInteger(n) || n <= 0) throw new Error('Invalid DocEntry.');
 
-  // Update the status to Released
-  await sapService.request({
-    method: 'PATCH',
-    url: `/ProductionOrders(${n})`,
-    data: { ProductionOrderStatus: 'boposReleased' },
-  });
+  await transitionProductionOrder(n, ['boposPlanned'], 'boposReleased');
   
   const updated = await productionDbService.getProductionOrderByDocEntry(n);
   return { message: 'Production order released.', production_order: updated?.production_order || null };
@@ -463,12 +504,7 @@ const closeProductionOrder = async (docEntry) => {
   const n = Number(docEntry);
   if (!Number.isInteger(n) || n <= 0) throw new Error('Invalid DocEntry.');
 
-  // SAP B1 closes production orders by updating the status to Closed
-  await sapService.request({
-    method: 'PATCH',
-    url: `/ProductionOrders(${n})`,
-    data: { ProductionOrderStatus: 'boposClosed' },
-  });
+  await transitionProductionOrder(n, ['boposReleased'], 'boposClosed');
   
   const updated = await productionDbService.getProductionOrderByDocEntry(n);
   return { message: 'Production order closed.', production_order: updated?.production_order || null };
@@ -655,4 +691,6 @@ module.exports = {
   lookupProjects: productionDbService.lookupProjects,
   lookupBranches: productionDbService.lookupBranches,
   lookupCustomers: productionDbService.lookupCustomers,
+  getSeries: (date, branch) => productionDbService.lookupSeriesContext('202', date, branch),
+  _private: { validateProductionOrderBody, transitionProductionOrder, _buildPayload },
 };

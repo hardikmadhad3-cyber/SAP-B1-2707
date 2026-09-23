@@ -1,3 +1,5 @@
+import useConfirmationOnlyUpdate from '../../utils/useConfirmationOnlyUpdate';
+import useDocumentSeries from '../../hooks/useDocumentSeries';
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import '../../modules/item-master/styles/itemMaster.css';
 import './styles/SalesQuotation.css';
@@ -33,10 +35,11 @@ import ExchangeRatesIndexesModal from '../sales-order/components/ExchangeRatesIn
 import { summarizeFreightRows } from '../../components/freight/freightUtils';
 import { useSapWindowTaskbarActions } from '../../components/SapWindowTaskbarContext';
 import useStandardDocumentDraftTask from '../../hooks/useStandardDocumentDraftTask';
-import { determineTaxCode, recalculateAllTaxCodes, getGSTTypeLabel } from '../../utils/taxEngine';
+import { determineTaxCode, getGSTTypeLabel } from '../../utils/taxEngine';
 import { filterWarehousesByBranch } from '../../utils/warehouseBranch';
 import { hydrateDocumentLineFromItem, mergeItemMaster } from '../../utils/documentItemHydration';
-import { getDefaultSeriesForCurrentYear, getSapVisibleDocumentSeries } from '../../utils/seriesDefaults';
+import { applyUomCodeSelection, getLineUomOptions } from '../../utils/documentUom';
+import { getSapVisibleDocumentSeries, canUseManualSeries } from '../../utils/seriesDefaults';
 import { readGeneralSettings } from '../../utils/generalSettingsStorage';
 import {
   SAP_MANUAL_SERIES_VALUE,
@@ -44,10 +47,11 @@ import {
   isValidManualDocumentNumber,
 } from '../../utils/documentSeries';
 import { useCompanyScopedFormSettings } from '../../utils/formSettingsStorage';
+import { buildCompanyFormQueryContext } from '../../utils/companyFormQueryContext';
 import { updateFormSettingPreference } from '../../utils/formSettingsPreferences';
 import { buildVisibleEnteredRowUdfPayload } from '../../utils/rowUdfPayload';
 import { getStateCodeValue, getStateDisplayName } from '../../utils/stateDisplay';
-import { findTaxCode, getTaxComponentCodes, taxCodeHasComponent } from '../../utils/taxCodeComponents';
+import { findTaxCode, getTaxComponentCodes } from '../../utils/taxCodeComponents';
 import { copyToDocument } from '../../services/documentCopyService';
 import { replaceRouteStatePreservingWindow } from '../../utils/copyToState';
 import { duplicateDocumentInPlace } from '../../utils/documentDuplicate';
@@ -73,6 +77,7 @@ import {
   stripSalesDocumentTopLevelUdfs,
 } from '../../utils/salesDocumentLiveFields';
 import { hydrateWorkbookDocumentLine } from '../../utils/workbookLineHydration';
+import { applyDocumentTablePaste } from '../../utils/documentTableClipboard';
 import {
   fetchSalesQuotationByDocEntry,
   fetchSalesQuotationCustomerDetails,
@@ -80,7 +85,6 @@ import {
   submitSalesQuotation,
   updateSalesQuotation,
   fetchDocumentSeries,
-  fetchNextNumber,
   fetchItemsForModal,
   fetchFreightCharges,
   createSalesQuotationLookupValue,
@@ -89,7 +93,7 @@ import {
 } from '../../api/salesQuotationApi';
 import { fetchSalesOrderExchangeRates, saveSalesOrderExchangeRate } from '../../api/salesOrderApi';
 import { normaliseDocumentHeader, normaliseDocumentLine, unwrapCopyFromDocument, BASE_TYPE } from '../../api/copyFromApi';
-import { fetchHSNCodes, fetchHSNCodeFromItem } from '../../api/hsnCodeApi';
+import { fetchHSNCodes } from '../../api/hsnCodeApi';
 import {
   FORM_SETTINGS_STORAGE_KEY,
   createUdfState,
@@ -97,15 +101,26 @@ import {
   readSavedFormSettings,
 } from '../../config/salesQuotationForm';
 
-// â”€â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ helpers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+const getErrorText = (value) => {
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (!value || typeof value !== 'object') return '';
+  return getErrorText(value.value)
+    || getErrorText(value.message)
+    || getErrorText(value.detail)
+    || getErrorText(value.details)
+    || getErrorText(value.error);
+};
+
 const getErrMsg = (e, fb) => {
   const body = e?.response?.data || {};
-  const d = body.detail || body.details;
-  if (typeof d === 'string' && d.trim()) return d;
-  if (d?.error?.message) return d.error.message;
-  if (d?.message) return d.message;
-  if (body.message) return d?.hint ? `${body.message} ${d.hint}` : body.message;
-  return e?.message || fb;
+  return getErrorText(body.detail)
+    || getErrorText(body.details)
+    || getErrorText(body.message)
+    || getErrorText(body.error)
+    || getErrorText(e?.message)
+    || fb;
 };
 const normalizeUdfState = (definitions = [], values = {}) => (
   normalizeConfiguredUdfState(definitions, values, { preserveExtra: false })
@@ -161,7 +176,7 @@ const normalizeAddressText = (value) =>
     .replace(/\s+/g, ' ')
     .trim();
 
-// â”€â”€â”€ constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ constants Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 const DEC = { QtyDec: 2, PriceDec: 2, SumDec: 2, RateDec: 2, PercentDec: 2 };
 const TAB_NAMES = ['Contents', 'Logistics', 'Accounting', 'Tax', 'Electronic Documents', 'Attachments'];
 const buildExchangeRatesFallbackData = ({ year, month, currencies = [], localCurrency = '', documentCurrency = '' }) => {
@@ -210,7 +225,7 @@ const getValidationTab = (errors) => {
 
 const createLine = (rowUdfDefinitions = []) => ({
   itemNo: '', itemDescription: '', hsnCode: '', quantity: '', unitPrice: '',
-  requiredDate: '', quotedDate: '', requiredQty: '',
+  requiredDate: '', quotedDate: '', requiredQty: '', noOfPackages: '',
   sacCode: '', uomCode: '', stdDiscount: '', taxCode: '', total: '', totalLC: '', grossTotal: '', whse: '',
   lineDeliveryDate: '',
   taxCodeManuallyOverridden: false,
@@ -235,11 +250,11 @@ const createLine = (rowUdfDefinitions = []) => ({
 });
 
 const INIT_HEADER = {
-  vendor: '', name: '', contactPerson: '', salesContractNo: '', branch: '', warehouse: GENERAL_SETTINGS.salesQuotationWarehouse || '',
+  vendor: '', name: '', contactPerson: '', customerRefNo: '', salesContractNo: '', branch: '', warehouse: GENERAL_SETTINGS.salesQuotationWarehouse || '',
   docNo: '', status: 'Open', series: GENERAL_SETTINGS.salesQuotationSeries || '', nextNumber: '',
   postingDate: today(), deliveryDate: '', documentDate: today(), contractDate: '',
   branchRegNo: '', shipTo: '', shipToCode: '', payTo: '', payToCode: '',
-  shippingType: '', confirmed: false, journalRemark: '', paymentTerms: '',
+  shippingType: '', confirmed: undefined, journalRemark: '', paymentTerms: '',
   paymentMethod: '', otherInstruction: '', discount: '', freight: '', tax: '',
   totalPaymentDue: '', rounding: false, owner: '', purchaser: '',
   placeOfSupply: '', currencyMode: 'BP', currency: '', exchangeRate: '', useBillToForTax: false,
@@ -284,8 +299,10 @@ const closeDocumentDropdowns = () => {
   document.querySelectorAll('.so-dropdown').forEach(d => d.classList.remove('active'));
 };
 
-// â”€â”€â”€ Main Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Main Component Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 function SalesQuotation() {
+  const [seriesRevision, setSeriesRevision] = useState(0);
+
   const location = useLocation();
   const navigate = useNavigate();
   const { company } = useAuth();
@@ -486,19 +503,6 @@ function SalesQuotation() {
   const isUpdateMode = Boolean(currentDocEntry);
   const hasUnsavedChanges = Boolean(currentDocEntry && isDirty);
   const updateActionLabel = hasUnsavedChanges ? 'Update' : 'OK';
-  const resolvePreferredSeries = (seriesList, postingDateValue, selectedSeries = '') => {
-    if (!Array.isArray(seriesList) || !seriesList.length) return null;
-
-    const normalizedSeries = String(selectedSeries || '').trim();
-    const matchedSeries = normalizedSeries
-      ? seriesList.find((series) => String(series.Series) === normalizedSeries)
-      : null;
-
-    if (matchedSeries) return matchedSeries;
-
-    const seriesDate = postingDateValue ? new Date(`${postingDateValue}T00:00:00`) : new Date();
-    return getDefaultSeriesForCurrentYear(seriesList, seriesDate) || seriesList[0];
-  };
   const resolveSalesQuotationAddress = useCallback((code, addresses = [], fallbackText = '') => {
     const normalizedCode = String(code || '').trim();
     if (normalizedCode) {
@@ -536,7 +540,7 @@ function SalesQuotation() {
 
   // Continue in next part...
 
-  // â”€â”€ load reference data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ load reference data Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   useEffect(() => {
     let ignore = false;
     setHydratedFieldMetadataScope('');
@@ -589,9 +593,9 @@ function SalesQuotation() {
           }),
         ]);
         
-        // â•â•â• LOGGING: Reference Data â•â•â•
-        console.log('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
-        console.log('ðŸ“š Reference Data Loaded:');
+        // Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â LOGGING: Reference Data Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
+        console.log('Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â');
+        console.log('Ã°Å¸â€œÅ¡ Reference Data Loaded:');
         console.log('  - Vendors/Customers:', refDataRes.data.vendors?.length || 0);
         console.log('  - Items:', refDataRes.data.items?.length || 0);
         console.log('  - Tax Codes:', refDataRes.data.tax_codes?.length || 0);
@@ -604,28 +608,28 @@ function SalesQuotation() {
         console.log('  - HSN Codes:', hsnRes.data?.length || 0);
         console.log('  - Sales Employees:', refDataRes.data.sales_employees?.length || 0);
         console.log('  - Owners:', refDataRes.data.owners?.length || 0);
-        console.log('â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€');
-        console.log('ðŸ¢ Company Address:', refDataRes.data.company_address);
-        console.log('âš™ï¸  Decimal Settings:', refDataRes.data.decimal_settings);
-        console.log('âš ï¸  Warnings:', refDataRes.data.warnings);
-        console.log('â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€');
-        console.log('ðŸ’° TAX CODES LOADED:');
+        console.log('Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬');
+        console.log('Ã°Å¸ÂÂ¢ Company Address:', refDataRes.data.company_address);
+        console.log('Ã¢Å¡â„¢Ã¯Â¸Â  Decimal Settings:', refDataRes.data.decimal_settings);
+        console.log('Ã¢Å¡Â Ã¯Â¸Â  Warnings:', refDataRes.data.warnings);
+        console.log('Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬');
+        console.log('Ã°Å¸â€™Â° TAX CODES LOADED:');
         (refDataRes.data.tax_codes || []).forEach(tc => {
           console.log(`  ${tc.Code} - ${tc.Name} (Rate: ${tc.Rate}%, Type: ${tc.GSTType || 'N/A'})`);
         });
         if (refDataRes.data.sales_employees && refDataRes.data.sales_employees.length > 0) {
-          console.log('ðŸ‘¥ SALES EMPLOYEES LOADED:');
+          console.log('Ã°Å¸â€˜Â¥ SALES EMPLOYEES LOADED:');
           refDataRes.data.sales_employees.forEach(emp => {
             console.log(`  ${emp.SlpName} (Code: ${emp.SlpCode})`);
           });
         }
         if (refDataRes.data.owners && refDataRes.data.owners.length > 0) {
-          console.log('ðŸ‘¤ OWNERS LOADED:');
+          console.log('Ã°Å¸â€˜Â¤ OWNERS LOADED:');
           refDataRes.data.owners.forEach(owner => {
             console.log(`  ${owner.FullName} (empID: ${owner.empID})`);
           });
         }
-        console.log('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
+        console.log('Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â');
         
         if (!ignore) {
           const sourceMatrixColumns = refDataRes.data.line_field_metadata?.matrix_columns || [];
@@ -705,7 +709,7 @@ function SalesQuotation() {
           setHydratedFieldMetadataScope(activeFieldMetadataScope);
         }
       } catch (e) {
-        console.error('âŒ Error loading reference data:', e);
+        console.error('Ã¢ÂÅ’ Error loading reference data:', e);
         if (!ignore) {
           const fallbackColumns = getSapStandardSalesMatrixColumns();
           setHeaderUdfDefinitions([]);
@@ -746,51 +750,8 @@ function SalesQuotation() {
     ));
   }, [companyFormSettingsReady, formSettingsStatus.hasUnsavedChanges, formSettingsStorageKey, headerUdfDefinitions, matrixColumnDefinitions, replaceFormSettings, rowUdfDefinitions]);
 
-  // â”€â”€ load existing order â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  useEffect(() => {
-    if (currentDocEntry) return;
+  // Ã¢â€â‚¬Ã¢â€â‚¬ load existing order Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
-    const seriesDate = String(header.postingDate || '').trim();
-    if (!seriesDate) {
-      setRefData(prev => ({ ...prev, series: [] }));
-      setHeader(prev => ({ ...prev, series: '', nextNumber: '' }));
-      return;
-    }
-
-    let ignore = false;
-
-    const loadSeriesForPostingDate = async () => {
-      try {
-        const seriesResponse = await fetchDocumentSeries(seriesDate, { branch: header.branch || '' });
-        const availableSeries = seriesResponse.data?.series || [];
-
-        if (ignore) return;
-
-        setRefData(prev => ({ ...prev, series: availableSeries }));
-
-        if (isManualDocumentSeries(header.series)) return;
-
-        if (!availableSeries.length) {
-          setHeader(prev => ({ ...prev, series: '', nextNumber: '' }));
-          return;
-        }
-
-        const currentSeries = String(header.series || '');
-        const defaultSeries = resolvePreferredSeries(availableSeries, seriesDate, currentSeries);
-
-        if (!defaultSeries?.Series) return;
-
-        if (String(defaultSeries.Series) !== currentSeries || !String(header.nextNumber || '').trim()) {
-          handleSeriesChange(defaultSeries.Series);
-        }
-      } catch (e) {
-        if (!ignore) setPageState(p => ({ ...p, error: getErrMsg(e, 'Failed to load document series.') }));
-      }
-    };
-
-    loadSeriesForPostingDate();
-    return () => { ignore = true; };
-  }, [currentDocEntry, header.postingDate]);
 
   useEffect(() => {
     const docEntry = requestedEditDocEntry;
@@ -888,7 +849,7 @@ function SalesQuotation() {
           exchangeRate: so.header?.exchangeRate || so.header?.docRate || so.header?.DocRate || '',
         };
         
-        console.log('ðŸ“¥ Final header state:', newHeader);
+        console.log('Ã°Å¸â€œÂ¥ Final header state:', newHeader);
         setHeader(newHeader);
         setLines(
           Array.isArray(so.lines) && so.lines.length
@@ -940,14 +901,7 @@ function SalesQuotation() {
   }, [activeFieldMetadataScope, hydratedFieldMetadataScope, location.pathname, requestedEditDocEntry, navigate]);
 
   useEffect(() => {
-    if (!currentDocEntry) {
-      setFreightModal(prev => (
-        prev.freightCharges.length || prev.loading
-          ? { ...prev, freightCharges: [], loading: false }
-          : prev
-      ));
-      return;
-    }
+    if (!currentDocEntry) return;
 
     let ignore = false;
     const loadSavedFreightCharges = async () => {
@@ -976,7 +930,7 @@ function SalesQuotation() {
     return () => { ignore = true; };
   }, [currentDocEntry]);
 
-  // â”€â”€ derived / computed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ derived / computed Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const vendorContacts = refData.contacts.filter(c => String(c.CardCode || '') === String(header.vendor || ''));
   const contactOptions = header.contactPerson && !vendorContacts.some(c => String(c.CntctCode || '') === String(header.contactPerson || ''))
     ? [{ CardCode: header.vendor, CntctCode: header.contactPerson, Name: header.contactPerson }, ...vendorContacts]
@@ -987,11 +941,93 @@ function SalesQuotation() {
   const vendorEffectiveShipToAddresses = vendorShipToAddresses.length ? vendorShipToAddresses : vendorPayToAddresses;
   const vendorEffectiveBillToAddresses = vendorBillToAddresses.length ? vendorBillToAddresses : vendorPayToAddresses;
   const selectedBranch = refData.branches.find(b => String(b.BPLId || '') === String(header.branch || ''));
-  const uomGroupMap = (refData.uom_groups || []).reduce((acc, g) => { acc[g.AbsEntry] = g.uomCodes || []; return acc; }, {});
 
   const effectiveTaxCodes = refData.tax_codes || [];
   const effectiveWarehouses = refData.warehouses || [];
   const freightTotals = summarizeFreightRows(freightModal.freightCharges, effectiveTaxCodes);
+
+  const getLineFieldPolicy = (fieldKey) => {
+    const field = matrixColumnDefinitions.find((column) => (
+      [column.key, column.valueKey, column.rendererKey].some((value) => String(value || '') === fieldKey)
+    ));
+    const editable = Boolean(field && field.readOnly !== true && field.active !== false);
+    return {
+      editable,
+      required: Boolean(field?.schemaDriven && field.required && editable),
+    };
+  };
+
+  const resolveAutomaticTaxCode = (item = {}) => {
+    if (!item || !String(item.ItemCode || '').trim()) return '';
+    const billToAddress = resolveSalesQuotationAddress(
+      header.billToCode,
+      vendorEffectiveBillToAddresses,
+      header.billToAddress,
+    );
+    const candidate = determineTaxCode(
+      item,
+      header.placeOfSupply,
+      billToAddress?.State || header.placeOfSupply,
+      Boolean(header.useBillToForTax),
+      refData.company_address?.State || selectedBranch?.State || '',
+      effectiveTaxCodes,
+    );
+    const match = effectiveTaxCodes.find(
+      (tax) => String(tax.Code || '').trim().toUpperCase() === String(candidate || '').trim().toUpperCase(),
+    );
+    return match?.Code || '';
+  };
+
+  const hydrateSelectedItem = (line = {}, selectedItem = {}, itemCode = '') => {
+    const normalizedItemCode = String(itemCode || selectedItem.ItemCode || '').trim();
+    const itemChanged = String(line.itemNo || '').trim() !== normalizedItemCode;
+    const baseLine = itemChanged
+      ? {
+          ...line,
+          itemNo: normalizedItemCode,
+          itemDescription: '',
+          hsnCode: '',
+          hsnEntry: '',
+          sacCode: '',
+          countryOfOrigin: '',
+          uomCode: '',
+          uomName: '',
+          uomEntry: '',
+          unitPrice: '',
+          inStock: '',
+          qtyInWhse: '',
+          batchManaged: false,
+          whse: header.warehouse || '',
+          taxCode: '',
+          taxCodeRepeat: '',
+          taxCodeManuallyOverridden: false,
+          uomNameEdited: false,
+        }
+      : { ...line, itemNo: normalizedItemCode };
+    if (!selectedItem || !String(selectedItem.ItemCode || '').trim()) {
+      baseLine.total = fmtDec(calcLineTotal(baseLine), numDec.total);
+      return baseLine;
+    }
+
+    const next = hydrateDocumentLineFromItem(baseLine, selectedItem, {
+      side: 'sales',
+      hsnCode: selectedItem.HSNCode || selectedItem.SWW || '',
+      fallbackWarehouse: header.warehouse,
+      syncUnitPriceUdf: false,
+      calcLineTotal,
+      formatTotal: (value) => fmtDec(value, numDec.total),
+      uomGroups: refData.uom_groups,
+    });
+    next.itemDescription = getSalesQuotationItemDescription(selectedItem, next.itemDescription);
+    const selectedHsnEntry = Number(selectedItem.HSNEntry);
+    next.hsnEntry = Number.isInteger(selectedHsnEntry) && selectedHsnEntry > 0
+      ? selectedHsnEntry
+      : '';
+    next.taxCode = resolveAutomaticTaxCode(selectedItem);
+    next.taxCodeRepeat = next.taxCode;
+    next.total = fmtDec(calcLineTotal(next), numDec.total);
+    return next;
+  };
   
   // Filter warehouses by selected branch
   const branchFilteredWarehouses = filterWarehousesByBranch(effectiveWarehouses, header.branch);
@@ -1003,14 +1039,8 @@ function SalesQuotation() {
 
   const getUomOptions = useCallback((line) => {
     const item = refData.items.find(i => String(i.ItemCode || '') === String(line.itemNo || ''));
-    if (item) {
-      const codes = uomGroupMap[item.UoMGroupEntry];
-      if (codes && codes.length) return codes;
-      const fb = String(item.SalesUnit || item.InventoryUOM || '').trim();
-      if (fb) return [fb];
-    }
-    return [];
-  }, [refData.items, uomGroupMap]);
+    return getLineUomOptions(line, item, refData.uom_groups).map((uom) => uom.uomCode);
+  }, [refData.items, refData.uom_groups]);
 
   const lineItemOptions = lines.reduce((acc, line, i) => {
     const code = String(line.itemNo || '').trim();
@@ -1041,7 +1071,7 @@ function SalesQuotation() {
     return branch ? branch.BPLName : branchId;
   };
 
-  // â”€â”€ calculations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ calculations Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const calcLineTotal = (line) => {
     const qty = parseNum(line.quantity), price = parseNum(line.unitPrice), disc = parseNum(line.stdDiscount);
     return roundTo(qty * price * (1 - disc / 100), numDec.total);
@@ -1107,62 +1137,19 @@ function SalesQuotation() {
     total: totals.total,
   });
 
-  // â”€â”€ GST determination logic â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  const determineGSTType = (gstState) => {
-    if (!gstState) return 'IGST';
-
-    // Get company state (assuming it's stored in refData.company or we need to get it)
-    const companyState = refData.company_address?.State || '';
-
-    if (gstState === companyState) {
-      return 'CGST_SGST'; // CGST + SGST
-    } else {
-      return 'IGST';
-    }
-  };
-
-  const getApplicableTaxCode = (gstType, itemTaxRate = 18) => {
-    // Find tax codes based on GST type
-    const taxCodes = effectiveTaxCodes.filter(code => {
-      const rate = Number(code.Rate || 0);
-      const gstTypeValue = String(code.GSTType || '').trim().toUpperCase();
-      
-      if (gstType === 'CGST_SGST') {
-        if (gstTypeValue === 'INTRASTATE' && Math.abs(rate - itemTaxRate) < 0.01) {
-          return true;
-        }
-        // For CGST+SGST, we need CGST or SGST with half the rate
-        const halfRate = itemTaxRate / 2;
-        return (
-          taxCodeHasComponent(effectiveTaxCodes, code.Code, 'CGST')
-          || taxCodeHasComponent(effectiveTaxCodes, code.Code, 'SGST')
-        ) && Math.abs(rate - halfRate) < 0.01;
-      } else if (gstType === 'IGST') {
-        if (gstTypeValue === 'INTERSTATE' && Math.abs(rate - itemTaxRate) < 0.01) {
-          return true;
-        }
-        // For IGST, we need IGST with full rate
-        return taxCodeHasComponent(effectiveTaxCodes, code.Code, 'IGST') && Math.abs(rate - itemTaxRate) < 0.01;
-      }
-      return false;
-    });
-
-    // Return the first matching tax code
-    return taxCodes.length > 0 ? taxCodes[0].Code : '';
-  };
-
-  // â”€â”€ address sync â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ GST determination logic Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  // Ã¢â€â‚¬Ã¢â€â‚¬ address sync Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   // Sync branch to all lines when header branch changes
   useEffect(() => {
     if (header.branch) {
-      console.log('ðŸ”„ Syncing branch to all lines:', header.branch);
+      console.log('Ã°Å¸â€â€ž Syncing branch to all lines:', header.branch);
       setLines(prev => {
         const updated = prev.map(l => ({ 
           ...l, 
           branch: String(header.branch), 
           loc: String(header.branch)
         }));
-        console.log('âœ… Lines updated with branch:', updated.map(l => ({ branch: l.branch, loc: l.loc })));
+        console.log('Ã¢Å“â€¦ Lines updated with branch:', updated.map(l => ({ branch: l.branch, loc: l.loc })));
         return updated;
       });
     }
@@ -1198,7 +1185,7 @@ function SalesQuotation() {
         const selectedWarehouse = refData.warehouses.find(w => w.WhsCode === header.warehouse);
         if (selectedWarehouse && selectedWarehouse.BranchID && 
             String(selectedWarehouse.BranchID) !== String(header.branch)) {
-          console.warn(`âš ï¸ Warehouse "${header.warehouse}" is assigned to Branch ${selectedWarehouse.BranchID}, but document is for Branch ${header.branch}`);
+          console.warn(`Ã¢Å¡Â Ã¯Â¸Â Warehouse "${header.warehouse}" is assigned to Branch ${selectedWarehouse.BranchID}, but document is for Branch ${header.branch}`);
           setPageState(p => ({ 
             ...p, 
             error: `Warning: Warehouse "${header.warehouse}" is assigned to a different branch. This may cause submission errors.` 
@@ -1208,7 +1195,7 @@ function SalesQuotation() {
     }
   }, [header.warehouse, header.branch, refData.warehouses]);
 
-  // â”€â”€ Recalculate Tax Codes on State/Address Changes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Recalculate Tax Codes on State/Address Changes Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   useEffect(() => {
     if (currentDocEntry) return;
     if (!header.vendor || !header.placeOfSupply) return;
@@ -1216,33 +1203,26 @@ function SalesQuotation() {
     const companyState = refData.company_address?.State || selectedBranch?.State || '';
     
     if (!companyState) {
-      console.warn('âš ï¸ Company state not available for tax recalculation');
+      console.warn('Ã¢Å¡Â Ã¯Â¸Â Company state not available for tax recalculation');
       return;
     }
 
-    console.log('ðŸ”„ Recalculating Tax Codes for All Lines:', {
+    console.log('Ã°Å¸â€â€ž Recalculating Tax Codes for All Lines:', {
       placeOfSupply: header.placeOfSupply,
       companyState,
       gstType: getGSTTypeLabel(companyState, header.placeOfSupply),
       lineCount: lines.filter(l => l.itemNo).length
     });
 
-    // Recalculate tax codes for all lines with items
-    const recalculatedLines = recalculateAllTaxCodes(
-      lines,
-      refData.items,
-      header.placeOfSupply,  // shipToState
-      header.placeOfSupply,  // billToState
-      false,                 // useBillToForTax
-      companyState,
-      effectiveTaxCodes
-    );
-    const updatedLines = recalculatedLines.map((line, index) => (
-      lines[index]?.taxCodeManuallyOverridden ? lines[index] : line
-    ));
-
-    setLines(updatedLines);
-  }, [currentDocEntry, header.placeOfSupply, header.vendor, refData.company_address, selectedBranch]);
+    setLines((previous) => previous.map((line) => {
+      if (!line.itemNo || line.taxCodeManuallyOverridden) return line;
+      const item = refData.items.find(
+        (candidate) => String(candidate.ItemCode || '') === String(line.itemNo || ''),
+      );
+      const taxCode = resolveAutomaticTaxCode(item);
+      return { ...line, taxCode, taxCodeRepeat: taxCode };
+    }));
+  }, [currentDocEntry, header.placeOfSupply, header.billToCode, header.useBillToForTax, header.vendor, refData.company_address, selectedBranch]);
 
   useEffect(() => {
     if (!header.vendor) return;
@@ -1291,34 +1271,7 @@ function SalesQuotation() {
     });
   }, [header.vendor, refData.pay_to_addresses, refData.ship_to_addresses, refData.bill_to_addresses]);
 
-  // Update GST when addresses or place of supply changes
-  useEffect(() => {
-    if (currentDocEntry) return;
-    if (!header.vendor || !header.placeOfSupply) return;
-
-    const gstType = determineGSTType();
-    console.log('Auto-updating tax codes based on GST type:', gstType);
-
-    // Update tax codes for all lines that have items
-    setLines(prevLines =>
-      prevLines.map(line => {
-        if (!line.itemNo || line.taxCodeManuallyOverridden) return line; // Skip empty or preserved lines
-        
-        // Get item's default tax rate (assume 18% if not specified)
-        const item = refData.items.find(it => String(it.ItemCode || '') === String(line.itemNo || ''));
-        const itemTaxRate = item?.TaxRate || 18;
-        
-        const applicableTaxCode = getApplicableTaxCode(gstType, itemTaxRate);
-        
-        return {
-          ...line,
-          taxCode: applicableTaxCode || line.taxCode
-        };
-      })
-    );
-  }, [currentDocEntry, header.placeOfSupply, header.vendor]);
-
-  // â”€â”€ vendor details â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ vendor details Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const loadVendorDetails = async (code) => {
     if (!code) {
       setRefData(p => ({ ...p, contacts: [], pay_to_addresses: [], ship_to_addresses: [], bill_to_addresses: [] }));
@@ -1347,7 +1300,7 @@ function SalesQuotation() {
       }
 
     } catch (err) {
-      console.error('âŒ Error loading vendor details:', err);
+      console.error('Ã¢ÂÅ’ Error loading vendor details:', err);
       console.error('Error response:', err.response?.data);
       setRefData(p => ({ ...p, contacts: [], pay_to_addresses: [], ship_to_addresses: [], bill_to_addresses: [] }));
     } finally {
@@ -1439,7 +1392,7 @@ function SalesQuotation() {
     refreshExchangeRate(header.currency, header.postingDate);
   }, [currentDocEntry, header.vendor, header.currency, header.postingDate, refreshExchangeRate]);
 
-  // â”€â”€ handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ handlers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const handleHeaderChange = (e) => {
     const { name, value, type, checked } = e.target;
     setValErrors(p => ({ ...p, header: { ...p.header, [name]: '' }, form: '' }));
@@ -1502,7 +1455,7 @@ function SalesQuotation() {
       return;
     }
     
-    // âœ… FIX: When purchaser (Sales Employee name) changes, update salesEmployee (code) too
+    // Ã¢Å“â€¦ FIX: When purchaser (Sales Employee name) changes, update salesEmployee (code) too
     if (name === 'purchaser') {
       if (value === '__DEFINE_NEW__') {
         openSalesEmployeeSetup();
@@ -1517,7 +1470,7 @@ function SalesQuotation() {
         salesEmployee: selectedEmployee ? String(selectedEmployee.SlpCode) : '-1'
       }));
       
-      console.log('ðŸ”„ Sales Employee changed:', {
+      console.log('Ã°Å¸â€â€ž Sales Employee changed:', {
         name: value,
         code: selectedEmployee ? selectedEmployee.SlpCode : '-1'
       });
@@ -1568,164 +1521,46 @@ function SalesQuotation() {
     }
   };
   
-  const handleSeriesChange = async (seriesValue) => {
-    if (!seriesValue) return;
+  const handleSeriesChange = (seriesValue) => {
+      const manual = ['-1', 'manual', '__sap_manual__'].includes(String(seriesValue).toLowerCase());
+      if (manual && !canUseManualSeries(refData)) return;
+      const selected = (refData.series || []).find(row => String(row.Series) === String(seriesValue));
+      setHeader(prev => ({ ...prev, series: manual ? '-1' : selected ? String(selected.Series) : '', nextNumber: manual ? '' : String(selected?.NextNumber ?? ''), docNo: '' }));
+      setPageState(prev => ({ ...prev, error: '', success: '' }));
+    };
 
-    if (isManualDocumentSeries(seriesValue)) {
-      setHeader(p => ({ ...p, series: SAP_MANUAL_SERIES_VALUE, nextNumber: '' }));
-      setPageState(p => ({ ...p, seriesLoading: false, error: '', success: '' }));
-      return;
-    }
-    
-    setPageState(p => ({ ...p, seriesLoading: true }));
-    setHeader(p => ({ ...p, series: seriesValue, nextNumber: '...' }));
-    
-    try {
-      const res = await fetchNextNumber(seriesValue);
-      setHeader(p => ({ ...p, nextNumber: String(res.data.nextNumber || '') }));
-    } catch (err) {
-      setHeader(p => ({ ...p, nextNumber: 'Error' }));
-      setPageState(p => ({ ...p, error: 'Failed to get next document number' }));
-    } finally {
-      setPageState(p => ({ ...p, seriesLoading: false }));
-    }
-  };
+  const refreshAddModeSeries = async (postingDateValue = today(), selectedSeries = '') => { setHeader(prev => ({ ...prev, postingDate: postingDateValue, series: '', nextNumber: '' })); setSeriesRevision(value => value + 1); };
 
-  const refreshAddModeSeries = async (postingDateValue = today(), selectedSeries = '') => {
-    const seriesDate = String(postingDateValue || today()).trim();
-    if (!seriesDate) {
-      setRefData(prev => ({ ...prev, series: [] }));
-      setHeader(prev => ({ ...prev, series: '', nextNumber: '' }));
-      return;
-    }
-
-    try {
-      const seriesResponse = await fetchDocumentSeries(seriesDate, { branch: header.branch || '' });
-      const availableSeries = seriesResponse.data?.series || [];
-      setRefData(prev => ({ ...prev, series: availableSeries }));
-
-      const defaultSeries = resolvePreferredSeries(availableSeries, seriesDate, selectedSeries);
-      if (defaultSeries?.Series != null) {
-        await handleSeriesChange(defaultSeries.Series);
-      } else {
-        setHeader(prev => ({ ...prev, series: '', nextNumber: '' }));
-      }
-    } catch (e) {
-      setPageState(p => ({ ...p, error: getErrMsg(e, 'Failed to load document series.') }));
-    }
-  };
-
-  const handleLineChange = async (i, e) => {
+  const handleLineChange = (i, e) => {
     const { name, value } = e.target;
     setValErrors(p => ({ ...p, lines: { ...p.lines, [i]: { ...(p.lines[i] || {}), [name]: '' } }, form: '' }));
     setPageState(p => ({ ...p, error: '', success: '' }));
     
-    if (name === 'itemNo' && value) {
-      // Fetch HSN code from database via API
-      try {
-        const item = refData.items.find(it => String(it.ItemCode || '') === String(value || ''));
-        
-        if (item) {
-          // Fetch HSN code from OCHP table via JOIN query
-          const hsnResponse = await fetchHSNCodeFromItem(value);
-          const hsnData = hsnResponse.data;
-          
-          console.log('ðŸ” Item Selected - HSN Data:', {
-            itemCode: value,
-            hsnCode: hsnData.hsnCode,
-            hsnDescription: hsnData.hsnDescription,
-            hsn_sww: hsnData.hsn_sww,
-          });
-          
-          setLines(prev => prev.map((line, idx) => {
-            if (idx !== i) return line;
-            const next = { ...line, itemNo: value };
-            
-            // Step 1: Set Item Details
-            next.itemDescription = getSalesQuotationItemDescription(item, next.itemDescription);
-            next.uomCode = String(item.SalesUnit || item.InventoryUOM || '').trim();
-            next.uomName = next.uomCode || next.uomName || '';
-            
-            // Step 2: Set HSN Code from API response (OCHP.ChapterID via JOIN)
-            next.hsnCode = hsnData.hsnCode || hsnData.hsn_sww || '';
-            
-            // Step 3: Get Base Tax Code from Item Master
-            const baseTaxCode = item.TaxCodeAR || item.SalTaxCode || '';
-            
-            console.log('ðŸ” Item Selected:', {
-              itemCode: item.ItemCode,
-              itemName: getSalesQuotationItemDescription(item),
-              hsnCode: next.hsnCode,
-              baseTaxCode: baseTaxCode,
-              placeOfSupply: header.placeOfSupply,
-            });
-            
-            // Step 4: Determine GST State (Place of Supply)
-            const gstState = header.placeOfSupply;
-            const companyState = refData.company_address?.State || selectedBranch?.State || '';
-            
-            // Step 5: Validate States
-            if (next.taxCodeManuallyOverridden) {
-              // Keep the tax code loaded from find mode or explicitly chosen by the user.
-            } else if (!gstState || !companyState) {
-              console.warn('âš ï¸ Missing state information for tax determination');
-              next.taxCode = '';
-            } else {
-              // Step 6: Determine Tax Code using Tax Engine
-              const determinedTaxCode = determineTaxCode(
-                { ...item, TaxCodeAR: baseTaxCode },
-                gstState,        // shipToState (using Place of Supply)
-                gstState,        // billToState (same as POS for now)
-                false,           // useBillToForTax (not used in current flow)
-                companyState,
-                effectiveTaxCodes
-              );
-              
-              if (determinedTaxCode) {
-                next.taxCode = determinedTaxCode;
-                console.log('âœ… Tax Code Auto-Selected:', {
-                  gstType: getGSTTypeLabel(companyState, gstState),
-                  taxCode: determinedTaxCode
-                });
-              } else {
-                console.warn('âš ï¸ Could not determine tax code');
-                next.taxCode = '';
-              }
-            }
-            
-            next.total = fmtDec(calcLineTotal(next), numDec.total);
-            return next;
-          }));
-        }
-      } catch (error) {
-        console.error('âŒ Error fetching HSN code:', error);
-        // Fallback to reference data if API fails
-        setLines(prev => prev.map((line, idx) => {
-          if (idx !== i) return line;
-          const next = { ...line, itemNo: value };
-          const item = refData.items.find(it => String(it.ItemCode || '') === String(value || ''));
-          if (item) {
-            next.itemDescription = getSalesQuotationItemDescription(item, next.itemDescription);
-            next.uomCode = String(item.SalesUnit || item.InventoryUOM || '').trim();
-            next.uomName = next.uomCode || next.uomName || '';
-            next.hsnCode = item.SWW || item.HSNCode || item.U_HSNCode || next.hsnCode || '';
-          }
-          next.total = fmtDec(calcLineTotal(next), numDec.total);
-          return next;
-        }));
-      }
-    } else {
-      // For non-itemNo changes, update synchronously
-      setLines(prev => prev.map((line, idx) => {
-        if (idx !== i) return line;
-        const next = { ...line, [name]: numDec[name] !== undefined ? sanitize(value, numDec[name]) : value };
-                if (name === 'uomName') next.uomNameEdited = true;
-        if (name === 'taxCode') next.taxCodeManuallyOverridden = true;
-        if (name === 'uomCode') { next.uomName = value; next.uomNameEdited = false; }
-        next.total = fmtDec(calcLineTotal(next), numDec.total);
-        return next;
-      }));
+    if (name === 'itemNo') {
+      const item = refData.items.find(
+        (candidate) => String(candidate.ItemCode || '') === String(value || ''),
+      );
+      setLines((previous) => previous.map(
+        (line, index) => index === i ? hydrateSelectedItem(line, item, value) : line,
+      ));
+      return;
     }
+
+    setLines(prev => prev.map((line, idx) => {
+      if (idx !== i) return line;
+      const next = { ...line, [name]: numDec[name] !== undefined ? sanitize(value, numDec[name]) : value };
+      if (name === 'uomName') next.uomNameEdited = true;
+      if (name === 'taxCode') {
+        next.taxCodeManuallyOverridden = true;
+        next.taxCodeRepeat = value;
+      }
+      if (name === 'uomCode') {
+        const item = refData.items.find(candidate => String(candidate.ItemCode || '') === String(next.itemNo || ''));
+        Object.assign(next, applyUomCodeSelection(next, value, getLineUomOptions(next, item, refData.uom_groups)));
+      }
+      next.total = fmtDec(calcLineTotal(next), numDec.total);
+      return next;
+    }));
   };
 
   const handleNumBlur = (field, target = 'line', i = null) => {
@@ -1735,47 +1570,94 @@ function SalesQuotation() {
     setLines(p => p.map((l, idx) => idx === i ? { ...l, [field]: fmtDec(l[field], d) } : l));
   };
 
+  const handleTablePaste = ({ startRowIndex, patches }) => {
+    if (!isDocumentEditable) return;
+    markDirty();
+    setPageState(previous => ({ ...previous, error: '', success: '' }));
+    setValErrors(previous => ({ ...previous, form: '' }));
+    setLines(previous => applyDocumentTablePaste({
+      lines: previous,
+      patches,
+      startRowIndex,
+      createLine: () => ({
+        ...createLine(rowUdfDefinitions),
+        branch: header.branch || '',
+        whse: header.warehouse || '',
+      }),
+      transformLine: (pastedLine, _rowIndex, rowPatch) => {
+        let next = { ...pastedLine };
+        const pastedKeys = new Set(rowPatch.cells.map(cell => cell.key));
+        if (pastedKeys.has('itemNo')) {
+          const item = refData.items.find(candidate => String(candidate.ItemCode || '') === String(next.itemNo || ''));
+          const pastedValues = { ...next, udf: { ...(next.udf || {}) } };
+          next = hydrateSelectedItem(next, item, next.itemNo);
+          rowPatch.cells.forEach((cell) => {
+            if (cell.isUdf) next.udf = { ...(next.udf || {}), [cell.key]: cell.value };
+            else next[cell.key] = pastedValues[cell.key];
+          });
+        }
+        if (pastedKeys.has('uomCode')) {
+          const item = refData.items.find(candidate => String(candidate.ItemCode || '') === String(next.itemNo || ''));
+          Object.assign(next, applyUomCodeSelection(next, next.uomCode, getLineUomOptions(next, item, refData.uom_groups)));
+        }
+        if (pastedKeys.has('taxCode')) {
+          next.taxCodeManuallyOverridden = true;
+          next.taxCodeRepeat = next.taxCode;
+        }
+        next.total = fmtDec(calcLineTotal(next), numDec.total);
+        return next;
+      },
+    }));
+  };
+
+  const handleTableClipboardFeedback = (message, type) => {
+    setPageState(previous => ({
+      ...previous,
+      error: type === 'error' ? message : '',
+      success: type === 'error' ? '' : message,
+    }));
+  };
+
+  const getLineEntryErrors = (line = {}, { isUpdate = false } = {}) => {
+    const errors = {};
+    if (!String(line.itemNo || '').trim()) {
+      errors.itemNo = 'Item is required';
+    }
+    if (!line.quantity || Number(line.quantity) <= 0) {
+      errors.quantity = 'Quantity must be greater than 0';
+    }
+    if (!isUpdate && (!line.unitPrice || Number(line.unitPrice) <= 0)) {
+      errors.unitPrice = 'Unit Price must be greater than 0';
+    }
+    if (!isUpdate && !String(line.whse || '').trim()) {
+      errors.whse = 'Warehouse is required';
+    }
+
+    [
+      ['hsnCode', 'HSN Code'],
+      ['uomCode', 'UoM'],
+      ['taxCode', 'Tax Code'],
+    ].forEach(([fieldKey, label]) => {
+      if (!isUpdate && getLineFieldPolicy(fieldKey).required && !String(line[fieldKey] || '').trim()) {
+        errors[fieldKey] = `${label} is required`;
+      }
+    });
+
+    const taxCode = String(line.taxCode || '').trim();
+    if (taxCode && !effectiveTaxCodes.some(
+      (tax) => String(tax.Code || '').trim().toUpperCase() === taxCode.toUpperCase(),
+    )) {
+      errors.taxCode = `Tax code '${taxCode}' is not valid in the active SAP company`;
+    }
+    return errors;
+  };
+
   const addLine = () => {
     // Validate the last line before adding a new one
     if (lines.length > 0) {
       const lastLine = lines[lines.length - 1];
       const lastIndex = lines.length - 1;
-      const errors = {};
-      
-      // Check if last line has an item
-      if (!String(lastLine.itemNo || '').trim()) {
-        errors.itemNo = 'Item is required before adding a new line';
-      }
-      
-      // Check if last line has quantity
-      if (!lastLine.quantity || Number(lastLine.quantity) <= 0) {
-        errors.quantity = 'Quantity is required before adding a new line';
-      }
-      
-      // Check if last line has unit price
-      if (!lastLine.unitPrice || Number(lastLine.unitPrice) <= 0) {
-        errors.unitPrice = 'Unit Price is required before adding a new line';
-      }
-      
-      // Check if last line has UoM
-      if (!String(lastLine.uomCode || '').trim()) {
-        errors.uomCode = 'UoM is required before adding a new line';
-      }
-      
-      // Check if last line has HSN Code
-      if (!String(lastLine.hsnCode || '').trim()) {
-        errors.hsnCode = 'HSN Code is required before adding a new line';
-      }
-      
-      // Check if last line has Tax Code
-      if (!String(lastLine.taxCode || '').trim()) {
-        errors.taxCode = 'Tax Code is required before adding a new line';
-      }
-      
-      // Check if last line has Warehouse
-      if (!String(lastLine.whse || '').trim()) {
-        errors.whse = 'Warehouse is required before adding a new line';
-      }
+      const errors = getLineEntryErrors(lastLine);
       
       // If there are errors, show them and don't add new line
       if (Object.keys(errors).length > 0) {
@@ -1840,7 +1722,7 @@ function SalesQuotation() {
     setFormSettingsOpen(true);
   };
 
-  // â”€â”€ Address Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Address Modal handlers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const openAddressModal = (type) => {
     const shipAddress = resolveSalesQuotationAddress(
       header.shipToCode,
@@ -1946,7 +1828,7 @@ function SalesQuotation() {
     setAddressForm(p => ({ ...p, [name]: value }));
   };
 
-  // â”€â”€ E-Way Bill Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ E-Way Bill Modal handlers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const openEWayBillModal = () => {
     setEWayBillModal(true);
   };
@@ -1960,7 +1842,7 @@ function SalesQuotation() {
     console.log('E-Way Bill Data saved:', data);
   };
 
-  // â”€â”€ Tax Info Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Tax Info Modal handlers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const openTaxInfoModal = () => {
     setTaxInfoModal(true);
   };
@@ -1978,7 +1860,7 @@ function SalesQuotation() {
     setTaxInfoForm(p => ({ ...p, [name]: value }));
   };
 
-  // â”€â”€ State Selection Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ State Selection Modal handlers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const openStateModal = () => {
     setStateModal(true);
   };
@@ -1991,7 +1873,7 @@ function SalesQuotation() {
     setHeader(p => ({ ...p, placeOfSupply: getStateCodeValue(state, refData.states) }));
   };
 
-  // â”€â”€ Business Partner Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Business Partner Modal handlers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const openBpModal = () => {
     setBpModal(true);
   };
@@ -2017,7 +1899,7 @@ function SalesQuotation() {
     loadVendorDetails(code);
   };
 
-  // â”€â”€ HSN Code Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ HSN Code Modal handlers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const openHSNModal = (lineIndex) => {
     setHsnModal({ open: true, lineIndex });
   };
@@ -2037,9 +1919,9 @@ function SalesQuotation() {
     }
   };
 
-  // â”€â”€ Item Selection Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Item Selection Modal handlers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const openItemModal = async (lineIndex) => {
-    console.log('ðŸ” Opening item modal for line:', lineIndex);
+    console.log('Ã°Å¸â€Â Opening item modal for line:', lineIndex);
     const fallbackItems = Array.isArray(refData.items) ? refData.items : [];
     setItemModal({
       open: true,
@@ -2049,7 +1931,7 @@ function SalesQuotation() {
     });
     
     try {
-      console.log('ðŸ“¡ Fetching items from API...');
+      console.log('Ã°Å¸â€œÂ¡ Fetching items from API...');
       const response = await fetchItemsForModal();
       const payload = response?.data;
       const normalizedItems = Array.isArray(payload?.items)
@@ -2057,8 +1939,8 @@ function SalesQuotation() {
         : Array.isArray(payload)
           ? payload
           : [];
-      console.log('âœ… Items received:', payload);
-      console.log('ðŸ“Š Items count:', normalizedItems.length);
+      console.log('Ã¢Å“â€¦ Items received:', payload);
+      console.log('Ã°Å¸â€œÅ  Items count:', normalizedItems.length);
       
       setItemModal((prev) => ({
         ...prev,
@@ -2066,7 +1948,7 @@ function SalesQuotation() {
         loading: false,
       }));
     } catch (error) {
-      console.error('âŒ Failed to load items:', error);
+      console.error('Ã¢ÂÅ’ Failed to load items:', error);
       console.error('Error details:', error.response?.data || error.message);
       setItemModal((prev) => ({
         ...prev,
@@ -2080,77 +1962,22 @@ function SalesQuotation() {
     setItemModal({ open: false, lineIndex: -1, items: [], loading: false });
   };
 
-  const handleItemSelect = async (item) => {
+  const handleItemSelect = (item) => {
     if (itemModal.lineIndex < 0) return;
     
     const lineIndex = itemModal.lineIndex;
     const mergedItem = mergeItemMaster(item, refData.items);
-    
-    try {
-      // Fetch HSN code from database
-      const hsnResponse = await fetchHSNCodeFromItem(mergedItem.ItemCode);
-      const hsnData = hsnResponse.data;
-      
-      setLines(prev => prev.map((line, idx) => {
-        if (idx !== lineIndex) return line;
-        
-        const next = hydrateDocumentLineFromItem(line, mergedItem, {
-          side: 'sales',
-          hsnCode: hsnData.hsnCode || hsnData.hsn_sww || '',
-          fallbackWarehouse: header.warehouse,
-          syncUnitPriceUdf: false,
-          calcLineTotal,
-          formatTotal: (value) => fmtDec(value, numDec.total),
-        });
-        next.uomName = next.uomCode || mergedItem.SalesUnit || mergedItem.InventoryUOM || next.uomName || '';
-        
-        // Auto-determine tax code
-        const gstState = header.placeOfSupply;
-        const companyState = refData.company_address?.State || selectedBranch?.State || '';
-        
-        if (!next.taxCodeManuallyOverridden && gstState && companyState) {
-          const determinedTaxCode = determineTaxCode(
-            mergedItem,
-            gstState,
-            gstState,
-            false,
-            companyState,
-            effectiveTaxCodes
-          );
-          
-          if (determinedTaxCode) {
-            next.taxCode = determinedTaxCode;
-          }
-        }
-        
-        next.total = fmtDec(calcLineTotal(next), numDec.total);
-        return next;
-      }));
-      
-      closeItemModal();
-    } catch (error) {
-      console.error('Error selecting item:', error);
-      // Still set basic item info even if HSN fetch fails
-      setLines(prev => prev.map((line, idx) => {
-        if (idx !== lineIndex) return line;
-        const next = hydrateDocumentLineFromItem(line, mergedItem, {
-          side: 'sales',
-          hsnCode: mergedItem.HSNCode || '',
-          fallbackWarehouse: header.warehouse,
-          syncUnitPriceUdf: false,
-          calcLineTotal,
-          formatTotal: (value) => fmtDec(value, numDec.total),
-        });
-        next.uomName = next.uomCode || mergedItem.SalesUnit || mergedItem.InventoryUOM || next.uomName || '';
-        return next;
-      }));
-      closeItemModal();
-    }
+    setLines((previous) => previous.map(
+      (line, index) => index === lineIndex
+        ? hydrateSelectedItem(line, mergedItem, mergedItem.ItemCode)
+        : line,
+    ));
+    closeItemModal();
   };
 
-  // â”€â”€ Freight Selection Modal handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Freight Selection Modal handlers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const openFreightModal = async () => {
-    console.log('ðŸšš Opening freight modal, docEntry:', currentDocEntry);
+    console.log('Ã°Å¸Å¡Å¡ Opening freight modal, docEntry:', currentDocEntry);
     if (freightModal.freightCharges.length > 0) {
       setFreightModal(prev => ({ ...prev, open: true, loading: false }));
       return;
@@ -2158,10 +1985,10 @@ function SalesQuotation() {
     setFreightModal(prev => ({ ...prev, open: true, loading: true }));
     
     try {
-      console.log('ðŸ“¡ Fetching freight charges from API...');
+      console.log('Ã°Å¸â€œÂ¡ Fetching freight charges from API...');
       const response = await fetchFreightCharges(currentDocEntry);
-      console.log('âœ… Freight charges received:', response.data);
-      console.log('ðŸ“Š Freight charges count:', response.data.freightCharges?.length || 0);
+      console.log('Ã¢Å“â€¦ Freight charges received:', response.data);
+      console.log('Ã°Å¸â€œÅ  Freight charges count:', response.data.freightCharges?.length || 0);
       
       setFreightModal({
         open: true,
@@ -2169,7 +1996,7 @@ function SalesQuotation() {
         loading: false
       });
     } catch (error) {
-      console.error('âŒ Failed to load freight charges:', error);
+      console.error('Ã¢ÂÅ’ Failed to load freight charges:', error);
       console.error('Error details:', error.response?.data || error.message);
       setFreightModal({
         open: true,
@@ -2184,7 +2011,7 @@ function SalesQuotation() {
   };
 
   const handleFreightApply = (summary) => {
-    console.log('ðŸšš Applied freight charges:', summary);
+    console.log('Ã°Å¸Å¡Å¡ Applied freight charges:', summary);
     setFreightModal(prev => ({
       ...prev,
       open: false,
@@ -2197,7 +2024,7 @@ function SalesQuotation() {
     }));
   };
 
-  // â”€â”€ Copy From Handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Copy From Handler Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const openCopyFromModal = () => {
     if (currentDocEntry) return;
 
@@ -2226,6 +2053,8 @@ function SalesQuotation() {
   };
 
   const handleCopyFrom = (documentData, docType = 'salesQuotation') => {
+    setSeriesRevision(value => value + 1);
+
     console.log('Copying from:', docType, documentData);
 
     const copySource = unwrapCopyFromDocument(documentData);
@@ -2297,7 +2126,7 @@ function SalesQuotation() {
       sourceDocEntry: currentDocEntry,
       sourceDocNo: header.docNo,
       sourcePath: location.pathname,
-      sourceSnapshot: { header, lines, headerUdfs },
+      sourceSnapshot: { header, lines, headerUdfs, freightCharges: freightModal.freightCharges },
       restoreState: { salesQuotationDocEntry: currentDocEntry },
       navigate,
       upsertTask,
@@ -2311,6 +2140,8 @@ function SalesQuotation() {
   };
 
   const handleDuplicate = async () => {
+    setSeriesRevision(value => value + 1);
+
     const resetHeader = createInitialHeader();
     const duplicated = duplicateDocumentInPlace({
       currentDocEntry,
@@ -2353,7 +2184,7 @@ function SalesQuotation() {
 
   // eslint-disable-next-line no-unused-vars
   const handleCopyFromLegacy = (documentData, docType) => {
-    console.log('ðŸ“‹ Copying from:', docType, documentData);
+    console.log('Ã°Å¸â€œâ€¹ Copying from:', docType, documentData);
     
     // Copy header
     setHeader(prev => ({
@@ -2386,7 +2217,7 @@ function SalesQuotation() {
     setCopyFromModal(false);
   };
 
-  // â”€â”€ Browse Attachment handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Browse Attachment handler Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const handleBrowseAttachment = () => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -2400,7 +2231,7 @@ function SalesQuotation() {
 
   // Continue in next part...
 
-  // â”€â”€ validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ validation Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const validate = () => {
     const isUpdate = !!currentDocEntry;
     const e = { header: {}, lines: {}, form: '' };
@@ -2424,7 +2255,14 @@ function SalesQuotation() {
     if (!isUpdate) {
       const vc = String(header.vendor || '').trim();
       if (!vc) { e.header.vendor = 'Select a customer.'; e.form = 'Please correct the highlighted fields.'; return e; }
-      
+
+      // Require a branch only for companies that actually use SAP branches.
+      if (refData.branches.length && !String(header.branch || '').trim()) {
+        e.header.branch = 'Select a branch.';
+        e.form = 'Please correct the highlighted fields.';
+        return e;
+      }
+
       // Validate Ship-To address (required for GST determination)
       if (!String(header.shipToCode || '').trim()) { 
         e.header.shipToCode = 'Ship-To address is required.'; 
@@ -2460,51 +2298,9 @@ function SalesQuotation() {
       const l = lines[i];
       if (!String(l.itemNo || '').trim()) continue;
 
-      if (!l.itemNo) {
-        e.lines[i] = { ...(e.lines[i] || {}), itemNo: 'Item is required' };
-        e.form = 'Please correct the highlighted fields.';
-        return e;
-      }
-
-      if (!l.quantity || Number(l.quantity) <= 0) {
-        e.lines[i] = { ...(e.lines[i] || {}), quantity: 'Quantity must be > 0' };
-        e.form = 'Please correct the highlighted fields.';
-        return e;
-      }
-
-      if (!l.hsnCode && !isUpdate) {
-        e.lines[i] = { ...(e.lines[i] || {}), hsnCode: 'HSN Code is required' };
-        e.form = 'Please correct the highlighted fields.';
-        return e;
-      }
-
-      if ((!l.unitPrice || Number(l.unitPrice) <= 0) && !isUpdate) {
-        e.lines[i] = { ...(e.lines[i] || {}), unitPrice: 'Unit Price must be > 0' };
-        e.form = 'Please correct the highlighted fields.';
-        return e;
-      }
-
-      if (!l.uomCode && !isUpdate) {
-        e.lines[i] = { ...(e.lines[i] || {}), uomCode: 'UoM is required' };
-        e.form = 'Please correct the highlighted fields.';
-        return e;
-      }
-
-      if (!l.whse && !isUpdate) {
-        e.lines[i] = { ...(e.lines[i] || {}), whse: 'Warehouse is required' };
-        e.form = 'Please correct the highlighted fields.';
-        return e;
-      }
-
-      if (!l.taxCode || !String(l.taxCode).trim()) {
-        e.lines[i] = { ...(e.lines[i] || {}), taxCode: 'Tax Code is required' };
-        e.form = 'Please correct the highlighted fields.';
-        return e;
-      }
-      
-      const taxCodeExists = effectiveTaxCodes.some(t => String(t.Code) === String(l.taxCode));
-      if (!taxCodeExists) {
-        e.lines[i] = { ...(e.lines[i] || {}), taxCode: `Tax code '${l.taxCode}' is not valid in SAP B1` };
+      const lineErrors = getLineEntryErrors(l, { isUpdate });
+      if (Object.keys(lineErrors).length) {
+        e.lines[i] = lineErrors;
         e.form = 'Please correct the highlighted fields.';
         return e;
       }
@@ -2540,7 +2336,12 @@ function SalesQuotation() {
     return e;
   };
 
-  // â”€â”€ submit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ submit Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  const narrowConfirmationUpdate = useConfirmationOnlyUpdate({
+    docEntry: currentDocEntry, isDirty,
+    state: { header, lines, headerUdfs, freightCharges: freightModal.freightCharges, companyDb: activeCompanyDb , company_id: activeCompanyId, companyKey: formSettingsStorageKey },
+  });
+
   const handleSubmit = async (ev) => {
     ev.preventDefault();
     if (!companyFormSettingsReady) {
@@ -2577,6 +2378,7 @@ function SalesQuotation() {
         itemNo: line.itemNo,
         itemDescription: line.itemDescription,
         hsnCode: line.hsnCode,
+        hsnEntry: line.hsnEntry,
         quantity: line.quantity,
         unitPrice: line.unitPrice,
         price: line.price,
@@ -2634,6 +2436,7 @@ function SalesQuotation() {
         loc: line.loc,
         branch: line.branch,
         requiredDate: line.requiredDate,
+        noOfPackages: line.noOfPackages,
         quotedDate: line.quotedDate,
         lineDeliveryDate: line.lineDeliveryDate,
         lineShippingType: line.lineShippingType,
@@ -2663,7 +2466,7 @@ function SalesQuotation() {
         header_udfs: normalizeUdfState(headerUdfDefinitions, headerUdfs),
       };
       
-      const r = currentDocEntry ? await updateSalesQuotation(currentDocEntry, payload) : await submitSalesQuotation(payload);
+      const r = currentDocEntry ? await updateSalesQuotation(currentDocEntry, narrowConfirmationUpdate(payload)) : await submitSalesQuotation(payload);
       const dn = r.data.doc_num ? ` Doc No: ${r.data.doc_num}.` : '';
       const resetHeader = createInitialHeader();
       setSnapshotPending(false);
@@ -2677,7 +2480,7 @@ function SalesQuotation() {
       
       setPageState(p => ({ ...p, success: `${r.data.message || 'Sales Quotation saved.'}${dn}` }));
     } catch (e) {
-      console.error('âŒ Sales Quotation Submission Error:', e);
+      console.error('Ã¢ÂÅ’ Sales Quotation Submission Error:', e);
       console.error('Error Response:', e.response?.data);
       setPageState(p => ({ ...p, error: getErrMsg(e, 'Sales Quotation submission failed.') }));
     } finally {
@@ -2686,6 +2489,8 @@ function SalesQuotation() {
   };
 
   const resetForm = async () => {
+    setSeriesRevision(value => value + 1);
+
     const resetHeader = createInitialHeader();
     setSnapshotPending(false);
     setIsDirty(false);
@@ -2720,14 +2525,16 @@ function SalesQuotation() {
 
   // Continue in next part with render...
 
-  // â”€â”€ render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬ render Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  useDocumentSeries({ endpoint: '/sales-quotation', companyKey: String(activeCompanyId), currentDocEntry, header: header, setHeader, setRefData, setPageState, ready: !pageState.loading && !pageState.posting , refreshKey: seriesRevision});
+
   return (
     <form ref={formRef} className={`so-page sap-document-page${isRightSidebarOpen ? ' so-page--sidebar-open' : ''}`} onSubmit={handleSubmit} onChangeCapture={markDirty}>
 
       {/* toolbar */}
       <div className="so-toolbar sap-document-toolbar">
-        <span className="so-toolbar__title">Sales Quotation{currentDocEntry ? ` â€” #${header.docNo || currentDocEntry}` : ''}</span>
-        <button type="submit" className="so-btn so-btn--primary sap-document-toolbar__primary" disabled={pageState.posting || !isDocumentEditable} title={primaryActionLabel}>
+        <span className="so-toolbar__title">Sales Quotation{currentDocEntry ? ` - #${header.docNo || currentDocEntry}` : ''}</span>
+        <button type="submit" className="so-btn so-btn--primary sap-document-toolbar__primary" disabled={pageState.posting || !isDocumentEditable || formSettingsStatus.queryModeActive} title={primaryActionLabel}>
           {primaryActionLabel}
         </button>
         <button type="button" className="so-btn sap-document-toolbar__cancel" onClick={resetForm}>
@@ -2736,7 +2543,7 @@ function SalesQuotation() {
         <button type="button" className="so-btn sap-document-toolbar__udf" onClick={toggleHeaderUdfs}>
           {sidebarOpen ? 'Hide UDFs' : 'Show UDFs'}
         </button>
-        <button type="button" className="so-btn sap-document-toolbar__settings" onClick={toggleFormSettings} disabled={!companyFormSettingsReady} title={companyFormSettingsReady ? 'Choose document-line fields' : 'Loading company Form Settings'}>
+        <button type="button" className="so-btn sap-document-toolbar__settings" onClick={toggleFormSettings} disabled={!companyFormSettingsReady || formSettingsStatus.queryModeActive} title={formSettingsStatus.queryModeActive ? 'Company SQL Content layout is active' : (companyFormSettingsReady ? 'Choose document-line fields' : 'Loading company Form Settings')}>
           Form Settings
         </button>
         <PrintLayoutToolbar
@@ -2749,16 +2556,16 @@ function SalesQuotation() {
           onSuccess={(message) => setPageState(p => ({ ...p, error: '', success: message }))}
           onError={(message) => setPageState(p => ({ ...p, success: '', error: message }))}
         />
-        <button type="button" className="so-btn sap-document-toolbar__copy" onClick={() => openCopyFromModal()} disabled={!isDocumentEditable || !!currentDocEntry}>
+        <button type="button" className="so-btn sap-document-toolbar__copy" onClick={() => openCopyFromModal()} disabled={!isDocumentEditable || !!currentDocEntry || formSettingsStatus.queryModeActive}>
           Copy From
         </button>
         <CopyToDropdown
           sourceDocType="salesQuotation"
-          disabled={!currentDocEntry}
+          disabled={!currentDocEntry || formSettingsStatus.queryModeActive}
           onCopyTo={handleCopyTo}
         />
         {currentDocEntry && (
-          <button type="button" className="so-btn sap-document-toolbar__duplicate" onClick={handleDuplicate}>
+          <button type="button" className="so-btn sap-document-toolbar__duplicate" onClick={handleDuplicate} disabled={formSettingsStatus.queryModeActive}>
             Duplicate
           </button>
         )}
@@ -2768,14 +2575,14 @@ function SalesQuotation() {
 
       {/* alerts */}
       {pageState.loading && <div className="so-alert so-alert--success" style={{ marginTop: 0 }}>Loading...</div>}
-      {pageState.error && <div className="so-alert so-alert--error">{pageState.error}</div>}
+      {pageState.error && <div className="so-alert so-alert--error" role="alert" data-auto-dismiss="false">{pageState.error}</div>}
       {pageState.success && <div className="so-alert so-alert--success">{pageState.success}</div>}
       {refData.warnings?.length > 0 && (
         <div className="so-alert so-alert--warning">
           <strong>SAP warnings:</strong>
           {refData.warnings.map((w, i) => <div key={i}>{w}</div>)}
           <div style={{ marginTop: 4, color: '#555' }}>Dropdowns are showing fallback values. Connect to SAP to load live data.</div>
-          <div style={{ marginTop: 4, color: '#d00', fontWeight: 600 }}>âš ï¸ Tax codes shown are examples only. Use actual SAP tax codes to avoid submission errors.</div>
+          <div style={{ marginTop: 4, color: '#d00', fontWeight: 600 }}>Ã¢Å¡Â Ã¯Â¸Â Tax codes shown are examples only. Use actual SAP tax codes to avoid submission errors.</div>
         </div>
       )}
 
@@ -2783,7 +2590,7 @@ function SalesQuotation() {
       <div className={`so-layout${isRightSidebarOpen ? ' is-sidebar-open' : ''}`}>
         <div className="so-layout__main">
 
-            {/* â•â• HEADER CARD â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
+            {/* Ã¢â€¢ÂÃ¢â€¢Â HEADER CARD Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â */}
             <div className="so-header-card">
               <div className="row g-2">
                 {/* LEFT COLUMN */}
@@ -2960,10 +2767,10 @@ function SalesQuotation() {
                         onChange={handleHeaderChange}
                         disabled={!!currentDocEntry || pageState.seriesLoading}
                       >
-                        <option value="">Select Series</option>
-                        <option value={SAP_MANUAL_SERIES_VALUE}>Manual</option>
+                        <option value="">{pageState.seriesLoading ? 'Loading series...' : pageState.seriesError ? 'Series unavailable' : 'Select Series'}</option>
+                        {(canUseManualSeries(refData) || (currentDocEntry && ['-1','manual','__sap_manual__'].includes(String(header.series)))) && (<option value={SAP_MANUAL_SERIES_VALUE}>Manual</option>)}
                         {getSapVisibleDocumentSeries(refData.series, {
-                          selectedSeries: header.series,
+                          selectedSeries: header.series, includeHistorical: Boolean(currentDocEntry),
                           postingDate: header.postingDate || header.documentDate,
                         }).map(s => (
                           <option key={s.Series} value={s.Series}>
@@ -2991,7 +2798,7 @@ function SalesQuotation() {
                     {/* Customer Ref. No. */}
                     <div className="so-field">
                       <label className="so-field__label">Customer Ref. No.</label>
-                      <input name="salesContractNo" className="so-field__input" value={header.salesContractNo} onChange={handleHeaderChange} />
+                      <input name="customerRefNo" className="so-field__input" value={header.customerRefNo} onChange={handleHeaderChange} />
                     </div>
 
                     {/* Status */}
@@ -3033,7 +2840,7 @@ function SalesQuotation() {
               </div>
             </div>
 
-            {/* â•â• TABS â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
+            {/* Ã¢â€¢ÂÃ¢â€¢Â TABS Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â */}
             <div className="so-tabs">
               {TAB_NAMES.map(t => (
                 <button
@@ -3047,9 +2854,10 @@ function SalesQuotation() {
               ))}
             </div>
 
-            {/* â•â• TAB CONTENT â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
+            {/* Ã¢â€¢ÂÃ¢â€¢Â TAB CONTENT Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â */}
             {activeTab === 'Contents' && (
               <ContentsTab
+                companyQueryContext={buildCompanyFormQueryContext(currentDocEntry, header)}
                 lines={lines}
                 onLineChange={handleLineChange}
                 onNumBlur={handleNumBlur}
@@ -3080,6 +2888,9 @@ function SalesQuotation() {
                 displayCurrency={displayCurrency}
                 documentCurrency={documentCurrency}
                 formatDisplayMoney={formatDisplayMoney}
+                canPasteTable={isDocumentEditable}
+                onPasteTable={handleTablePaste}
+                onClipboardFeedback={handleTableClipboardFeedback}
               />
             )}
 
@@ -3119,7 +2930,7 @@ function SalesQuotation() {
               />
             )}
 
-            {/* â•â• TOTALS FOOTER â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
+            {/* Ã¢â€¢ÂÃ¢â€¢Â TOTALS FOOTER Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â */}
             <div className="so-header-card">
               <div className="so-field-grid" style={{ gridTemplateColumns: '1fr 1fr' }}>
                 <div>
@@ -3230,7 +3041,7 @@ function SalesQuotation() {
               </div>
             </div>
 
-            {/* â•â• ACTION BUTTONS â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */}
+            {/* Ã¢â€¢ÂÃ¢â€¢Â ACTION BUTTONS Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â */}
             {false && (
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '12px', marginBottom: '12px', gap: '8px' }}>
               <div style={{ display: 'flex', gap: '8px' }}>

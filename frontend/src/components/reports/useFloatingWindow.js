@@ -54,6 +54,7 @@ function useFloatingWindow({
   taskPath,
   taskState,
   allowPersistedMinimized = true,
+  allowPersistedMaximized = true,
 } = {}) {
   const taskbar = useSapWindowTaskbar();
   const companyScope = taskbar?.companyScope || getActiveCompanyStorageScope();
@@ -69,7 +70,9 @@ function useFloatingWindow({
   const [isMinimized, setIsMinimized] = useState(
     allowPersistedMinimized && Boolean(persistedStateRef.current?.isMinimized),
   );
-  const [isMaximized, setIsMaximized] = useState(Boolean(persistedStateRef.current?.isMaximized));
+  const [isMaximized, setIsMaximized] = useState(
+    allowPersistedMaximized && Boolean(persistedStateRef.current?.isMaximized),
+  );
   const lastFloatingPositionRef = useRef(persistedStateRef.current?.position ?? null);
 
   const getPositionBounds = useCallback((node) => {
@@ -92,9 +95,9 @@ function useFloatingWindow({
     lastFloatingPositionRef.current = persistedState?.position ?? null;
     setPosition(persistedState?.position ?? null);
     setIsMinimized(allowPersistedMinimized && Boolean(persistedState?.isMinimized));
-    setIsMaximized(Boolean(persistedState?.isMaximized));
+    setIsMaximized(allowPersistedMaximized && Boolean(persistedState?.isMaximized));
     setLoadedWindowStateKey(windowStateStorageKey);
-  }, [allowPersistedMinimized, companyScope, taskId, windowStateStorageKey]);
+  }, [allowPersistedMaximized, allowPersistedMinimized, companyScope, taskId, windowStateStorageKey]);
 
   const centerWindow = useCallback(() => {
     if (typeof window === "undefined") {

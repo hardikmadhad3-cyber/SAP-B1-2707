@@ -1,3 +1,4 @@
+const { reportTableExists, getReportTableColumns } = require('../reportMetadataService');
 const db = require("../dbService");
 
 const normalizeText = (value) => String(value || "").trim();
@@ -7,7 +8,7 @@ const toNumber = (value) => {
 };
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-const tableColumnsCache = new Map();
+
 
 const quoteIdentifier = (columnName) => `[${String(columnName).replace(/]/g, "]]")}]`;
 const columnExpression = (alias, columnName) => `${alias}.${quoteIdentifier(columnName)}`;
@@ -17,41 +18,9 @@ const queryRows = async (sql, params = {}, options = {}) => {
   return result.recordset || result || [];
 };
 
-const tableExists = async (tableName, options = {}) => {
-  const rows = await queryRows(
-    `
-      SELECT TOP 1 TABLE_NAME
-      FROM INFORMATION_SCHEMA.TABLES
-      WHERE TABLE_NAME = @tableName
-    `,
-    { tableName: normalizeText(tableName).toUpperCase() },
-    options,
-  );
+const tableExists = reportTableExists;
 
-  return rows.length > 0;
-};
-
-const getTableColumns = async (tableName, options = {}) => {
-  const normalized = normalizeText(tableName).toUpperCase();
-  const cacheKey = `${normalizeText(options.databaseName)}:${normalized}`;
-  if (tableColumnsCache.has(cacheKey)) {
-    return tableColumnsCache.get(cacheKey);
-  }
-
-  const rows = await queryRows(
-    `
-      SELECT COLUMN_NAME
-      FROM INFORMATION_SCHEMA.COLUMNS
-      WHERE TABLE_NAME = @tableName
-    `,
-    { tableName: normalized },
-    options,
-  );
-
-  const columns = new Set(rows.map((row) => normalizeText(row.COLUMN_NAME).toUpperCase()));
-  tableColumnsCache.set(cacheKey, columns);
-  return columns;
-};
+const getTableColumns = getReportTableColumns;
 
 const firstExistingColumn = async (tableName, candidates, options = {}) => {
   if (!(await tableExists(tableName, options))) return "";

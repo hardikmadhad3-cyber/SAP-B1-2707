@@ -182,7 +182,8 @@ export default function LogisticsTab({
             <input
               type="checkbox"
               name="confirmed"
-              checked={header.confirmed}
+              aria-label="Confirmed"
+              checked={header.confirmed ?? true} title={header.confirmed == null ? "SAP company default; click to choose explicitly" : undefined}
               onChange={onHeaderChange}
             />
             <label>

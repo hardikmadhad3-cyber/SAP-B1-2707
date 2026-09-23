@@ -1,3 +1,4 @@
+import { mergeSavedFormSettings } from '../utils/formSettingsPreferences';
 import {
   HEADER_UDF_DEFINITIONS,
   ROW_UDF_DEFINITIONS,
@@ -28,6 +29,7 @@ const CONFIGURED_MATRIX_COLUMNS = [
   { key: 'itemCost', label: 'Item Cost', minWidth: 110, readOnly: true },
   { key: 'distRule', label: 'Distr. Rule', minWidth: 115, lookup: 'distRule' },
   { key: 'uomCode', label: 'UoM Code', minWidth: 105 },
+  { key: 'uomName', label: 'UoM Name', minWidth: 120 },
   { key: 'countryOfOrigin', label: 'Country/Region of Origin', minWidth: 190, lookup: 'country' },
   { key: 'loc', label: 'Loc.', minWidth: 115, lookup: 'location' },
   { key: 'withoutQtyPosting', label: 'Without Qty Posting', minWidth: 145, type: 'yesNo' },
@@ -69,8 +71,11 @@ const CONFIGURED_MATRIX_COLUMNS = [
 export const BASE_MATRIX_COLUMNS = filterSafePurchaseMatrixColumns(CONFIGURED_MATRIX_COLUMNS);
 
 const buildVisibilitySettings = (definitions = []) =>
-  definitions.reduce((acc, field) => {
+  definitions.reduce((acc, field, index) => {
     acc[field.key] = {
+      order: Number(field.order ?? field.columnOrder ?? index + 1),
+      minWidth: field.minWidth,
+      sapControlled: Boolean(field.sapControlled),
       visible: field.visible !== false,
       active: field.active !== false,
     };
@@ -89,15 +94,6 @@ const createDefaultFormSettingsForCreditMemo = (
 
 export const createDefaultFormSettings = createDefaultFormSettingsForCreditMemo;
 
-const mergeNestedSettings = (defaults, saved = {}) =>
-  Object.keys(defaults).reduce((acc, groupKey) => {
-    acc[groupKey] = {
-      ...defaults[groupKey],
-      ...(saved[groupKey] || {}),
-    };
-    return acc;
-  }, {});
-
 export const readSavedFormSettings = (
   headerUdfs = [],
   rowUdfs = [],
@@ -111,7 +107,7 @@ export const readSavedFormSettings = (
   try {
     const raw = localStorage.getItem(effectiveStorageKey);
     if (!raw) return defaults;
-    return mergeNestedSettings(defaults, JSON.parse(raw));
+    return mergeSavedFormSettings(defaults, JSON.parse(raw));
   } catch (_error) {
     return defaults;
   }

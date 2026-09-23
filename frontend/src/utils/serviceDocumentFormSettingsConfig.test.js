@@ -98,3 +98,11 @@ describe('service document Form Settings schema reconciliation', () => {
     expect(settings.rowUdfs).toEqual({});
   });
 });
+test('retains the company publication version while reconciling current schema preferences', () => {
+  const storageKey = 'service-published-version';
+  const marker = { formKey: 'service', version: 2, isPublished: true };
+  window.localStorage.setItem(storageKey, JSON.stringify({ matrixColumns: { glAccount: { visible: false } }, __companyQueryLayout: marker }));
+  const settings = readServiceDocumentFormSettings({ storageKey, matrixColumns: [{ key: 'glAccount' }] });
+  expect(settings.__companyQueryLayout).toEqual(marker);
+  expect(settings.matrixColumns.glAccount.visible).toBe(false);
+});

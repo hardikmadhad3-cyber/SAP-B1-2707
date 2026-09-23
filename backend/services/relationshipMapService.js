@@ -1,4 +1,5 @@
 const db = require('./dbService');
+const { resolveDatabaseScope } = require('./salesDocumentDbCompatibility');
 
 const DOCUMENT_TYPES = {
   23: { family: 'sales', rank: 10, label: 'Sales Quotation', header: 'OQUT', line: 'QUT1', partnerLabel: 'Business Partners' },
@@ -40,10 +41,25 @@ const formatSapDate = (value) => {
   return String(value).split('T')[0];
 };
 
+const scopedCacheKey = async (tableName) => {
+  try {
+    const scope = await resolveDatabaseScope(db);
+    return `${scope.cacheKey}:${tableName}`;
+  } catch (_error) {
+    return '';
+  }
+};
+
 const getTableColumns = async (tableName) => {
   const normalized = String(tableName || '').trim().toUpperCase();
   if (!normalized) return new Set();
-  if (columnCache.has(normalized)) return columnCache.get(normalized);
+
+  // Keyed by company connection, not by table name alone: two companies rarely
+  // carry the same UDF columns, and a bare table-name key served one company's
+  // column set to the next. An unresolvable scope only costs the cache, never
+  // the lookup, so this stays as forgiving as it was before.
+  const cacheKey = await scopedCacheKey(normalized);
+  if (cacheKey && columnCache.has(cacheKey)) return columnCache.get(cacheKey);
 
   const rows = await safe(db.query(`
     SELECT COLUMN_NAME
@@ -51,7 +67,7 @@ const getTableColumns = async (tableName) => {
     WHERE TABLE_NAME = @tableName
   `, { tableName: normalized }));
   const columns = new Set(rows.map((row) => String(row.COLUMN_NAME || '').toUpperCase()));
-  columnCache.set(normalized, columns);
+  if (cacheKey) columnCache.set(cacheKey, columns);
   return columns;
 };
 

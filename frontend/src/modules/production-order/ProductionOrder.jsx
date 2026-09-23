@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import "../../modules/item-master/styles/itemMaster.css";
 import "./productionOrder.css";
 import ProductionOrderLines from "./components/ProductionOrderLines";
@@ -8,6 +8,7 @@ import CustomerSearchModal   from "./components/CustomerSearchModal";
 import { useAuth } from "../../auth/AuthContext";
 import {
   fetchProductionOrderReferenceData,
+  fetchProductionOrderSeries,
   fetchProductionOrderByDocEntry,
   createProductionOrder,
   updateProductionOrder,
@@ -269,12 +270,17 @@ export default function ProductionOrderModule() {
   const [distRules,   setDistRules]   = useState([]);
   const [projects,    setProjects]    = useState([]);
   const [series,      setSeries]      = useState([]);
+  const [branches,    setBranches]    = useState([]);
   const [defaultSeries, setDefaultSeries] = useState("");
   const [routeStages, setRouteStages] = useState([]);
   const [prodTypes,   setProdTypes]   = useState([]);
   const [prodStatuses,setProdStatuses]= useState([]);
   const [users,       setUsers]       = useState([]);
   const [linkedToOptions, setLinkedToOptions] = useState([]);
+  const branchWarehouses = useMemo(() => {
+    if (mode !== MODES.ADD || !header.branch) return warehouses;
+    return warehouses.filter((warehouse) => warehouse.BPLID == null || String(warehouse.BPLID) === String(header.branch));
+  }, [header.branch, mode, warehouses]);
 
   // Item search modal: target = "header" | line._id
   const [itemModal, setItemModal] = useState({ open: false, target: null });
@@ -302,15 +308,17 @@ export default function ProductionOrderModule() {
         setWarehouses(d.warehouses || []);
         setDistRules(d.distribution_rules || []);
         setProjects(d.projects || []);
+        const loadedBranches = d.branches || [];
+        setBranches(loadedBranches);
         const loadedSeries = d.series || [];
         const loadedDefaultSeries = getDefaultSeriesValue(loadedSeries, d.default_series);
         setSeries(loadedSeries);
         setDefaultSeries(loadedDefaultSeries);
-        if (loadedDefaultSeries) {
-          setHeader((prev) => (
-            prev.series ? prev : { ...prev, series: loadedDefaultSeries }
-          ));
-        }
+        setHeader((prev) => ({
+          ...prev,
+          series: prev.series || loadedDefaultSeries,
+          branch: prev.branch || (loadedBranches[0]?.BPLID != null ? String(loadedBranches[0].BPLID) : ""),
+        }));
         setRouteStages(d.route_stages || []);
         setProdTypes(d.production_order_types || []);
         setProdStatuses(d.production_order_statuses || []);
@@ -337,6 +345,25 @@ export default function ProductionOrderModule() {
   }, [loadUsersLive]);
 
   useEffect(() => {
+    if (mode !== MODES.ADD || !header.posting_date) return undefined;
+    let active = true;
+    fetchProductionOrderSeries(header.posting_date, header.branch)
+      .then((context) => {
+        if (!active) return;
+        const nextSeries = context.series || [];
+        const preferred = context.defaultSeries != null ? String(context.defaultSeries) : "";
+        setSeries(nextSeries);
+        setDefaultSeries(preferred || getDefaultSeriesValue(nextSeries));
+        setHeader((prev) => {
+          const valid = nextSeries.some((entry) => String(entry.Series) === String(prev.series));
+          return { ...prev, series: valid ? prev.series : (preferred || getDefaultSeriesValue(nextSeries)) };
+        });
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [header.branch, header.posting_date, mode]);
+
+  useEffect(() => {
     if (mode !== MODES.ADD || header.user_id || header.user || !users.length) return;
     const defaultUser = findDefaultSapUser(users, authUser);
     if (!defaultUser) return;
@@ -358,7 +385,10 @@ export default function ProductionOrderModule() {
   }, []);
 
   const resetForm = () => {
-    setHeader(createEmptyHeader(defaultSeries || getDefaultSeriesValue(series)));
+    setHeader({
+      ...createEmptyHeader(defaultSeries || getDefaultSeriesValue(series)),
+      branch: branches[0]?.BPLID != null ? String(branches[0].BPLID) : "",
+    });
     setLines([EMPTY_LINE()]);
     setTab(0);
     setAlert(null);
@@ -972,8 +1002,19 @@ export default function ProductionOrderModule() {
               <select className="im-field__select" name="warehouse" value={header.warehouse}
                 onChange={handleHeaderChange} disabled={isReadOnly} style={{ width: 160 }}>
                 <option value="">--</option>
-                {warehouses.map((w) => (
+                {branchWarehouses.map((w) => (
                   <option key={w.WarehouseCode} value={w.WarehouseCode}>{w.WarehouseCode}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="im-field">
+              <label className="im-field__label po-lbl">Branch</label>
+              <select className="im-field__select" name="branch" value={header.branch}
+                onChange={handleHeaderChange} disabled={isReadOnly} style={{ width: 200 }}>
+                <option value="">--</option>
+                {branches.map((branch) => (
+                  <option key={branch.BPLID} value={branch.BPLID}>{branch.BPLName}</option>
                 ))}
               </select>
             </div>
@@ -1021,7 +1062,7 @@ export default function ProductionOrderModule() {
                   selectedSeries: header.series,
                   postingDate: header.posting_date || header.order_date,
                 }).map((s) => (
-                  <option key={s.Series} value={s.Series}>{s.Name}</option>
+                  <option key={s.Series} value={s.Series}>{s.DisplayName || s.SeriesName || s.Name}</option>
                 ))}
               </select>
               <input className="im-field__input po-readonly" value={header.doc_num || (mode === MODES.ADD ? "(auto)" : "")} readOnly style={{ width: 90, marginLeft: 4 }} />
@@ -1148,7 +1189,7 @@ export default function ProductionOrderModule() {
         {tab === 0 && (
           <ProductionOrderLines
             lines={lines}
-            warehouses={warehouses}
+            warehouses={branchWarehouses}
             distRules={distRules}
             projects={projects}
             routeStages={routeStages}

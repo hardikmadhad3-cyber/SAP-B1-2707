@@ -121,6 +121,7 @@ const STANDARD_LINE_FIELD_MAPPINGS = Object.freeze([
   { serviceLayerField: 'FreeText', physicalFields: ['FreeTxt', 'FreeText'], inputFields: ['freeText', 'FreeText', 'FreeTxt'], kind: 'string', fallback: true },
   { serviceLayerField: 'ShipDate', physicalFields: ['ShipDate'], inputFields: ['lineDeliveryDate', 'deliveryDate', 'ShipDate', 'quotedDate'], kind: 'date', fallback: true },
   { serviceLayerField: 'RequiredDate', physicalFields: ['ReqDate', 'RequiredDate'], inputFields: ['requiredDate', 'RequiredDate', 'ReqDate'], kind: 'date' },
+  { serviceLayerField: 'PackageQuantity', physicalFields: ['PackQty', 'PackageQuantity', 'Packages', 'NumOfPacks'], inputFields: ['noOfPackages', 'NoOfPackages', 'packageQuantity', 'PackageQuantity', 'PackQty'], kind: 'number' },
   { serviceLayerField: 'ShippingMethod', physicalFields: ['TrnsCode'], inputFields: ['lineShippingType', 'shippingType', 'ShippingMethod', 'TrnsCode'], kind: 'integer' },
   { serviceLayerField: 'TaxOnly', physicalFields: ['TaxOnly'], inputFields: ['taxLiable', 'TaxLiable', 'TaxOnly'], kind: 'yesno' },
   { serviceLayerField: 'WTLiable', physicalFields: ['WtLiable'], inputFields: ['wTaxLiable', 'wtaxLiable', 'WTaxLiable', 'WTLiable'], kind: 'yesno' },
@@ -157,6 +158,7 @@ const buildMetadataValidatedStandardLine = async ({
   includeBaseDocument = true,
   defaultDiscountPercent,
   resolveUomEntry,
+  resolveDefaultUomWhenMissing = false,
   resolveHsnEntry,
   resolveSacEntry,
 } = {}) => {
@@ -188,6 +190,7 @@ const buildMetadataValidatedStandardLine = async ({
   }
 
   const rawUomEntry = getLineValue(line, ['uomEntry', 'UoMEntry']);
+  const usesManualUomEntry = Number.isInteger(toInteger(rawUomEntry)) && toInteger(rawUomEntry) < 0;
   const uomNameEdited = isTruthyFlag(
     getCaseInsensitiveValue(line, 'uomNameEdited')
     ?? getCaseInsensitiveValue(line.values, 'uomNameEdited')
@@ -202,24 +205,29 @@ const buildMetadataValidatedStandardLine = async ({
     ?? getCaseInsensitiveValue(line.values, 'UomName')
     ?? getCaseInsensitiveValue(line.values, 'UnitMsr')
     ?? getCaseInsensitiveValue(line.values, 'unitMsr');
-  const rawUomCode = uomNameEdited
+  const usesManualUom = uomNameEdited || usesManualUomEntry;
+  const rawUomCode = usesManualUom
     ? editedUomCode
     : getLineValue(line, ['uomName', 'UoMName', 'UomName', 'UnitMsr', 'unitMsr', 'uomCode', 'UoMCode']);
-  const rawUomValue = uomNameEdited
+  const rawUomValue = usesManualUom
     ? firstPresent(rawUomCode, rawUomEntry)
     : firstPresent(rawUomEntry, rawUomCode);
   const supportsUomEntry = Boolean(resolvePhysicalField(metadata, ['UomEntry']));
   const supportsUomCode = Boolean(resolvePhysicalField(metadata, ['UomCode', 'unitMsr'])) || metadata.size === 0;
-  const explicitUomEntry = uomNameEdited ? undefined : toInteger(rawUomEntry);
+  const explicitUomEntry = usesManualUom ? undefined : toInteger(rawUomEntry);
   if (supportsUomEntry && explicitUomEntry !== undefined) {
     target.UoMEntry = explicitUomEntry;
-  } else if (hasValue(rawUomValue) && supportsUomEntry && typeof resolveUomEntry === 'function') {
+  } else if (
+    supportsUomEntry
+    && typeof resolveUomEntry === 'function'
+    && (hasValue(rawUomValue) || resolveDefaultUomWhenMissing)
+  ) {
     const itemCode = getLineValue(line, ['itemNo', 'ItemCode']);
-    const entry = toInteger(await resolveUomEntry(itemCode, rawUomValue, { allowDefaultFallback: !uomNameEdited }));
+    const entry = toInteger(await resolveUomEntry(itemCode, rawUomValue, { allowDefaultFallback: !usesManualUom }));
     if (entry !== undefined) target.UoMEntry = entry;
   }
   if (!Object.prototype.hasOwnProperty.call(target, 'UoMEntry') && hasValue(rawUomCode) && supportsUomCode) {
-    if (uomNameEdited) {
+    if (usesManualUom) {
       target.MeasureUnit = String(rawUomCode).trim();
     } else {
       target.UoMCode = String(rawUomCode).trim();

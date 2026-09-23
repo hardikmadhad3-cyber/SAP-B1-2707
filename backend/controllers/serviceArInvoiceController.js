@@ -1,3 +1,6 @@
+const { getDocumentSeriesNumberPreview } = require('../services/documentSeriesNumberPreview');
+const { resolveMarketingDocumentSeries } = require('../services/documentSeriesDbUtils');
+const seriesDatabase = require('../services/dbService');
 const serviceArInvoiceService = require('../services/serviceArInvoiceService');
 
 const getErrorPayload = (error, fallbackMessage) => ({
@@ -70,22 +73,20 @@ const updateServiceARInvoice = async (req, res) => {
 
 const getDocumentSeries = async (req, res) => {
   try {
-    const result = await serviceArInvoiceService.getDocumentSeries(
-      req.query.date || null,
-      req.query.transactionType || '',
-      req.query.branch || req.query.branchId || ''
-    );
-    res.json({ series: Array.isArray(result) ? result : (result?.series || []) });
+    const data = await resolveMarketingDocumentSeries({ db: seriesDatabase, objectCode: '13', targetDate: req.query.date, branch: req.query.branch || '', docSubType: req.query.docSubType, transactionType: req.query.transactionType });
+    res.json(data);
   } catch (error) {
-    res.status(500).json(getErrorPayload(error, 'Failed to load document series.'));
+    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
   }
 };
 
 const getNextNumber = async (req, res) => {
   try {
-    res.json(await serviceArInvoiceService.getNextNumber(req.query.series));
+    res.json(await getDocumentSeriesNumberPreview({ db: seriesDatabase, objectCode: '13', seriesId: req.query.series ?? req.params.series,
+      targetDate: req.query.date || req.query.postingDate || req.query.targetDate, branch: req.query.branch || '',
+      docSubType: req.query.docSubType, transactionType: req.query.transactionType }));
   } catch (error) {
-    res.status(500).json(getErrorPayload(error, 'Failed to load next number.'));
+    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
   }
 };
 

@@ -1,10 +1,14 @@
+const { buildDocumentConfirmationPayload, updateDocumentConfirmationOnly } = require('./documentConfirmationUtils');
 const sapService = require('./sapService');
+const { buildDocumentRoundingPayload } = require('./documentRoundingPayloadUtils');
 const purchaseOrderDb = require('./purchaseOrderDbService');
 const { getDocumentFreightCharges } = require('./freightChargesDbService');
 const { buildDocumentAdditionalExpenses } = require('./freightPayloadUtils');
 const { buildDocumentSeriesPayload } = require('./documentSeriesPayloadUtils');
+const { buildDocumentReferencesPayload } = require('./documentReferencesPayloadUtils');
 const { getUdfDefinitions } = require('./udfMetadataService');
 const { isSapUdfKey, normalizeUdfValues } = require('./udfPayloadUtils');
+const { buildDocumentLineUdfValues } = require('./documentLineUdfPayloadUtils');
 const {
   applySapDocumentCurrency,
   loadCompanyCurrencyContext,
@@ -269,16 +273,26 @@ const cleanObject = (value) => {
   return value;
 };
 
-const buildDocumentLines = async (lines = []) =>
-  Promise.all(lines
+const buildDocumentLines = async (lines = []) => {
+  // Resolved once per save so every line maps its UDFs onto the names this
+  // company database actually defines on POR1.
+  const lineUdfDefinitionsByKey = await getUdfDefinitionsByKey('POR1');
+  return Promise.all(lines
     .filter((line) => String(line.itemNo || '').trim())
     .map(async (line, index) => {
-      const uomValue = isTruthyFlag(line.uomNameEdited)
+      const rawUomEntry = Number(line.uomEntry ?? line.UoMEntry);
+      const usesManualUom = isTruthyFlag(line.uomNameEdited)
+        || (Number.isInteger(rawUomEntry) && rawUomEntry < 0);
+      const uomValue = usesManualUom
         ? (line.uomName ?? line.UoMName ?? line.UomName ?? line.UnitMsr ?? line.unitMsr ?? line.uomCode)
         : (line.uomEntry ?? line.UoMEntry ?? line.uomName ?? line.UoMName ?? line.UomName ?? line.UnitMsr ?? line.unitMsr ?? line.uomCode);
-      const resolvedUomEntry = await purchaseOrderDb.resolvePurchaseOrderLineUomEntry(line.itemNo, uomValue);
+      const resolvedUomEntry = usesManualUom
+        ? null
+        : await purchaseOrderDb.resolvePurchaseOrderLineUomEntry(line.itemNo, uomValue);
+      const resolvedUsesManualUom = usesManualUom
+        || (Number.isInteger(resolvedUomEntry) && resolvedUomEntry < 0);
 
-      if (resolvedUomEntry === null || resolvedUomEntry === undefined) {
+      if (!resolvedUsesManualUom && (resolvedUomEntry === null || resolvedUomEntry === undefined)) {
         const displayLine = index + 1;
         const requestedUom = String(uomValue || '').trim();
         throw new Error(
@@ -297,12 +311,24 @@ const buildDocumentLines = async (lines = []) =>
   DiscountPercent: toNumberOrUndefined(line.stdDiscount),
   TaxCode: line.taxCode,
   WarehouseCode: line.whse,
-  UoMEntry: resolvedUomEntry,
+  UoMEntry: resolvedUsesManualUom ? undefined : (resolvedUomEntry ?? undefined),
+  CostingCode: line.distRule,
+  CountryOrg: line.countryOfOrigin,
+  LocationCode: toNumberOrUndefined(line.loc),
+  SACEntry: toNumberOrUndefined(line.sac),
+  AgreementNo: toNumberOrUndefined(line.blanketAgreementNo),
+  RequiredDate: line.requiredDate || undefined,
+  PackageQuantity: toNumberOrUndefined(
+    line.noOfPackages ?? line.NoOfPackages ?? line.packageQuantity ?? line.PackageQuantity ?? line.PackQty
+  ),
 
   // SAP spelling is intentionally "Commision"
   CommisionPercent: toNumberOrUndefined(line.commPercent),
-}); 
-      Object.assign(documentLine, normalizeUdfValues(line.udf));
+});
+      if (resolvedUsesManualUom && String(uomValue || '').trim()) {
+        documentLine.MeasureUnit = String(uomValue).trim();
+      }
+      Object.assign(documentLine, buildDocumentLineUdfValues(line, { definitions: lineUdfDefinitionsByKey }));
 
       const hasBaseLink =
         line.baseEntry != null &&
@@ -320,10 +346,10 @@ const buildDocumentLines = async (lines = []) =>
 
       return documentLine;
     }));
+};
 
 const buildPurchaseOrderPayload = async (
-  { header = {}, lines = [], header_udfs = {}, freightCharges = [] },
-  { forceConfirmed = false } = {},
+  { header = {}, lines = [], header_udfs = {}, freightCharges = [], reference_documents = [] },
 ) => {
   const sapPayload = cleanObject({
     CardCode: header.vendor,
@@ -343,10 +369,11 @@ const buildPurchaseOrderPayload = async (
     LanguageCode: String(header.language || '') === '-1' ? undefined : toNumberOrUndefined(header.language),
     Comments: header.otherInstruction,
     JournalMemo: header.journalRemark,
-    Confirmed: toSapYesNo(forceConfirmed ? true : header.confirmed, true),
+    ...buildDocumentConfirmationPayload(header),
     DiscountPercent: toNumberOrUndefined(header.discount),
-    Rounding: toSapYesNo(header.rounding),
+    ...buildDocumentRoundingPayload(header),
     DocumentAdditionalExpenses: buildDocumentAdditionalExpenses(freightCharges),
+    DocumentReferences: buildDocumentReferencesPayload(reference_documents),
     DocumentLines: await buildDocumentLines(lines),
   });
 
@@ -385,7 +412,7 @@ const validatePurchaseOrderPayload = async ({ header = {}, lines = [] }) => {
 
 const submitPurchaseOrder = async (payload) => {
   await validatePurchaseOrderPayload(payload);
-  const purchaseOrderPayload = await buildPurchaseOrderPayload(payload, { forceConfirmed: true });
+  const purchaseOrderPayload = await buildPurchaseOrderPayload(payload);
 
   const response = await sapService.request({
     method: 'post',
@@ -404,6 +431,8 @@ const submitPurchaseOrder = async (payload) => {
 // ───────── UPDATE ORDER (USING SERVICE LAYER) ─────────
 
 const updatePurchaseOrder = async (docEntry, payload) => {
+  const confirmationResult = await updateDocumentConfirmationOnly(docEntry, payload, 'PurchaseOrders', sapService);
+  if (confirmationResult) return confirmationResult;
   await validatePurchaseOrderPayload(payload);
   const purchaseOrderPayload = await buildPurchaseOrderPayload(payload);
 

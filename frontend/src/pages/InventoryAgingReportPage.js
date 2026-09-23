@@ -1,9 +1,10 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { fetchItemGroups, fetchItemProperties } from "../api/itemApi";
 import { fetchInventoryAgingLookups, fetchInventoryAgingReport } from "../api/inventoryAgingApi";
 import ItemLookupModal from "../components/reports/ItemLookupModal";
 import PropertiesSelectionModal from "../components/reports/PropertiesSelectionModal";
+import WarehouseLookupModal from "../components/reports/WarehouseLookupModal";
 import useFloatingWindow from "../components/reports/useFloatingWindow";
 import { useSapWindowTaskbarActions } from "../components/SapWindowTaskbarContext";
 import { matchesSapSearchText } from "../utils/sapSearch";
@@ -47,6 +48,26 @@ const initialCriteria = {
   intervals: EMPTY_INTERVALS,
 };
 
+const parseSapDateToIso = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+
+  const match = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
+  if (!match) return "";
+
+  const [, dayText, monthText, yearText] = match;
+  const year = yearText.length === 2 ? `20${yearText}` : yearText;
+  return `${year}-${monthText.padStart(2, "0")}-${dayText.padStart(2, "0")}`;
+};
+
+const isoToSapDate = (value) => {
+  const match = String(value || "").trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return "";
+  const [, year, month, day] = match;
+  return `${day}/${month}/${year.slice(2)}`;
+};
+
 const formatQuantity = (value) =>
   Number(value || 0).toLocaleString("en-IN", { minimumFractionDigits: 3, maximumFractionDigits: 3 });
 
@@ -64,6 +85,7 @@ function InventoryAgingReportPage() {
   const { closeActiveAndRestorePrevious } = useSapWindowTaskbarActions();
   const [criteria, setCriteria] = useState(initialCriteria);
   const [groups, setGroups] = useState([{ code: "*", name: "All" }]);
+  const [warehouses, setWarehouses] = useState([]);
   const [properties, setProperties] = useState(DEFAULT_PROPERTIES);
   const [lookupTarget, setLookupTarget] = useState("");
   const [showProperties, setShowProperties] = useState(false);
@@ -71,6 +93,7 @@ function InventoryAgingReportPage() {
   const [findText, setFindText] = useState("");
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
+  const reportDateNativeInputRef = useRef(null);
 
   const filterWindow = useFloatingWindow({
     isOpen: true,
@@ -103,6 +126,7 @@ function InventoryAgingReportPage() {
         const data = agingLookupResult.value || {};
         const lookupGroups = Array.isArray(data.itemGroups) && data.itemGroups.length ? data.itemGroups : [{ code: "*", name: "All" }];
         setGroups(lookupGroups);
+        setWarehouses(Array.isArray(data.warehouses) ? data.warehouses : []);
       } else {
         const error = agingLookupResult.reason;
         setMessage(error?.response?.status === 404
@@ -193,6 +217,22 @@ function InventoryAgingReportPage() {
     setLookupTarget("");
   };
 
+  const handleSelectWarehouse = (warehouse) => {
+    if (lookupTarget) setField(lookupTarget, warehouse.code || "");
+    setLookupTarget("");
+  };
+
+  const openReportDatePicker = () => {
+    const input = reportDateNativeInputRef.current;
+    if (!input) return;
+    if (typeof input.showPicker === "function") {
+      input.showPicker();
+    } else {
+      input.focus();
+      input.click();
+    }
+  };
+
   const renderControls = (windowFrame, onClose) => (
     <div className="iag-window__controls sales-analysis-window__controls">
       <button type="button" aria-label={windowFrame.isMinimized ? "Restore" : "Minimize"} onClick={windowFrame.toggleMinimize}>
@@ -218,7 +258,15 @@ function InventoryAgingReportPage() {
                 <label>Report Date</label>
                 <div className="iag-date-input">
                   <input value={criteria.reportDate} onChange={(event) => setField("reportDate", event.target.value)} />
-                  <button type="button" aria-label="Calendar">.</button>
+                  <input
+                    ref={reportDateNativeInputRef}
+                    type="date"
+                    className="iag-date-native-input"
+                    tabIndex={-1}
+                    value={parseSapDateToIso(criteria.reportDate)}
+                    onChange={(event) => setField("reportDate", isoToSapDate(event.target.value))}
+                  />
+                  <button type="button" aria-label="Open calendar" onClick={openReportDatePicker}>...</button>
                 </div>
               </div>
 
@@ -260,15 +308,27 @@ function InventoryAgingReportPage() {
                 <div className="iag-warehouse-ranges">
                   <label><input type="checkbox" checked={criteria.includeWarehouses} onChange={(event) => setField("includeWarehouses", event.target.checked)} /> Including</label>
                   <span>From</span>
-                  <input value={criteria.includeWarehouseFrom} disabled={!criteria.includeWarehouses} onChange={(event) => setField("includeWarehouseFrom", event.target.value)} />
+                  <div className="iag-lookup">
+                    <input value={criteria.includeWarehouseFrom} disabled={!criteria.includeWarehouses} onChange={(event) => setField("includeWarehouseFrom", event.target.value)} />
+                    <button type="button" disabled={!criteria.includeWarehouses} onClick={() => setLookupTarget("includeWarehouseFrom")}>...</button>
+                  </div>
                   <span>To</span>
-                  <input value={criteria.includeWarehouseTo} disabled={!criteria.includeWarehouses} onChange={(event) => setField("includeWarehouseTo", event.target.value)} />
+                  <div className="iag-lookup">
+                    <input value={criteria.includeWarehouseTo} disabled={!criteria.includeWarehouses} onChange={(event) => setField("includeWarehouseTo", event.target.value)} />
+                    <button type="button" disabled={!criteria.includeWarehouses} onClick={() => setLookupTarget("includeWarehouseTo")}>...</button>
+                  </div>
 
                   <label><input type="checkbox" checked={criteria.excludeWarehouses} onChange={(event) => setField("excludeWarehouses", event.target.checked)} /> Excluding</label>
                   <span>From</span>
-                  <input value={criteria.excludeWarehouseFrom} disabled={!criteria.excludeWarehouses} onChange={(event) => setField("excludeWarehouseFrom", event.target.value)} />
+                  <div className="iag-lookup">
+                    <input value={criteria.excludeWarehouseFrom} disabled={!criteria.excludeWarehouses} onChange={(event) => setField("excludeWarehouseFrom", event.target.value)} />
+                    <button type="button" disabled={!criteria.excludeWarehouses} onClick={() => setLookupTarget("excludeWarehouseFrom")}>...</button>
+                  </div>
                   <span>To</span>
-                  <input value={criteria.excludeWarehouseTo} disabled={!criteria.excludeWarehouses} onChange={(event) => setField("excludeWarehouseTo", event.target.value)} />
+                  <div className="iag-lookup">
+                    <input value={criteria.excludeWarehouseTo} disabled={!criteria.excludeWarehouses} onChange={(event) => setField("excludeWarehouseTo", event.target.value)} />
+                    <button type="button" disabled={!criteria.excludeWarehouses} onClick={() => setLookupTarget("excludeWarehouseTo")}>...</button>
+                  </div>
                 </div>
               </section>
             </div>
@@ -401,6 +461,12 @@ function InventoryAgingReportPage() {
         isOpen={lookupTarget === "itemFrom" || lookupTarget === "itemTo"}
         onClose={() => setLookupTarget("")}
         onSelect={handleSelectItem}
+      />
+      <WarehouseLookupModal
+        isOpen={lookupTarget.toLowerCase().includes("warehouse")}
+        onClose={() => setLookupTarget("")}
+        onSelect={handleSelectWarehouse}
+        warehouses={warehouses}
       />
       <PropertiesSelectionModal
         isOpen={showProperties}

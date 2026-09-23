@@ -9,6 +9,8 @@
   max-width: 920px;
   width: min(920px, 100%);
   max-height: calc(100vh - 170px);
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 
@@ -71,11 +73,17 @@
 
 .sales-analysis-window__controls button[aria-label="Restore"]::before,
 .sales-analysis-window__controls button[aria-label="Restore Down"]::before,
+.sales-analysis-window__controls button[aria-label="Maximize"]::before,
 .sales-analysis-detail-modal__controls button[aria-label="Restore"]::before,
+.sales-analysis-detail-modal__controls button[aria-label="Maximize"]::before,
 .bp-lookup-modal__controls button[aria-label="Restore"]::before,
+.bp-lookup-modal__controls button[aria-label="Maximize"]::before,
 .item-lookup-modal__controls button[aria-label="Restore"]::before,
+.item-lookup-modal__controls button[aria-label="Maximize"]::before,
 .sales-employee-lookup-modal__controls button[aria-label="Restore"]::before,
-.sap-properties-modal__controls button[aria-label="Restore"]::before {
+.sales-employee-lookup-modal__controls button[aria-label="Maximize"]::before,
+.sap-properties-modal__controls button[aria-label="Restore"]::before,
+.sap-properties-modal__controls button[aria-label="Maximize"]::before {
   content: "[]";
 }
 
@@ -90,6 +98,8 @@
 
 .sales-analysis-window__body {
   padding: 8px 10px 10px;
+  flex: 1;
+  min-height: 0;
   overflow: auto;
 }
 
@@ -187,7 +197,7 @@
 
 .sales-analysis__date-fields {
   display: grid;
-  grid-template-columns: 34px 122px 24px 18px 122px 24px;
+  grid-template-columns: 34px 122px 24px 24px 122px 24px;
   column-gap: 6px;
   align-items: center;
   justify-content: start;
@@ -1671,6 +1681,17 @@ body > .sap-properties-modal__backdrop {
 
 .sap-properties-modal__grid tbody tr.is-selected td {
   background: #e7f2fb;
+}
+
+.sap-properties-modal__grid .is-check {
+  width: 30px;
+  text-align: center;
+}
+
+.sap-properties-modal__grid .is-check input {
+  margin: 0;
+  accent-color: var(--sap-primary, #0a6ed1);
+  cursor: pointer;
 }
 
 .sap-properties-modal__grid .is-index {

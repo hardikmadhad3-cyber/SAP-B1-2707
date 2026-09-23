@@ -1,3 +1,4 @@
+const { reportTableExists, getReportTableColumns } = require('../reportMetadataService');
 const db = require("../dbService");
 
 const CAMPAIGN_TYPE_OPTIONS = [
@@ -48,50 +49,12 @@ const queryRows = async (sql, params = {}, options = {}) => {
   return result.recordset || result || [];
 };
 
-const tableCache = new Map();
-const columnCache = new Map();
 
-const tableExists = async (tableName, options = {}) => {
-  const table = text(tableName).toUpperCase();
-  if (!table) return false;
 
-  const cacheKey = `${text(options.databaseName)}:${table}`;
-  if (tableCache.has(cacheKey)) return tableCache.get(cacheKey);
 
-  const rows = await queryRows(
-    `
-      SELECT 1 AS present
-      FROM INFORMATION_SCHEMA.TABLES
-      WHERE TABLE_NAME = @tableName
-    `,
-    { tableName: table },
-    options,
-  );
-  const exists = rows.length > 0;
-  tableCache.set(cacheKey, exists);
-  return exists;
-};
+const tableExists = reportTableExists;
 
-const getColumns = async (tableName, options = {}) => {
-  const table = text(tableName).toUpperCase();
-  if (!table) return new Set();
-
-  const cacheKey = `${text(options.databaseName)}:${table}`;
-  if (columnCache.has(cacheKey)) return columnCache.get(cacheKey);
-
-  const rows = await queryRows(
-    `
-      SELECT COLUMN_NAME
-      FROM INFORMATION_SCHEMA.COLUMNS
-      WHERE TABLE_NAME = @tableName
-    `,
-    { tableName: table },
-    options,
-  );
-  const columns = new Set(rows.map((row) => text(row.COLUMN_NAME).toUpperCase()));
-  columnCache.set(cacheKey, columns);
-  return columns;
-};
+const getColumns = getReportTableColumns;
 
 const firstColumn = async (tableName, candidates = [], options = {}) => {
   const columns = await getColumns(tableName, options);
@@ -225,9 +188,9 @@ const getLookups = async (options = {}) => {
     ).catch(() => []),
     queryRows(
       `
-        SELECT GroupCode AS number, ISNULL(GroupName, '') AS name
+        SELECT ItmsTypCod AS number, ISNULL(ItmsGrpNam, '') AS name
         FROM OITG
-        ORDER BY GroupCode
+        ORDER BY ItmsTypCod
       `,
       {},
       options,

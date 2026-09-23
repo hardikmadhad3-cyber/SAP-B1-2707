@@ -1,6 +1,6 @@
 const db = require("./dbService");
 const masterDataDbService = require("./masterDataDbService");
-const { selectSapEligibleSeries } = require("./documentSeriesDbUtils");
+const { resolveMarketingDocumentSeries } = require("./documentSeriesDbUtils");
 
 const toInt = (value, fallback = 0) => {
   const parsed = Number.parseInt(value, 10);
@@ -61,20 +61,35 @@ const queryOne = async (sql, params = {}) => {
 
 const tableColumnCache = new Map();
 
+const getMetadataScopeKey = async (tableName) => {
+  const config = await db.resolveSqlConnectionConfig();
+  return JSON.stringify([
+    config.dialect || "sqlserver",
+    config.server || "",
+    config.port || 0,
+    config.database || "",
+    String(tableName || "").toUpperCase(),
+  ]);
+};
+
 const getTableColumns = async (tableName) => {
-  const key = String(tableName || "").toUpperCase();
+  const table = String(tableName || "").toUpperCase();
+  const key = await getMetadataScopeKey(table);
   if (!tableColumnCache.has(key)) {
-    tableColumnCache.set(
-      key,
-      queryRows(
+    const pending = queryRows(
         `
           SELECT COLUMN_NAME
           FROM INFORMATION_SCHEMA.COLUMNS
           WHERE TABLE_NAME = @tableName
         `,
-        { tableName: key }
-      ).then((rows) => new Set(rows.map((row) => String(row.COLUMN_NAME || "").toUpperCase())))
-    );
+        { tableName: table }
+      )
+      .then((rows) => new Set(rows.map((row) => String(row.COLUMN_NAME || "").toUpperCase())))
+      .catch((error) => {
+        tableColumnCache.delete(key);
+        throw error;
+      });
+    tableColumnCache.set(key, pending);
   }
   return tableColumnCache.get(key);
 };
@@ -132,64 +147,17 @@ const mapSeriesRow = (row) => ({
   IsCurrentPeriod: toBool(row.IsCurrentPeriod),
 });
 
-const getDefaultSeriesColumn = async () => {
-  try {
-    const rows = await queryRows(
-      `
-        SELECT COLUMN_NAME
-        FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = 'ONNM'
-          AND COLUMN_NAME IN ('DfltSeries', 'DfltSerie')
-      `
-    );
-    const columns = new Set(rows.map((row) => String(row.COLUMN_NAME || "").toUpperCase()));
-    if (columns.has("DFLTSERIES")) return "DfltSeries";
-    if (columns.has("DFLTSERIE")) return "DfltSerie";
-  } catch (_) {
-    return "";
-  }
-  return "";
-};
+const lookupSeriesContext = (objectCode, postingDate = new Date(), branch = "") =>
+  resolveMarketingDocumentSeries({
+    db,
+    objectCode: String(objectCode),
+    targetDate: postingDate,
+    branch,
+    purpose: "display",
+  });
 
-const lookupSeries = async (objectCode) => {
-  const defaultSeriesColumn = await getDefaultSeriesColumn();
-  const defaultSeriesJoin = defaultSeriesColumn
-    ? `LEFT JOIN ONNM T2 ON T2.ObjectCode = T0.ObjectCode AND T2.${defaultSeriesColumn} = T0.Series`
-    : "";
-  const defaultSeriesSelect = defaultSeriesColumn ? `CASE WHEN T2.${defaultSeriesColumn} IS NOT NULL THEN 1 ELSE 0 END` : "0";
-
-  const rows = await queryRows(
-    `
-      SELECT
-        T0.Series,
-        T0.SeriesName,
-        T0.Indicator,
-        T0.NextNumber,
-        T0.InitialNum,
-        T0.BeginStr,
-        T0.EndStr,
-        T0.Locked,
-        T0.IsManual,
-        ${defaultSeriesSelect} AS IsDefault,
-        CASE WHEN T1.AbsEntry IS NOT NULL THEN 1 ELSE 0 END AS IsCurrentPeriod
-      FROM NNM1 T0
-      LEFT JOIN OFPR T1
-        ON T1.Indicator = T0.Indicator
-        AND CAST(CURRENT_TIMESTAMP AS DATE) BETWEEN T1.F_RefDate AND T1.T_RefDate
-      ${defaultSeriesJoin}
-      WHERE T0.ObjectCode = @objectCode
-        AND T0.Locked <> 'Y'
-      ORDER BY
-        IsCurrentPeriod DESC,
-        IsDefault DESC,
-        CASE WHEN ISNULL(T0.Indicator, '') <> '' THEN 0 ELSE 1 END,
-        T0.Series
-    `,
-    { objectCode: String(objectCode) }
-  );
-
-  return selectSapEligibleSeries(rows.map(mapSeriesRow), new Date());
-};
+const lookupSeries = async (objectCode, postingDate = new Date(), branch = "") =>
+  (await lookupSeriesContext(objectCode, postingDate, branch)).series;
 
 const pickDefaultSeries = (seriesRows = []) =>
   seriesRows.find((row) => row.IsCurrentPeriod) ||
@@ -197,13 +165,21 @@ const pickDefaultSeries = (seriesRows = []) =>
   seriesRows[0] ||
   null;
 
-const lookupProdWarehouses = async () => {
+const lookupProdWarehouses = async (branch = "") => {
+  const columns = await getTableColumns("OWHS");
+  const branchId = String(branch || "").trim() === "" ? null : toInt(branch, null);
   const rows = await queryRows(`
-    SELECT WhsCode, WhsName, BinActivat, RecBinEnab, DftBinAbs, AutoRecvMd
+    SELECT WhsCode, WhsName,
+           ${selectOptionalColumn(columns, "OWHS", "BinActivat", "BinActivat", "'N'")},
+           ${selectOptionalColumn(columns, "OWHS", "RecBinEnab", "RecBinEnab", "'N'")},
+           ${selectOptionalColumn(columns, "OWHS", "DftBinAbs", "DftBinAbs", "NULL")},
+           ${selectOptionalColumn(columns, "OWHS", "AutoRecvMd", "AutoRecvMd", "0")},
+           ${selectOptionalColumn(columns, "OWHS", "BPLid", "BPLID", "NULL")}
     FROM OWHS
-    WHERE ISNULL(Inactive, 'N') <> 'Y'
+    WHERE ${columns.has("INACTIVE") ? "ISNULL(Inactive, 'N') <> 'Y'" : "1 = 1"}
+      ${columns.has("BPLID") ? "AND (@branchId IS NULL OR BPLid = @branchId)" : ""}
     ORDER BY WhsCode
-  `);
+  `, { branchId });
 
   return rows.map((row) => ({
     WarehouseCode: row.WhsCode,
@@ -212,29 +188,36 @@ const lookupProdWarehouses = async () => {
     EnableReceivingBinLocations: yesNo(row.RecBinEnab),
     DefaultBin: row.DftBinAbs ?? null,
     AutoAllocOnReceipt: row.AutoRecvMd === 1 ? "tYES" : "tNO",
+    BPLID: row.BPLID ?? null,
   }));
 };
 
-const lookupDistributionRules = async () =>
-  queryRows(`
+const lookupDistributionRules = async () => {
+  if (!(await tableExists("OOCR"))) return [];
+  return queryRows(`
     SELECT TOP 200 OcrCode AS FactorCode, OcrName AS FactorDescription
     FROM OOCR
     WHERE Active <> 'N'
     ORDER BY OcrCode
   `);
+};
 
-const lookupProjects = async () =>
-  queryRows(`
+const lookupProjects = async () => {
+  if (!(await tableExists("OPRJ"))) return [];
+  return queryRows(`
     SELECT TOP 200 PrjCode AS Code, PrjName AS Name
     FROM OPRJ
     ORDER BY PrjCode
   `);
+};
 
 const lookupBranches = async () => {
+  if (!(await tableExists("OBPL"))) return [];
+  const columns = await getTableColumns("OBPL");
   const rows = await queryRows(`
     SELECT BPLId, BPLName
     FROM OBPL
-    WHERE Disabled <> 'Y'
+    WHERE ${columns.has("DISABLED") ? "ISNULL(Disabled, 'N') <> 'Y'" : "1 = 1"}
     ORDER BY BPLId
   `);
 
@@ -245,14 +228,17 @@ const lookupBranches = async () => {
 };
 
 const lookupRouteStages = async (query = "") => {
+  if (!(await tableExists("ORST"))) return [];
+  const columns = await getTableColumns("ORST");
   const trimmed = String(query || "").trim();
   const rows = await queryRows(
     `
-      SELECT TOP 200 AbsEntry, Code, [Desc]
+      SELECT TOP 200 AbsEntry, Code,
+             ${selectOptionalColumn(columns, "ORST", "Desc", "Description", "''")}
       FROM ORST
       WHERE @query = ''
          OR Code LIKE @like
-         OR [Desc] LIKE @like
+         ${columns.has("DESC") ? "OR [Desc] LIKE @like" : ""}
       ORDER BY AbsEntry
     `,
     { query: trimmed, like: `%${trimmed}%` }
@@ -261,7 +247,7 @@ const lookupRouteStages = async (query = "") => {
   return rows.map((row) => ({
     InternalNumber: row.AbsEntry,
     Code: row.Code || "",
-    Description: row.Desc || "",
+    Description: row.Description || "",
   }));
 };
 
@@ -534,12 +520,15 @@ const lookupComponentItems = async (query = "") => {
 };
 
 const lookupResources = async (query = "") => {
+  if (!(await tableExists("ORSC"))) return [];
+  const columns = await getTableColumns("ORSC");
   const trimmed = String(query || "").trim();
   const rows = await queryRows(
     `
-      SELECT TOP 500 ResCode, ResName, DfltWH
+      SELECT TOP 500 ResCode, ResName,
+             ${selectOptionalColumn(columns, "ORSC", "DfltWH", "DfltWH", "''")}
       FROM ORSC
-      WHERE ProdRes = 'Y'
+      WHERE ${columns.has("PRODRES") ? "ProdRes = 'Y'" : "1 = 1"}
         AND (
           @query = ''
           OR ResCode LIKE @like
@@ -801,12 +790,12 @@ const explodeBOM = async (itemCode, qty = 1) => {
   };
 };
 
-const getProductionOrderReferenceData = async () => {
+const getProductionOrderReferenceData = async ({ postingDate = new Date(), branch = "" } = {}) => {
   const [warehouses, distributionRules, projects, productionSeries, branches, routeStages, users, linkedToOptions] = await Promise.all([
-    lookupProdWarehouses(),
+    lookupProdWarehouses(branch),
     lookupDistributionRules(),
     lookupProjects(),
-    lookupSeries("202"),
+    lookupSeries("202", postingDate, branch),
     lookupBranches(),
     lookupRouteStages(""),
     lookupUsers(),
@@ -912,9 +901,15 @@ const getProductionOrderForIssue = async (docEntry) => {
     `
       SELECT T0.DocEntry, T0.DocNum, T0.ItemCode, T0.ProdName, T0.PlannedQty, T0.CmpltQty,
              T0.Status, T0.Type, T0.Warehouse, T0.DueDate, T0.PostDate, T0.StartDate,
-             T0.Series, S.SeriesName
+             T0.Series, S.SeriesName,
+             I.ManBtchNum AS ParentManBtchNum, I.ManSerNum AS ParentManSerNum,
+             IW.OnHand AS ParentOnHand, I.AvgPrice AS ParentAvgPrice,
+             WH.BinActivat AS ParentBinActivat
       FROM OWOR T0
       LEFT JOIN NNM1 S ON S.Series = T0.Series AND S.ObjectCode = '202'
+      LEFT JOIN OITM I ON I.ItemCode = T0.ItemCode
+      LEFT JOIN OITW IW ON IW.ItemCode = T0.ItemCode AND IW.WhsCode = T0.Warehouse
+      LEFT JOIN OWHS WH ON WH.WhsCode = T0.Warehouse
       WHERE T0.DocEntry = @docEntry
     `,
     { docEntry: entry }
@@ -941,7 +936,24 @@ const getProductionOrderForIssue = async (docEntry) => {
     { docEntry: entry }
   );
 
-  const manualLines = lines.filter((line) => toIssueMethod(line.IssueType) !== "im_Backflush");
+  const isDisassembly = String(row.Type || "").toUpperCase() === "D";
+  const manualLines = isDisassembly
+    ? [{
+        LineNum: 0,
+        ItemCode: row.ItemCode,
+        ItemName: row.ProdName,
+        PlannedQty: row.PlannedQty,
+        IssuedQty: row.CmpltQty,
+        UomCode: "",
+        wareHouse: row.Warehouse,
+        IssueType: "M",
+        ManBtchNum: row.ParentManBtchNum,
+        ManSerNum: row.ParentManSerNum,
+        AvgPrice: row.ParentAvgPrice,
+        OnHand: row.ParentOnHand,
+        BinActivat: row.ParentBinActivat,
+      }]
+    : lines.filter((line) => toIssueMethod(line.IssueType) !== "im_Backflush");
 
   return {
     doc_entry: row.DocEntry,
@@ -987,17 +999,20 @@ const getProductionOrderForIssue = async (docEntry) => {
       base_type: 202,
       manage_batch: String(line.ManBtchNum || "").toUpperCase() === "Y",
       manage_serial: String(line.ManSerNum || "").toUpperCase() === "Y",
+      enable_bin_locations: String(line.BinActivat || "").toUpperCase() === "Y",
       batch_numbers: [],
       serial_numbers: [],
+      bin_allocations: [],
     })),
   };
 };
 
-const getIssueReferenceData = async () => ({
-  warehouses: await lookupProdWarehouses(),
+const getIssueReferenceData = async ({ postingDate = new Date(), branch = "" } = {}) => ({
+  warehouses: await lookupProdWarehouses(branch),
   distribution_rules: await lookupDistributionRules(),
   projects: await lookupProjects(),
-  series: await lookupSeries("60"),
+  branches: await lookupBranches(),
+  series: await lookupSeries("60", postingDate, branch),
   warnings: [],
 });
 
@@ -1056,9 +1071,11 @@ const getIssueList = async ({ query = "", top = 50, skip = 0 } = {}) => {
 
 const getIssueByDocEntry = async (docEntry) => {
   const entry = toInt(docEntry, 0);
+  const headerColumns = await getTableColumns("OIGE");
   const row = await queryOne(
     `
-      SELECT DocEntry, DocNum, Series, DocDate, TaxDate, Ref2, Comments, JrnlMemo
+      SELECT DocEntry, DocNum, Series, DocDate, TaxDate, Ref2, Comments, JrnlMemo,
+             ${selectOptionalColumn(headerColumns, "OIGE", "BPLId", "BPLId", "NULL")}
       FROM OIGE
       WHERE DocEntry = @docEntry
     `,
@@ -1087,6 +1104,7 @@ const getIssueByDocEntry = async (docEntry) => {
       posting_date: formatDate(row.DocDate),
       document_date: formatDate(row.TaxDate),
       ref_2: row.Ref2 || "",
+      branch: row.BPLId != null ? String(row.BPLId) : "",
       remarks: row.Comments || "",
       journal_remark: row.JrnlMemo || "",
       prod_order_entry: prodBaseEntry,
@@ -1243,12 +1261,12 @@ const getProductionOrderForReceipt = async (docEntry) => {
   };
 };
 
-const getReceiptReferenceData = async () => ({
-  warehouses: await lookupProdWarehouses(),
+const getReceiptReferenceData = async ({ postingDate = new Date(), branch = "" } = {}) => ({
+  warehouses: await lookupProdWarehouses(branch),
   distribution_rules: await lookupDistributionRules(),
   projects: await lookupProjects(),
   branches: await lookupBranches(),
-  series: await lookupSeries("59"),
+  series: await lookupSeries("59", postingDate, branch),
   warnings: [],
 });
 
@@ -1291,9 +1309,11 @@ const getReceiptList = async ({ query = "", top = 50, skip = 0 } = {}) => {
 
 const getReceiptByDocEntry = async (docEntry) => {
   const entry = toInt(docEntry, 0);
+  const headerColumns = await getTableColumns("OIGN");
   const row = await queryOne(
     `
-      SELECT DocEntry, DocNum, Series, DocDate, TaxDate, Ref2, Comments, JrnlMemo, BPLId
+      SELECT DocEntry, DocNum, Series, DocDate, TaxDate, Ref2, Comments, JrnlMemo,
+             ${selectOptionalColumn(headerColumns, "OIGN", "BPLId", "BPLId", "NULL")}
       FROM OIGN
       WHERE DocEntry = @docEntry
     `,
@@ -1380,13 +1400,15 @@ const getReceiptByDocEntry = async (docEntry) => {
 };
 
 const lookupBinLocations = async (warehouse) => {
+  if (!(await tableExists("OBIN"))) return { value: [] };
+  const columns = await getTableColumns("OBIN");
   const rows = await queryRows(
     `
       SELECT AbsEntry, BinCode, WhsCode AS Warehouse
       FROM OBIN
       WHERE WhsCode = @warehouse
-        AND ISNULL(Disabled, 'N') <> 'Y'
-        AND ISNULL(Deleted, 'N') <> 'Y'
+        ${columns.has("DISABLED") ? "AND ISNULL(Disabled, 'N') <> 'Y'" : ""}
+        ${columns.has("DELETED") ? "AND ISNULL(Deleted, 'N') <> 'Y'" : ""}
       ORDER BY BinCode
     `,
     { warehouse: String(warehouse || "").trim() }
@@ -1396,6 +1418,7 @@ const lookupBinLocations = async (warehouse) => {
 };
 
 const lookupBatchesByItem = async (itemCode, warehouse) => {
+  if (!(await tableExists("OIBT"))) return { value: [] };
   const rows = await queryRows(
     `
       SELECT BatchNum AS BatchNumber, Quantity, ExpDate
@@ -1409,6 +1432,92 @@ const lookupBatchesByItem = async (itemCode, warehouse) => {
   );
 
   return { value: rows };
+};
+
+const lookupSerialsByItem = async (itemCode, warehouse) => {
+  if (!(await tableExists("OSRI"))) return { value: [] };
+  const columns = await getTableColumns("OSRI");
+  const rows = await queryRows(
+    `
+      SELECT TOP 500 IntrSerial AS InternalSerialNumber,
+             ${selectOptionalColumn(columns, "OSRI", "SysSerial", "SystemSerialNumber", "NULL")}
+      FROM OSRI
+      WHERE ItemCode = @itemCode
+        AND WhsCode = @warehouse
+        ${columns.has("STATUS") ? "AND ISNULL(Status, 0) = 0" : ""}
+      ORDER BY IntrSerial
+    `,
+    { itemCode, warehouse }
+  );
+  return { value: rows };
+};
+
+const getAllocationOptions = async (itemCode, warehouse, direction = "issue") => {
+  const code = String(itemCode || "").trim();
+  const whsCode = String(warehouse || "").trim();
+  if (!code || !whsCode) {
+    const error = new Error("Item code and warehouse are required.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const [itemColumns, warehouseColumns] = await Promise.all([
+    getTableColumns("OITM"),
+    getTableColumns("OWHS"),
+  ]);
+  const row = await queryOne(`
+    SELECT I.ItemCode,
+           ${selectOptionalColumn(itemColumns, "I", "ManBtchNum", "ManBtchNum", "'N'")},
+           ${selectOptionalColumn(itemColumns, "I", "ManSerNum", "ManSerNum", "'N'")},
+           ${selectOptionalColumn(warehouseColumns, "W", "BinActivat", "BinActivat", "'N'")},
+           ${selectOptionalColumn(warehouseColumns, "W", "BPLid", "BPLID", "NULL")}
+    FROM OITM I
+    INNER JOIN OWHS W ON W.WhsCode = @warehouse
+    WHERE I.ItemCode = @itemCode
+  `, { itemCode: code, warehouse: whsCode });
+  if (!row) {
+    const error = new Error("Item or warehouse was not found in the selected company.");
+    error.statusCode = 404;
+    throw error;
+  }
+  const manageBatch = String(row.ManBtchNum || "").toUpperCase() === "Y";
+  const manageSerial = String(row.ManSerNum || "").toUpperCase() === "Y";
+  const binEnabled = String(row.BinActivat || "").toUpperCase() === "Y";
+  const [batches, serials, bins] = await Promise.all([
+    direction === "issue" && manageBatch ? lookupBatchesByItem(code, whsCode) : { value: [] },
+    direction === "issue" && manageSerial ? lookupSerialsByItem(code, whsCode) : { value: [] },
+    binEnabled ? lookupBinLocations(whsCode) : { value: [] },
+  ]);
+  return {
+    itemCode: code, warehouse: whsCode, branch: row.BPLID ?? null,
+    manageBatch, manageSerial, binEnabled,
+    batches: batches.value, serials: serials.value, bins: bins.value,
+  };
+};
+
+const validateBranchWarehouses = async (branch, warehouses = []) => {
+  const uniqueWarehouses = [...new Set((warehouses || []).map((value) => String(value || "").trim()).filter(Boolean))];
+  const oadmColumns = await getTableColumns("OADM");
+  const admin = oadmColumns.has("MLTPBRNCHS") ? await queryOne("SELECT MltpBrnchs FROM OADM") : null;
+  const multipleBranches = String(admin?.MltpBrnchs || "N").toUpperCase() === "Y";
+  const branchText = String(branch || "").trim();
+  if (multipleBranches && !branchText) {
+    const error = new Error("Branch is required when multiple branches are enabled.");
+    error.statusCode = 422;
+    throw error;
+  }
+  if (!uniqueWarehouses.length) return;
+  const warehouseColumns = await getTableColumns("OWHS");
+  if (!warehouseColumns.has("BPLID") || !branchText) return;
+  const params = Object.fromEntries(uniqueWarehouses.map((value, index) => [`warehouse${index}`, value]));
+  const placeholders = uniqueWarehouses.map((_, index) => `@warehouse${index}`).join(", ");
+  const rows = await queryRows(`SELECT WhsCode, BPLid FROM OWHS WHERE WhsCode IN (${placeholders})`, params);
+  const valid = new Set(rows.filter((row) => String(row.BPLid) === branchText).map((row) => String(row.WhsCode)));
+  const invalidWarehouse = uniqueWarehouses.find((value) => !valid.has(value));
+  if (invalidWarehouse) {
+    const error = new Error(`Warehouse "${invalidWarehouse}" is not assigned to the selected branch.`);
+    error.statusCode = 422;
+    throw error;
+  }
 };
 
 module.exports = {
@@ -1440,5 +1549,10 @@ module.exports = {
   getReceiptByDocEntry,
   lookupBinLocations,
   lookupBatchesByItem,
+  lookupSerialsByItem,
+  getAllocationOptions,
+  validateBranchWarehouses,
   lookupSeries,
+  lookupSeriesContext,
+  getTableColumns,
 };

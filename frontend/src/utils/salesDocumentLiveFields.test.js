@@ -122,7 +122,6 @@ test('builds schema-only UDFs and reconciles them with the current SAP layout', 
         source: 'sap-form-settings',
         columns: [
           { fieldName: 'ItemCode', columnTitle: 'Item No.', visible: true, editable: true, columnOrder: 1 },
-          { fieldName: 'U_Agent', columnTitle: 'Agent', visible: true, editable: true, columnOrder: 2, isUdf: true },
           { fieldName: 'U_OtherCompany', columnTitle: 'Old Field', visible: true, editable: true, columnOrder: 3, isUdf: true },
         ],
       },
@@ -133,11 +132,12 @@ test('builds schema-only UDFs and reconciles them with the current SAP layout', 
   expect(result.headerUdfFields.map((field) => field.key)).toEqual(['U_HeaderAgent']);
   expect(result.rowUdfFields.map((field) => field.key)).toEqual(['U_Agent']);
   expect(result.rowUdfFields[0].lookupSource).toBe('udf:QUT1:U_Agent');
+  expect(result.usedSapLayout).toBe(true);
   expect(result.matrixColumns.map((column) => column.valueKey || column.key)).toContain('U_Agent');
   expect(result.matrixColumns.map((column) => column.valueKey || column.key)).not.toContain('U_OtherCompany');
 });
 
-test('uses the structured purchase fallback instead of physical schema order when SAP layout is unavailable', () => {
+test('uses current-company purchase schema when SAP layout is unavailable and falls back only without live metadata', () => {
   const safePurchaseColumns = [
     { key: 'itemNo', sapField: 'ItemCode', label: 'Item No.', order: 1 },
     { key: 'itemDescription', sapField: 'ItemDescription', label: 'Description', order: 2 },
@@ -159,9 +159,30 @@ test('uses the structured purchase fallback instead of physical schema order whe
   });
 
   expect(result.usedSapLayout).toBe(false);
-  expect(result.usedSafeFallback).toBe(true);
+  expect(result.usedSafeFallback).toBe(false);
   expect(result.rowUdfFields.map((field) => field.key)).toEqual(['U_Agent']);
   expect(result.matrixColumns.map((column) => column.key)).toEqual([
+    'itemNo',
+    'U_Agent',
+  ]);
+
+  const unavailable = buildSalesDocumentLiveFields({
+    schema: null,
+    documentType: 'PURCHASE_QUOTATION',
+    objectType: '540000006',
+    headerTable: 'OPQT',
+    lineTable: 'PQT1',
+    companyId: 7,
+    companyDb: 'SBODEMO',
+    layoutResponse: { data: { source: 'fallback', columns: [] } },
+    referenceMatrixColumns: safePurchaseColumns,
+    safeFallbackMatrixColumns: safePurchaseColumns,
+    useSafeFallbackWithoutLayout: true,
+    includeLineNumber: false,
+  });
+
+  expect(unavailable.usedSafeFallback).toBe(true);
+  expect(unavailable.matrixColumns.map((column) => column.key)).toEqual([
     'itemNo',
     'itemDescription',
     'quantity',

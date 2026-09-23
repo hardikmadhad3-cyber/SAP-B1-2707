@@ -1,3 +1,5 @@
+import useConfirmationOnlyUpdate from '../../utils/useConfirmationOnlyUpdate';
+import useDocumentSeries from '../../hooks/useDocumentSeries';
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import '../../modules/item-master/styles/itemMaster.css';
 import './styles/salesOrder.css';
@@ -29,7 +31,7 @@ import { useSapWindowTaskbarActions } from '../../components/SapWindowTaskbarCon
 import { determineTaxCode, recalculateAllTaxCodes, getGSTTypeLabel } from '../../utils/taxEngine';
 import { filterWarehousesByBranch } from '../../utils/warehouseBranch';
 import { hydrateDocumentLineFromItem, mergeItemMaster } from '../../utils/documentItemHydration';
-import { getDefaultSeriesForCurrentYear, getSapVisibleDocumentSeries } from '../../utils/seriesDefaults';
+import { getSapVisibleDocumentSeries, pickDocumentSeries, canUseManualSeries } from '../../utils/seriesDefaults';
 import { readGeneralSettings } from '../../utils/generalSettingsStorage';
 import { useCompanyScopedFormSettings } from '../../utils/formSettingsStorage';
 import { buildVisibleEnteredRowUdfPayload } from '../../utils/rowUdfPayload';
@@ -56,7 +58,6 @@ import {
     submitSalesOrder,
     updateSalesOrder,
     fetchDocumentSeries,
-    fetchNextNumber,
     fetchItemsForModal,
     fetchFreightCharges,
     createSalesOrderLookupValue,
@@ -491,7 +492,7 @@ const INIT_HEADER = {
     docNo: '', status: 'Open', series: '', nextNumber: '',
     postingDate: today(), deliveryDate: today(), documentDate: today(), contractDate: '',
     branchRegNo: '', shipTo: '', shipToCode: '', payTo: '', payToCode: '',
-    shippingType: '', confirmed: false, journalRemark: '', paymentTerms: '',
+    shippingType: '', confirmed: undefined, journalRemark: '', paymentTerms: '',
     paymentMethod: '', otherInstruction: '', discount: '', freight: '', tax: '',
     totalPaymentDue: '', rounding: false, owner: '', purchaser: '',
     placeOfSupply: '', currencyMode: 'BP', currency: 'INR', useBillToForTax: false,
@@ -519,6 +520,8 @@ const closeDocumentDropdowns = () => {
 
 // â”€â”€â”€ Main Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function DCSalesOrder() {
+  const [seriesRevision, setSeriesRevision] = useState(0);
+
     const location = useLocation();
     const navigate = useNavigate();
     const { company } = useAuth();
@@ -635,26 +638,7 @@ function DCSalesOrder() {
         defaultToVendorAppliedRef.current = '';
     }, [activeCompanyId]);
 
-    const resolvePreferredSeries = (seriesList, postingDateValue, selectedSeries = '') => {
-        if (!Array.isArray(seriesList) || !seriesList.length) return null;
-
-        const normalizedSeries = String(selectedSeries || '').trim();
-        const matchedSeries = normalizedSeries
-            ? seriesList.find((series) => String(series.Series) === normalizedSeries)
-            : null;
-
-        if (matchedSeries) return matchedSeries;
-
-        const preferredSeries = String(generalSettingsRef.current.dcSalesSeries || '').trim();
-        const settingsSeries = preferredSeries
-            ? seriesList.find((series) => String(series.Series) === preferredSeries)
-            : null;
-
-        if (settingsSeries) return settingsSeries;
-
-        const seriesDate = postingDateValue ? new Date(`${postingDateValue}T00:00:00`) : new Date();
-        return getDefaultSeriesForCurrentYear(seriesList, seriesDate) || seriesList[0];
-    };
+    const resolvePreferredSeries = (seriesList, postingDateValue, selectedSeries = '') => pickDocumentSeries(seriesList, selectedSeries);
 
     // Close dropdown when clicking outside
     useEffect(() => {
@@ -704,7 +688,7 @@ function DCSalesOrder() {
             ? updateActionLabel
             : 'Add';
     const secondaryActionLabel = pageState.posting
-        ? 'Savingâ€¦'
+        ? 'Saving...'
         : currentDocEntry
             ? updateActionLabel
             : 'Add & New';
@@ -874,51 +858,7 @@ function DCSalesOrder() {
     }, [activeCompanyId]);
 
     // â”€â”€ load existing order â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    useEffect(() => {
-        if (currentDocEntry) return;
 
-        const seriesDate = String(header.postingDate || '').trim();
-        if (!seriesDate) {
-            setRefData(prev => ({ ...prev, series: [] }));
-            setHeader(prev => ({ ...prev, series: '', nextNumber: '' }));
-            return;
-        }
-
-        let ignore = false;
-
-        const loadSeriesForPostingDate = async () => {
-            try {
-                const seriesResponse = await fetchDocumentSeries(seriesDate, { branch: header.branch || '' });
-                const availableSeries = seriesResponse.data?.series || [];
-
-                if (ignore) return;
-
-                setRefData(prev => ({ ...prev, series: availableSeries }));
-
-                if (!availableSeries.length) {
-                    setHeader(prev => ({ ...prev, series: '', nextNumber: '' }));
-                    return;
-                }
-
-                const currentSeries = String(header.series || '');
-                const defaultSeries = resolvePreferredSeries(availableSeries, seriesDate, currentSeries);
-
-                if (!defaultSeries?.Series) return;
-
-                if (String(defaultSeries.Series) !== currentSeries || !String(header.nextNumber || '').trim()) {
-                    handleSeriesChange(defaultSeries.Series);
-                }
-            } catch (e) {
-                if (!ignore) {
-                    setPageState(p => ({ ...p, error: getErrMsg(e, 'Failed to load document series.') }));
-                }
-            }
-        };
-
-        loadSeriesForPostingDate();
-
-        return () => { ignore = true; };
-    }, [currentDocEntry, header.branch, header.postingDate]);
 
     useEffect(() => {
         const docEntry =
@@ -1075,14 +1015,7 @@ function DCSalesOrder() {
     }, [location.pathname, location.state, navigate]);
 
     useEffect(() => {
-        if (!currentDocEntry) {
-            setFreightModal(prev => (
-                prev.freightCharges.length || prev.loading
-                    ? { ...prev, freightCharges: [], loading: false }
-                    : prev
-            ));
-            return;
-        }
+        if (!currentDocEntry) return;
 
         let ignore = false;
         const loadSavedFreightCharges = async () => {
@@ -1915,21 +1848,12 @@ function DCSalesOrder() {
         }
     };
 
-    const handleSeriesChange = async (seriesValue) => {
-        if (!seriesValue) return;
-
-        setPageState(p => ({ ...p, seriesLoading: true }));
-        setHeader(p => ({ ...p, series: seriesValue, nextNumber: '...' }));
-
-        try {
-            const res = await fetchNextNumber(seriesValue);
-            setHeader(p => ({ ...p, nextNumber: String(res.data.nextNumber || '') }));
-        } catch (err) {
-            setHeader(p => ({ ...p, nextNumber: 'Error' }));
-            setPageState(p => ({ ...p, error: 'Failed to get next document number' }));
-        } finally {
-            setPageState(p => ({ ...p, seriesLoading: false }));
-        }
+    const handleSeriesChange = (seriesValue) => {
+      const manual = ['-1', 'manual', '__sap_manual__'].includes(String(seriesValue).toLowerCase());
+      if (manual && !canUseManualSeries(refData)) return;
+      const selected = (refData.series || []).find(row => String(row.Series) === String(seriesValue));
+      setHeader(prev => ({ ...prev, series: manual ? '-1' : selected ? String(selected.Series) : '', nextNumber: manual ? '' : String(selected?.NextNumber ?? ''), docNo: '' }));
+      setPageState(prev => ({ ...prev, error: '', success: '' }));
     };
 
     const handleLineChange = async (i, e) => {
@@ -2541,6 +2465,8 @@ function DCSalesOrder() {
 
     // â”€â”€ Copy From Handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const handleCopyFrom = (data, docType) => {
+    setSeriesRevision(value => value + 1);
+
         const copySource = unwrapCopyFromDocument(data);
         const baseType = BASE_TYPE[docType] || 23;
         const normHeader = normaliseDocumentHeader(copySource.header);
@@ -2605,6 +2531,8 @@ function DCSalesOrder() {
         handleCopyFrom({
             ...(copyFrom.header || {}),
             header: copyFrom.header || {},
+            freightCharges: copyFrom.freightCharges || [],
+            header_udfs: copyFrom.headerUdfs || copyFrom.header_udfs || {},
             DocumentLines: copyFrom.lines || [],
             DocEntry: copyFrom.docEntry,
         }, copyFrom.type);
@@ -2669,7 +2597,7 @@ function DCSalesOrder() {
             sourceDocEntry: currentDocEntry,
             sourceDocNo: header.docNo,
             sourcePath: '/dc-sales-order',
-            sourceSnapshot: { header, lines, headerUdfs },
+            sourceSnapshot: { header, lines, headerUdfs, freightCharges: freightModal.freightCharges },
             restoreState: { dcSalesOrderDocEntry: currentDocEntry },
             navigate,
             upsertTask,
@@ -2683,6 +2611,8 @@ function DCSalesOrder() {
     };
 
     const handleDuplicate = () => {
+    setSeriesRevision(value => value + 1);
+
         const duplicated = duplicateDocumentInPlace({
             currentDocEntry,
             header,
@@ -2854,6 +2784,11 @@ function DCSalesOrder() {
     };
 
     // â”€â”€ submit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    const narrowConfirmationUpdate = useConfirmationOnlyUpdate({
+      docEntry: currentDocEntry, isDirty,
+      state: { header, lines, headerUdfs, freightCharges: freightModal.freightCharges , company_id: activeCompanyId },
+    });
+
     const handleSubmit = async (ev) => {
         ev.preventDefault();
         if (!isDocumentEditable) {
@@ -2969,7 +2904,7 @@ function DCSalesOrder() {
             console.log('Header UDFs:', headerUdfs);
             console.log('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
 
-            const r = currentDocEntry ? await updateSalesOrder(currentDocEntry, payload) : await submitSalesOrder(payload);
+            const r = currentDocEntry ? await updateSalesOrder(currentDocEntry, narrowConfirmationUpdate(payload)) : await submitSalesOrder(payload);
             const dn = r.data.doc_num ? ` Doc No: ${r.data.doc_num}.` : '';
             const resetHeader = createInitialHeader(generalSettingsRef.current);
             setSnapshotPending(false);
@@ -2997,6 +2932,8 @@ function DCSalesOrder() {
     };
 
     const resetForm = () => {
+    setSeriesRevision(value => value + 1);
+
         const resetHeader = createInitialHeader(generalSettingsRef.current);
         setSnapshotPending(false);
         setIsDirty(false);
@@ -3041,12 +2978,14 @@ function DCSalesOrder() {
     // Continue in next part with render...
 
     // â”€â”€ render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    return (
+    useDocumentSeries({ endpoint: '/dc-sales-order', companyKey: String(activeCompanyId), currentDocEntry, header: header, setHeader, setRefData, setPageState, ready: !pageState.loading && !pageState.posting , refreshKey: seriesRevision});
+
+  return (
         <form ref={formRef} className={`so-page sap-document-page${isRightSidebarOpen ? ' so-page--sidebar-open' : ''}`} onSubmit={handleSubmit} onChangeCapture={markDirty}>
 
             {/* toolbar */}
             <div className="so-toolbar sap-document-toolbar">
-                <span className="so-toolbar__title">DC Sales Order{currentDocEntry ? ` â€” #${header.docNo || currentDocEntry}` : ''}</span>
+                <span className="so-toolbar__title">DC Sales Order{currentDocEntry ? ` - #${header.docNo || currentDocEntry}` : ''}</span>
                 <button type="submit" className="so-btn so-btn--primary sap-document-toolbar__primary" disabled={pageState.posting || !isDocumentEditable} title={primaryActionLabel}>
                     {primaryActionLabel}
                 </button>
@@ -3101,7 +3040,7 @@ function DCSalesOrder() {
                         }}
                         style={{ opacity: (!isDocumentEditable || !!currentDocEntry || !hasBuyerCode) ? 0.5 : 1 }}
                     >
-                        Copy From â–¼
+                        Copy From ▼
                     </button>
                     <div className="so-dropdown-menu">
                         <button
@@ -3166,7 +3105,7 @@ function DCSalesOrder() {
                         }}
                         style={{ opacity: !currentDocEntry ? 0.5 : 1 }}
                     >
-                        Copy To â–¼
+                        Copy To ▼
                     </button>
                     <div className="so-dropdown-menu">
                         <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleCopyTo('delivery'); document.querySelectorAll('.so-dropdown').forEach(d => d.classList.remove('active')); }}>
@@ -3188,7 +3127,7 @@ function DCSalesOrder() {
             </div>
 
             {/* alerts */}
-            {pageState.loading && <div className="so-alert so-alert--success" style={{ marginTop: 0 }}>Loadingâ€¦</div>}
+            {pageState.loading && <div className="so-alert so-alert--success" style={{ marginTop: 0 }}>Loading...</div>}
             {!copyFromMode && pageState.error && <div className="so-alert so-alert--error">{pageState.error}</div>}
             {pageState.success && <div className="so-alert so-alert--success">{pageState.success}</div>}
             {refData.warnings?.length > 0 && (
@@ -3397,9 +3336,9 @@ function DCSalesOrder() {
                                                 onChange={handleHeaderChange}
                                                 disabled={!!currentDocEntry || pageState.seriesLoading}
                                             >
-                                                <option value="">Select Series</option>
+                                                <option value="">{pageState.seriesLoading ? 'Loading series...' : pageState.seriesError ? 'Series unavailable' : 'Select Series'}</option>
                                                 {getSapVisibleDocumentSeries(refData.series, {
-                                                    selectedSeries: header.series,
+                                                    selectedSeries: header.series, includeHistorical: Boolean(currentDocEntry),
                                                     postingDate: header.postingDate || header.documentDate,
                                                 }).map(s => (
                                                     <option key={s.Series} value={s.Series}>
@@ -3710,7 +3649,7 @@ function DCSalesOrder() {
                                       }}
                                       style={{ opacity: (!isDocumentEditable || !!currentDocEntry || !hasBuyerCode) ? 0.5 : 1 }}
                                     >
-                                      Copy From â–¼
+                                      Copy From ▼
                                     </button>
                                     <div className="so-dropdown-menu">
                                         <button
@@ -3764,7 +3703,7 @@ function DCSalesOrder() {
                                         }}
                                         style={{ opacity: !currentDocEntry ? 0.5 : 1 }}
                                     >
-                                        Copy To â–¼
+                                        Copy To ▼
                                     </button>
                                     <div className="so-dropdown-menu">
                                         <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleCopyTo('delivery'); document.querySelectorAll('.so-dropdown').forEach(d => d.classList.remove('active')); }}>

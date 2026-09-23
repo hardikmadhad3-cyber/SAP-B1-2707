@@ -21,12 +21,14 @@ const ENTITY_CONFIGS = [
     group: 'Core Setup',
     lookupLabelColumns: ['CompanyName', 'DbName'],
     listColumns: ['CompanyId', 'CompanyName', 'DbDialect', 'DbName', 'DbServer', 'DbPort', 'SapBaseUrl', 'ReportServiceBaseUrl', 'SalesOrderDefaultToVendorCode', 'SAPVersion', 'IsActive', 'CreatedAt'],
-    revealSensitiveColumns: ['SapPassword', 'ReportServicePassword', 'DbPassword'],
+    revealSensitiveColumns: ['SapPassword', 'ReportServicePassword', 'DbPassword', 'FormQueryDbPassword'],
     columnLabels: {
       DbDialect: 'Database Type',
       DbServer: 'Database Host / Server',
       DbPort: 'Database Port',
       DbName: 'Company DB / Schema',
+      FormQueryDbUser: 'SQL Content Read-only User',
+      FormQueryDbPassword: 'SQL Content Read-only Password',
       DbEncrypt: 'Use Encryption / SSL',
       DbTrustCert: 'Trust Server Certificate',
       ReportServiceDbInstance: 'Report Service DB Instance',
@@ -36,6 +38,8 @@ const ENTITY_CONFIGS = [
       DbServer: 'SQL Server host or SAP HANA host.',
       DbPort: 'Optional. HANA commonly uses 30015; SQL Server can usually leave this blank when using an instance name.',
       DbName: 'SQL Server database name or HANA schema/company database name.',
+      FormQueryDbUser: 'Required for published SQL Content layouts. Enter a HANA or SQL Server database account with SELECT-only access to this company database. A SAP Business One / Service Layer login is not a database login.',
+      FormQueryDbPassword: 'Enter the password matching the SQL Content database username, not a SAP Business One password or another database account password. The normal application database credential is never used for published layout queries.',
       ReportServiceDbInstance: 'Optional. Required by some SAP HANA Report Service logins, for example HDB@host:30113.',
     },
     columnOptions: {
@@ -79,6 +83,11 @@ const ENTITY_CONFIGS = [
         columns: ['DbDialect', 'DbServer', 'DbPort', 'DbName', 'DbUser', 'DbPassword', 'DbEncrypt', 'DbTrustCert'],
       },
       {
+        key: 'sql-content-query-connection',
+        title: 'SQL Content Query Connection',
+        columns: ['FormQueryDbUser', 'FormQueryDbPassword'],
+      },
+      {
         key: 'company-profile',
         title: 'Company Profile',
         columns: ['CompanyId', 'CompanyName', 'ServerName', 'LicenseServer', 'SAPVersion', 'IsActive', 'CreatedAt', 'UpdatedAt'],
@@ -109,7 +118,7 @@ const ENTITY_CONFIGS = [
     key: 'user-companies',
     tableName: 'UserCompanies',
     title: 'User Companies',
-    description: 'Company access assignments per user.',
+    description: 'Assign company access and the SAP login used for document numbering and permissions.',
     path: '/admin/user-companies',
     group: 'Security',
     lookupLabelColumns: ['Id'],
@@ -118,7 +127,7 @@ const ENTITY_CONFIGS = [
       SapUserCode: 'SAP User Code',
     },
     columnHelpText: {
-      SapUserCode: 'Optional SAP OUSR user code used to scope this user’s dashboard inside the selected company.',
+      SapUserCode: 'Required for document numbering series. Enter this application user’s SAP login code (OUSR.USER_CODE) in the selected company; its SAP permissions and series defaults will apply.',
     },
   },
   {
@@ -275,7 +284,7 @@ const buildEntitySchema = (config, schemaRows) => {
       name,
       label: config.columnLabels?.[name] || prettifyLabel(name),
       dataType: String(row.dataType || '').toLowerCase(),
-      nullable: String(row.isNullable || '').toUpperCase() === 'YES',
+      nullable: !(config.requiredColumns || []).includes(name) && String(row.isNullable || '').toUpperCase() === 'YES',
       maxLength: row.maxLength === null ? null : Number(row.maxLength),
       ordinalPosition: Number(row.ordinalPosition),
       isPrimaryKey,
@@ -838,6 +847,9 @@ const buildUpdateQuery = (schema, payload, recordId) => {
 const createRecord = async (entityKey, input, authContext) => {
   const schema = await getEntitySchema(entityKey);
   const payload = applyForcedValues(entityKey, await buildPayload(schema, input, 'create', authContext));
+  if (entityKey === 'user-companies') {
+    payload.SapUserCode = await require('./sapUserAssignmentValidation').validateSapUserAssignment(payload);
+  }
   if (entityKey === 'report-menus') {
     const query = buildInsertQueryWithOutput(schema, payload);
     await authDbService.transaction(async (db) => {
@@ -875,6 +887,14 @@ const updateRecord = async (entityKey, recordId, input, authContext) => {
   }
 
   const payload = applyForcedValues(entityKey, await buildPayload(schema, input, 'update', authContext));
+  if (entityKey === 'user-companies') {
+    const current = await authDbService.queryOne('SELECT CompanyId, SapUserCode FROM UserCompanies WHERE Id = @recordId', { recordId: numericRecordId });
+    if (!current) throw createHttpError(404, 'Record not found.');
+    if (payload.CompanyId !== undefined && Number(payload.CompanyId) !== Number(current.CompanyId) && payload.SapUserCode === undefined) {
+      payload.SapUserCode = null;
+    }
+    payload.SapUserCode = await require('./sapUserAssignmentValidation').validateSapUserAssignment({ ...current, ...payload });
+  }
   if (entityKey === 'report-menus') {
     const query = buildUpdateQuery(schema, payload, numericRecordId);
     await authDbService.transaction(async (db) => {

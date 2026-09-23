@@ -4,6 +4,9 @@ import { useSapItemCodeTab } from '../../../utils/sapTabNavigation';
 import { BASE_MATRIX_COLUMNS } from '../../../config/purchaseQuotationForm';
 import { getLineTotalsForDisplay } from '../../../utils/lineTotals';
 import { getOrderedVisibleMatrixColumns } from '../../../utils/formSettingsColumns';
+import { getReadableDocumentLineColumnWidth } from '../../../utils/documentLineColumnWidth';
+import { isBaseDocumentLine } from '../../../utils/documentUom';
+import useDocumentTableClipboard from '../../../components/sales-document/useDocumentTableClipboard';
 
 const COLUMN_WIDTHS = {
   itemNo: 160,
@@ -49,6 +52,17 @@ const COLUMN_WIDTHS = {
 
 const INDEX_COL_WIDTH = 42;
 const ACTION_COL_WIDTH = 48;
+const BASE_MATRIX_COLUMN_BY_KEY = new Map(BASE_MATRIX_COLUMNS.map((column) => [column.key, column]));
+
+const getColumnWidth = (column = {}) => getReadableDocumentLineColumnWidth(
+  column,
+  {
+    ...(BASE_MATRIX_COLUMN_BY_KEY.get(column.rendererKey || column.valueKey || column.key) || {}),
+    minWidth: COLUMN_WIDTHS[column.key]
+      || BASE_MATRIX_COLUMN_BY_KEY.get(column.rendererKey || column.valueKey || column.key)?.minWidth,
+    ...(column.field || {}),
+  },
+);
 
 const pickerButtonStyle = {
   padding: '0 6px',
@@ -118,20 +132,40 @@ export default function ContentsTab({
   matrixFields = BASE_MATRIX_COLUMNS,
   rowUdfFields = [],
   onRowUdfChange,
+  canPasteTable = false,
+  onPasteTable,
+  onClipboardFeedback,
 }) {
   const sapItemTab = useSapItemCodeTab({ lineItemOptions, onLineChange, onOpenItemModal });
   const baseMatrixFields = Array.isArray(matrixFields) && matrixFields.length ? matrixFields : BASE_MATRIX_COLUMNS;
-  const matrixColumns = baseMatrixFields.map((column) => ({
-      ...column,
-      minWidth: COLUMN_WIDTHS[column.key] || 125,
-    }));
+  const matrixColumns = baseMatrixFields.map((column) => {
+    const width = getColumnWidth(column);
+    return { ...column, width, minWidth: width };
+  });
 
   const visibleColumns = getOrderedVisibleMatrixColumns(matrixColumns, formSettings);
+  const clipboardColumns = React.useMemo(() => visibleColumns.map((column) => {
+    const setting = formSettings.matrixColumns?.[column.key] || formSettings.rowUdfs?.[column.key] || {};
+    return {
+      key: column.valueKey || column.rendererKey || column.key,
+      label: column.label || column.key,
+      isUdf: Boolean(column.isUdf || String(column.key || '').startsWith('U_')),
+      readOnly: Boolean(column.readOnly || setting.active === false),
+    };
+  }), [visibleColumns, formSettings]);
+  const { tableClipboardProps, tableClipboardUi } = useDocumentTableClipboard({
+    columns: clipboardColumns,
+    rows: lines,
+    columnOffset: 1,
+    canPaste: canPasteTable,
+    onPaste: onPasteTable,
+    onFeedback: onClipboardFeedback,
+  });
 
   const tableMinWidth =
     INDEX_COL_WIDTH +
     ACTION_COL_WIDTH +
-    visibleColumns.reduce((total, col) => total + col.minWidth, 0);
+    visibleColumns.reduce((total, col) => total + getColumnWidth(col), 0);
 
   const renderUdfCell = (field, line, i) => {
     const setting = formSettings.matrixColumns?.[field.key] || formSettings.rowUdfs?.[field.key] || {};
@@ -188,7 +222,8 @@ export default function ContentsTab({
   };
 
   const renderCell = (column, line, i, uomOpts, lineTotals) => {
-    if (column.isUdf) return renderUdfCell(column.field, line, i);
+    const rendererKey = column.rendererKey || column.valueKey || column.key;
+    if (column.isUdf && rendererKey !== 'itemNo') return renderUdfCell(column.field, line, i);
 
     const taxAmount = (() => {
       if (String(line.taxAmount ?? '').trim()) return line.taxAmount;
@@ -223,7 +258,9 @@ export default function ContentsTab({
       [column.key, column.sapField, column.fieldName].some((value) =>
         String(value || '').trim().toUpperCase().startsWith('U_')
       );
-    const sapUdfField = shouldUseSapUdfLookup ? findUdfFieldForColumn(column, rowUdfFields) : null;
+    const sapUdfField = shouldUseSapUdfLookup && rendererKey !== 'itemNo'
+      ? findUdfFieldForColumn(column, rowUdfFields)
+      : null;
     if (sapUdfField?.type === 'select' || sapUdfField?.options?.length) {
       return (
         <td key={column.key}>
@@ -268,13 +305,7 @@ export default function ContentsTab({
               value={line.itemNo || ''}
               onChange={(e) => onLineChange(i, e)}
               placeholder="Item Code"
-              list={`purchase-quotation-items-${i}`}
             />
-            <datalist id={`purchase-quotation-items-${i}`}>
-              {(lineItemOptions[i] || []).map((item) => (
-                <option key={item.ItemCode} value={item.ItemCode} />
-              ))}
-            </datalist>
             {onOpenItemModal ? (
               <button type="button" onClick={() => onOpenItemModal(i)} style={pickerButtonStyle} title="Select Item">
                 ...
@@ -382,6 +413,7 @@ export default function ContentsTab({
             name="uomCode"
             value={line.uomCode || ''}
             onChange={(e) => onLineChange(i, e)}
+            disabled={isBaseDocumentLine(line) || Number(line.uomEntry) < 0 || String(line.uomCode || '').toUpperCase() === 'MANUAL'}
           >
             <option value=""></option>
             {uomOpts.map((uom) => (
@@ -393,6 +425,17 @@ export default function ContentsTab({
               <option value={line.uomCode}>{line.uomCode}</option>
             )}
           </select>
+        </td>
+      ),
+      uomName: () => (
+        <td key="uomName">
+          <input
+            className="so-grid__input"
+            name="uomName"
+            value={line.uomNameEdited ? (line.uomName ?? '') : (line.uomName || line.uomCode || '')}
+            onChange={(e) => onLineChange(i, e)}
+            disabled={isBaseDocumentLine(line) || !(Number(line.uomEntry) < 0 || String(line.uomCode || '').toUpperCase() === 'MANUAL')}
+          />
         </td>
       ),
       loc: () => readonlyInput('loc', getBranchName ? getBranchName(line.branch) : line.loc),
@@ -456,8 +499,8 @@ export default function ContentsTab({
       'U_Fix_Brock_S',
     ]);
 
-    return cellRenderers[column.key]
-      ? cellRenderers[column.key]()
+    return cellRenderers[rendererKey]
+      ? cellRenderers[rendererKey]()
       : textInput(column.key, { numeric: numericFields.has(column.key) });
   };
 
@@ -472,13 +515,14 @@ export default function ContentsTab({
       <div className="so-grid-wrap so-grid-wrap--contents">
         <div className="so-grid-wrap__scroller so-grid-wrap__scroller--contents">
           <table
+            {...tableClipboardProps}
             className="so-grid so-grid--contents"
             style={{ width: 'max-content', minWidth: tableMinWidth, tableLayout: 'auto' }}
           >
             <colgroup>
               <col style={{ width: INDEX_COL_WIDTH }} />
               {visibleColumns.map((column) => (
-                <col key={column.key} style={{ width: column.minWidth }} />
+                <col key={column.key} style={{ width: getColumnWidth(column) }} />
               ))}
               <col style={{ width: ACTION_COL_WIDTH }} />
             </colgroup>
@@ -486,7 +530,7 @@ export default function ContentsTab({
               <tr>
                 <th style={{ width: INDEX_COL_WIDTH }}>#</th>
                 {visibleColumns.map((column) => (
-                  <th key={column.key} style={{ minWidth: column.minWidth }}>
+                  <th key={column.key} style={{ minWidth: getColumnWidth(column) }}>
                     {column.label}
                   </th>
                 ))}
@@ -519,6 +563,7 @@ export default function ContentsTab({
               })}
             </tbody>
           </table>
+          {tableClipboardUi}
         </div>
       </div>
     </div>

@@ -42,7 +42,18 @@ export const getCalculatedForRate = (line = {}, taxCodes = [], decimals = 5) => 
   return Number.isFinite(value) ? value.toFixed(decimals) : '';
 };
 
-export const getLineTotalsForDisplay = (line = {}, taxCodes = [], fallbackDecimals = 2) => {
+export const getLineTotalsForDisplay = (line = {}, taxCodes = [], fallbackDecimals = 2, { preferCalculated = false } = {}) => {
+  const quantity = firstDisplayValue(line.quantity, line.Quantity);
+  const unitPrice = firstDisplayValue(line.unitPrice, line.Price, line.UnitPrice);
+  if (preferCalculated && quantity !== '' && unitPrice !== '') {
+    const discount = parseLineNumber(line.stdDiscount ?? line.discountPercent ?? line.DiscountPercent ?? line.DiscPrcnt);
+    const net = parseLineNumber(quantity) * parseLineNumber(unitPrice) * (1 - discount / 100);
+    const taxRate = getTaxRateForCode(line.taxCode ?? line.TaxCode ?? line.VatGroup, taxCodes);
+    return {
+      beforeTax: net.toFixed(Math.max(0, fallbackDecimals)),
+      total: (net * (1 + taxRate / 100)).toFixed(Math.max(0, fallbackDecimals)),
+    };
+  }
   const beforeTax = firstDisplayValue(
     line.totalBeforeTax,
     line.totalLC,

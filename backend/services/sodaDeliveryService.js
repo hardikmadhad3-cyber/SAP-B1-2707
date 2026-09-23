@@ -119,7 +119,7 @@ const submitDelivery = async (...args) => {
 };
 
 const updateDelivery = async (...args) => {
-  await ensureSODADeliveryLineUdfs();
+  if (args[1]?.confirmation_only !== true) await ensureSODADeliveryLineUdfs();
   return deliveryService.updateDelivery(...args);
 };
 

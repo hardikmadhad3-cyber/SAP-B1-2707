@@ -14,7 +14,7 @@ function SalesEmployeeLookupModal({ isOpen, onClose, onSelect }) {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const windowFrame = useFloatingWindow({ isOpen, defaultTop: 48 });
+  const windowFrame = useFloatingWindow({ isOpen, defaultTop: 48, bounds: 'parent' });
 
   const loadRows = async (query = '') => {
     setLoading(true);
@@ -98,7 +98,14 @@ function SalesEmployeeLookupModal({ isOpen, onClose, onSelect }) {
             >
               {windowFrame.isMinimized ? '□' : '-'}
             </button>
-            <button type="button" aria-label="Restore" onClick={windowFrame.restoreWindow}>□</button>
+            <button
+              type="button"
+              aria-label={windowFrame.isMaximized ? 'Restore' : 'Maximize'}
+              title={windowFrame.isMaximized ? 'Restore' : 'Maximize'}
+              onClick={windowFrame.toggleMaximize}
+            >
+              []
+            </button>
             <button type="button" aria-label="Close" onClick={onClose}>x</button>
           </div>
         </div>

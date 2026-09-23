@@ -31,6 +31,7 @@ const postBillOfMaterialsReport = async (req, res) => {
     const result = await billOfMaterialsService.getBillOfMaterialsReport(criteria);
     res.json(result);
   } catch (error) {
+    console.error("[ERROR] Bill of Materials report failed:", error);
     res.status(error.status || 500).json({ message: getErrorMessage(error) });
   }
 };

@@ -48,5 +48,6 @@ test('keeps UoM and COGS fields separate from their SAP internal and distributio
   });
 
   expect(line.uomCode).toBe('');
+  expect(line.uomEntry).toBe(17);
   expect(line.cogsDistRule).toBe('');
 });

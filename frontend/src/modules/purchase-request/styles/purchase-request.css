@@ -1,3 +1,216 @@
 @import '../../purchase-order/styles/purchaseOrder.css';
 
 /* Purchase Request uses the shared purchase-side document shell. Keep only workflow-specific overrides here. */
+
+.purchase-request-classic .po-layout__main {
+  min-width: 0;
+}
+
+.purchase-request-classic .pr-header-card {
+  padding: 10px 12px 8px;
+}
+
+.purchase-request-classic .pr-header-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: clamp(18px, 4vw, 64px);
+  min-width: 0;
+}
+
+.purchase-request-classic .pr-header-column {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  min-width: 0;
+}
+
+.purchase-request-classic .pr-requester-control,
+.purchase-request-classic .pr-number-control,
+.purchase-request-classic .pr-lookup-control {
+  display: grid;
+  grid-template-columns: 105px minmax(0, 1fr);
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.purchase-request-classic .pr-number-control {
+  grid-template-columns: minmax(0, 1fr) minmax(72px, 0.65fr);
+}
+
+.purchase-request-classic .pr-lookup-control {
+  grid-template-columns: minmax(0, 1fr) 32px;
+}
+
+.purchase-request-classic .pr-email-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  margin-left: 124px;
+  color: #1b2d42;
+  font-size: 11px;
+}
+
+.purchase-request-classic .pr-reference-row {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 16px;
+  min-height: 30px;
+  margin-top: 8px;
+  font-size: 11px;
+}
+
+.purchase-request-classic .so-tab-panel {
+  min-height: 320px;
+  border: 1px solid #c6d0db;
+  border-top: 0;
+  border-radius: 0;
+  padding: 12px 14px 14px;
+}
+
+.purchase-request-classic .pr-contents-panel {
+  min-height: 0;
+  margin-bottom: 6px;
+  padding: 8px 14px 10px;
+}
+
+.purchase-request-classic .pr-document-lines-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.purchase-request-classic .pr-contents-panel .so-grid-wrap__scroller--contents {
+  flex: 0 1 auto;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.purchase-request-classic .pr-document-footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.65fr);
+  gap: 24px;
+  align-items: end;
+  margin-top: 4px;
+  padding: 8px 12px;
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.purchase-request-classic .pr-footer-notes {
+  display: grid;
+  gap: 5px;
+}
+
+.purchase-request-classic .pr-totals-panel {
+  display: grid;
+  gap: 5px;
+  align-self: end;
+}
+
+.purchase-request-classic .pr-total-row {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) minmax(130px, 0.85fr);
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.purchase-request-classic .pr-total-row > label {
+  text-align: right;
+  color: #1a1a1a;
+}
+
+.purchase-request-classic .pr-total-row input {
+  width: 100%;
+  height: 24px;
+  border: 1px solid #aab5c0;
+  background: #fff;
+  text-align: right;
+  padding: 2px 6px;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.purchase-request-classic .pr-total-row input:read-only {
+  background: #eef2f5;
+}
+
+.purchase-request-classic .pr-total-row--due {
+  padding-top: 3px;
+  border-top: 1px solid #b8c2cc;
+  font-weight: 700;
+}
+
+.purchase-request-classic .pr-total-lookup {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  gap: 4px;
+  min-width: 0;
+}
+
+.purchase-request-classic .pr-total-lookup button {
+  height: 24px;
+  border: 1px solid #9eabb8;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #fff 0%, #e8ecf0 100%);
+  cursor: pointer;
+}
+
+.purchase-request-classic .pr-line-lookup {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 26px;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+
+.purchase-request-classic .pr-line-lookup .so-grid__input {
+  text-align: left;
+}
+
+.purchase-request-classic .po-layout.is-sidebar-open .pr-header-grid {
+  gap: 16px;
+}
+
+.purchase-request-classic .po-layout.is-sidebar-open .pr-requester-control {
+  grid-template-columns: 86px minmax(0, 1fr);
+}
+
+.purchase-request-classic .po-layout.is-sidebar-open .po-field__label {
+  flex-basis: 96px;
+}
+
+.purchase-request-classic .po-layout.is-sidebar-open .pr-email-option {
+  margin-left: 104px;
+}
+
+@media (max-width: 900px) {
+  .purchase-request-classic .pr-header-grid,
+  .purchase-request-classic .pr-document-footer {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .purchase-request-classic .pr-email-option {
+    margin-left: 0;
+  }
+}
+
+@media (max-width: 1180px) {
+  .purchase-request-classic .po-layout.is-sidebar-open {
+    grid-template-columns: minmax(0, 1fr) minmax(260px, 290px);
+  }
+
+  .purchase-request-classic .po-layout.is-sidebar-open .pr-header-grid {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .purchase-request-classic .po-layout.is-sidebar-open .pr-email-option {
+    margin-left: 104px;
+  }
+}

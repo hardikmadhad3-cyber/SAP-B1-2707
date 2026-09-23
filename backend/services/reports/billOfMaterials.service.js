@@ -110,7 +110,7 @@ const getBillOfMaterialsReport = async (criteria = {}, options = {}) => {
         ISNULL(H.ToWH, '') AS WarehouseCode,
         ISNULL(W.WhsName, '') AS WarehouseName,
         CAST(ISNULL(P.Price, 0) AS DECIMAL(19, 6)) AS Price,
-        ISNULL(NULLIF(P.Currency, ''), NULLIF(PL.PrimCurr, ''), '') AS Currency,
+        COALESCE(NULLIF(P.Currency, ''), NULLIF(PL.PrimCurr, ''), '') AS Currency,
         1 AS Depth,
         ISNULL(H.TreeType, '') AS BomTypeCode,
         CAST('' AS NVARCHAR(50)) AS RouteSequence,
@@ -135,6 +135,76 @@ const getBillOfMaterialsReport = async (criteria = {}, options = {}) => {
     options,
   );
 
+  const MAX_BOM_DEPTH = 20;
+  const parentCodes = [...new Set(rows.map((row) => row.ItemCode).filter(Boolean))];
+  const childrenByParent = new Map();
+
+if (parentCodes.length) {
+    // Request-local traversal works on SQL Server and HANA without recursive SQL.
+    const resourceColumns = await queryRows(
+      "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = @tableName",
+      { tableName: "ORSC" }, options,
+    );
+    const resourceFields = new Set(resourceColumns.map((row) => normalizeText(row.COLUMN_NAME).toUpperCase()));
+    const hasResources = resourceFields.has("RESCODE") && resourceFields.has("RESNAME");
+    const directChildren = new Map();
+    let pendingCodes = parentCodes;
+    for (let level = 0; level < MAX_BOM_DEPTH && pendingCodes.length; level += 1) {
+      const nextCodes = new Set();
+      // Keep the 5,000-root report below SQL Server's parameter limit.
+      for (let offset = 0; offset < pendingCodes.length; offset += 500) {
+        const batch = pendingCodes.slice(offset, offset + 500);
+        const childParams = {};
+        const placeholders = batch.map((code, index) => {
+          const key = "parentCode" + index;
+          childParams[key] = code;
+          directChildren.set(code, []);
+          return "@" + key;
+        });
+        const childRows = await queryRows(
+          [
+            "SELECT L.Father AS ParentCode, L.Code AS ItemCode,",
+            "COALESCE(NULLIF(I.ItemName, ''), " + (hasResources ? "NULLIF(R.ResName, ''), " : "") + "'') AS ItemDescription,",
+            "COALESCE(NULLIF(I.InvntryUom, ''), NULLIF(U.UomCode, ''), NULLIF(U.UomName, ''), '') AS UoM,",
+            "CAST(ISNULL(L.Quantity, 0) AS DECIMAL(19, 6)) AS Quantity,",
+            "ISNULL(L.Warehouse, '') AS WarehouseCode, ISNULL(W.WhsName, '') AS WarehouseName,",
+            "CAST(ISNULL(L.Price, 0) AS DECIMAL(19, 6)) AS Price",
+            "FROM ITT1 L LEFT JOIN OITM I ON I.ItemCode = L.Code",
+            hasResources ? "LEFT JOIN ORSC R ON R.ResCode = L.Code" : "",
+            "LEFT JOIN OUOM U ON U.UomEntry = I.IUoMEntry",
+            "LEFT JOIN OWHS W ON W.WhsCode = L.Warehouse",
+            "WHERE L.Father IN (" + placeholders.join(", ") + ")",
+            "ORDER BY L.Father, L.ChildNum",
+          ].join("\n"), childParams, options,
+        );
+        childRows.forEach((node) => {
+          directChildren.get(node.ParentCode)?.push(node);
+          if (node.ItemCode) nextCodes.add(node.ItemCode);
+        });
+      }
+      pendingCodes = [...nextCodes].filter((code) => !directChildren.has(code));
+    }
+    parentCodes.forEach((rootCode) => {
+      const children = [];
+      const visit = (parentCode, level, ancestors) => {
+        if (level > MAX_BOM_DEPTH || ancestors.has(parentCode)) return;
+        const path = new Set(ancestors).add(parentCode);
+        (directChildren.get(parentCode) || []).forEach((node) => {
+          children.push({
+            itemCode: node.ItemCode || "", itemDescription: node.ItemDescription || "",
+            uom: node.UoM || "", quantity: Number(node.Quantity || 0),
+            whse: node.WarehouseCode || "", warehouseName: node.WarehouseName || "",
+            price: Number(node.Price || 0), currency: "",
+            parentCode: node.ParentCode || "", depth: level + 1,
+          });
+          visit(node.ItemCode, level + 1, path);
+        });
+      };
+      visit(rootCode, 1, new Set());
+      childrenByParent.set(rootCode, children);
+    });
+  }
+
   return {
     reportTitle: "Bill of Materials Report",
     generatedAt: new Date().toISOString(),
@@ -147,6 +217,7 @@ const getBillOfMaterialsReport = async (criteria = {}, options = {}) => {
     },
     rows: rows.map((row, index) => ({
       rowNo: Number(row.RowNo || index + 1),
+      children: childrenByParent.get(row.ItemCode) || [],
       itemCode: row.ItemCode || "",
       itemDescription: row.ItemDescription || "",
       uom: row.UoM || "",

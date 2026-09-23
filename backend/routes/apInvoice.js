@@ -13,6 +13,7 @@ router.get('/vendors/:vendorCode', apInvoiceController.getVendorDetails);
 router.get('/warehouse-state/:whsCode', apInvoiceController.getStateFromWarehouse);
 router.get('/open-grpo', apInvoiceController.getOpenGRPO);
 router.get('/grpo/:docEntry', apInvoiceController.getGRPOForCopy);
+router.get('/purchase-order/:docEntry/copy', apInvoiceController.getPurchaseOrderForCopy);
 router.get('/freight-charges', apInvoiceController.getFreightCharges);
 router.get('/:docEntry', apInvoiceController.getAPInvoiceByDocEntry);
 router.post('/submit', apInvoiceController.submitAPInvoice);

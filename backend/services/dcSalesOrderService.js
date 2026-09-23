@@ -107,7 +107,7 @@ const submitSalesOrder = async (...args) => {
 };
 
 const updateSalesOrder = async (...args) => {
-  await ensureDCSalesOrderLineUdfs();
+  if (args[1]?.confirmation_only !== true) await ensureDCSalesOrderLineUdfs();
   return salesOrderService.updateSalesOrder(...args);
 };
 

@@ -6,11 +6,14 @@ const deliveryDb = require('../services/deliveryDbService');
 const { _buildDocumentLinePayload } = require('../services/deliveryService');
 
 const originalResolveDeliveryLineUomEntry = deliveryDb.resolveDeliveryLineUomEntry;
+const originalGetBaseSalesOrderLineItemCode = deliveryDb.getBaseSalesOrderLineItemCode;
 test.before(() => {
   deliveryDb.resolveDeliveryLineUomEntry = async () => null;
+  deliveryDb.getBaseSalesOrderLineItemCode = async () => 'TAX-ITEM';
 });
 test.after(() => {
   deliveryDb.resolveDeliveryLineUomEntry = originalResolveDeliveryLineUomEntry;
+  deliveryDb.getBaseSalesOrderLineItemCode = originalGetBaseSalesOrderLineItemCode;
 });
 
 test('maps Delivery batch, serial, and bin allocations to Service Layer collections', async () => {
@@ -38,6 +41,21 @@ test('maps Delivery batch, serial, and bin allocations to Service Layer collecti
     BaseLineNumber: 0,
     SerialAndBatchNumbersBaseLine: 0,
   }]);
+});
+
+test('preserves selected delivery tax code in standalone and copied Service Layer payloads', async () => {
+  for (const field of ['taxCode', 'TaxCode', 'VatGroup']) {
+    for (const based of [false, true]) {
+      const payload = await _buildDocumentLinePayload({
+        itemNo: 'TAX-ITEM', quantity: '2', unitPrice: '100', whse: '01',
+        [field]: ' 5-RGST ',
+        ...(based ? { baseEntry: 41, baseType: 17, baseLine: 0 } : {}),
+      }, {}, false, {}, new Set(), 0, true);
+      assert.equal(payload.TaxCode, '5-RGST');
+      assert.equal(payload.TaxTotal, undefined);
+      if (based) assert.equal(payload.BaseType, 17);
+    }
+  }
 });
 
 test('preserves SAP base references for an A/R Reserve Invoice row', async () => {

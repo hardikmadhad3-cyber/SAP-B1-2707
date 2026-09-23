@@ -103,9 +103,14 @@
   font-weight: 700;
 }
 
-.ipl-page .ipl-lookup-btn:hover {
+.ipl-page .ipl-lookup-btn:hover:not(:disabled) {
   border-color: var(--sap-primary);
   background: var(--sap-primary-soft);
+}
+
+.ipl-page .ipl-lookup-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .ipl-criteria__property-row input[readonly] {
@@ -126,6 +131,26 @@
   gap: 6px;
   align-items: center;
   margin-bottom: 24px;
+}
+
+.ipl-date-field {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 26px;
+  gap: 4px;
+}
+
+.ipl-date-native-input {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .ipl-criteria__empty-panel {
@@ -282,8 +307,8 @@
 
 .ipl-warehouse-range {
   display: grid;
-  grid-template-columns: 90px 40px 68px 24px 68px;
-  gap: 7px;
+  grid-template-columns: 90px 40px minmax(90px, 1fr) 24px minmax(90px, 1fr);
+  gap: 8px;
   align-content: start;
   align-items: center;
   padding-top: 24px;
@@ -298,6 +323,11 @@
 .ipl-warehouse-range label input {
   width: auto;
   height: auto;
+}
+
+.ipl-warehouse-range .item-list-criteria__lookup-wrap {
+  grid-template-columns: minmax(0, 1fr) 26px;
+  gap: 4px;
 }
 
 .ipl-bottom-options {

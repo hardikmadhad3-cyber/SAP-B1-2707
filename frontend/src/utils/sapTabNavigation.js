@@ -74,7 +74,11 @@ export const focusElement = (element) => {
   if (!element) return false;
   element.focus({ preventScroll: true });
   element.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
-  element.select?.();
+  const canSelectText = element instanceof HTMLTextAreaElement || (
+    element instanceof HTMLInputElement
+    && !['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(element.type)
+  );
+  if (canSelectText) element.select();
   return document.activeElement === element;
 };
 
@@ -578,8 +582,12 @@ export const installSapTabNavigation = () => {
     }
     if (openLookupFromFieldIfNeeded(event, target)) return;
 
-    event.preventDefault();
-    focusNextSapField(target, event.shiftKey ? -1 : 1);
+    // Let the browser move between ordinary document fields. React-controlled
+    // matrix cells can rerender during change/blur; cancelling Tab and looking
+    // up the old element after that rerender can resolve back to the same cell
+    // (most visibly on Discount %). Custom focus remains limited to lookups,
+    // lookup dialogs, and the first/last document boundary.
+    keepNativeTabInsideDocument(event, target);
   };
 
   document.addEventListener('focusin', handleFocusIn);

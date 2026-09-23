@@ -92,6 +92,22 @@ const isLengthCheckedUdfType = (field = {}) => {
   return !['number', 'date', 'time', 'checkbox'].includes(type);
 };
 
+const isNumericUdfType = (field = {}) => (
+  field && typeof field === 'object' && String(field.type || '').trim().toLowerCase() === 'number'
+);
+
+// resolveUdfOptionValue works in text so it can match a value against a valid
+// value list, which leaves a numeric UDF as a string. The Service Layer types
+// those properties as numbers and quietly stores a quoted number as 0, so the
+// value has to go back to a number before it is sent.
+const toSapNumericValue = (value) => {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  const text = String(value ?? '').trim();
+  if (!text || !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(text)) return undefined;
+  const numericValue = Number(text);
+  return Number.isFinite(numericValue) ? numericValue : undefined;
+};
+
 const normalizeUdfValue = (value, field = null, key = '') => {
   if (isBlankUdfValue(value)) return null;
 
@@ -113,6 +129,18 @@ const normalizeUdfValue = (value, field = null, key = '') => {
       `${String(normalizedValue).length} exceeds SAP max length ${maxLength}.`
     );
     return undefined;
+  }
+
+  if (isNumericUdfType(field)) {
+    const numericValue = toSapNumericValue(normalizedValue);
+    if (numericValue === undefined) {
+      console.warn(
+        `[UDF Payload] Skipping ${key || field?.key || 'UDF'} because ` +
+        `"${normalizedValue}" is not a valid number.`
+      );
+      return undefined;
+    }
+    return numericValue;
   }
 
   return normalizedValue;
@@ -226,10 +254,12 @@ const applyUdfsRobust = (target, udfs, udfMetadata = null, throwOnUnknownUdf = f
 
 module.exports = {
   applyUdfValues,
+  isNumericUdfType,
   applyUdfsRobust,
   isBlankUdfValue,
   isSapUdfKey,
   normalizeUdfValue,
   normalizeUdfValues,
+  toSapNumericValue,
   toUdfDefinitionMap,
 };

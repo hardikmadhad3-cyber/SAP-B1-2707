@@ -6,7 +6,6 @@ import PropertiesSelectionModal from "../components/reports/PropertiesSelectionM
 import useFloatingWindow from "../components/reports/useFloatingWindow";
 import { useSapWindowTaskbarActions } from "../components/SapWindowTaskbarContext";
 import { fetchGeneralLedgerLookups, fetchGeneralLedgerReport } from "../api/generalLedgerApi";
-import { createActiveCompanyScopedRouteState } from "../utils/companyStorageScope";
 import "../styles/sales-analysis-report.css";
 import "../styles/inventory-audit-report.css";
 import "../styles/general-ledger-report.css";
@@ -250,9 +249,7 @@ function GeneralLedgerReportPage() {
       return;
     }
     const [path, stateKey] = routes[row.transType];
-    navigate(path, {
-      state: createActiveCompanyScopedRouteState({ [stateKey]: docEntry }),
-    });
+    navigate(path, { state: { [stateKey]: docEntry } });
   };
 
   const groupedRows = useMemo(() => {

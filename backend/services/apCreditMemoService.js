@@ -1,10 +1,13 @@
+const { buildDocumentConfirmationPayload, updateDocumentConfirmationOnly } = require('./documentConfirmationUtils');
 const sapService = require('./sapService');
+const { buildDocumentRoundingPayload } = require('./documentRoundingPayloadUtils');
 const apCreditMemoDb = require('./apCreditMemoDbService');
 const purchaseOrderDb = require('./purchaseOrderDbService');
 const { getDocumentFreightCharges } = require('./freightChargesDbService');
 const { buildDocumentAdditionalExpenses } = require('./freightPayloadUtils');
 const { getUdfDefinitions } = require('./udfMetadataService');
 const { applyUdfValues, isBlankUdfValue, normalizeUdfValue } = require('./udfPayloadUtils');
+const { buildDocumentLineUdfValues } = require('./documentLineUdfPayloadUtils');
 const { buildDocumentSeriesPayload } = require('./documentSeriesPayloadUtils');
 const { resolveHSNCodeToAbsEntry, resolveSACCodeToAbsEntry } = require('./hsnCodeDbService');
 const {
@@ -84,9 +87,13 @@ const setAllowedLineUdf = (target, allowedLineUdfs, aliases, value) => {
   if (key) target[key] = value;
 };
 
-const buildLineUdfPayload = (line = {}, allowedLineUdfs = new Set()) => {
-  const udfs = { ...(line.udf || {}) };
+const buildLineUdfPayload = (line = {}, allowedLineUdfs = new Set(), lineUdfDefinitionsByKey = null) => {
+  // The shared resolver already covers every mapping below; the local table is
+  // kept only for the few A/P Credit Memo line fields it names differently.
+  const udfs = buildDocumentLineUdfValues(line, { definitions: lineUdfDefinitionsByKey });
   AP_CREDIT_MEMO_LINE_UDF_MAPPINGS.forEach((mapping) => {
+    const hasResolvedValue = mapping.aliases.some((alias) => hasValue(udfs[alias]));
+    if (hasResolvedValue) return;
     setAllowedLineUdf(udfs, allowedLineUdfs, mapping.aliases, mapping.getValue(line));
   });
   return udfs;
@@ -468,10 +475,11 @@ const submitAPCreditMemo = async (payload) => {
     const header = validatedPayload.header;
     const lines = validatedPayload.lines;
     const { header_udfs } = payload;
-    const [allowedHeaderUdfs, allowedLineUdfs, headerUdfDefinitionsByKey] = await Promise.all([
+    const [allowedHeaderUdfs, allowedLineUdfs, headerUdfDefinitionsByKey, lineUdfDefinitionsByKey] = await Promise.all([
       getAllowedUdfKeys('ORPC'),
       getAllowedUdfKeys('RPC1'),
       getUdfDefinitionsByKey('ORPC'),
+      getUdfDefinitionsByKey('RPC1'),
     ]);
     console.log('Validated Payload:', { header, lines, header_udfs });
     if (!String(header.gstin || '').trim()) {
@@ -489,6 +497,15 @@ const submitAPCreditMemo = async (payload) => {
         Quantity: parseFloat(l.quantity) || 0,
         WarehouseCode: l.whse || '',
       };
+      if (hasValue(l.requiredDate)) {
+        docLine.RequiredDate = formatDateForSAP(l.requiredDate);
+      }
+      const packageQuantity = optionalNumber(
+        l.noOfPackages ?? l.NoOfPackages ?? l.packageQuantity ?? l.PackageQuantity ?? l.PackQty
+      );
+      if (packageQuantity !== undefined) {
+        docLine.PackageQuantity = packageQuantity;
+      }
       const lineWtaxLiable = yesNo(l.wtaxLiable ?? l.wTaxLiable);
       if (lineWtaxLiable) {
         docLine.WTLiable = lineWtaxLiable;
@@ -528,8 +545,18 @@ const submitAPCreditMemo = async (payload) => {
         if (await isValidTaxCode(l.taxCode)) {
           docLine.TaxCode = String(l.taxCode).trim();
         }
-        const uomValue = l.uomNameEdited ? (l.uomName ?? l.UoMName ?? l.UomName ?? l.UnitMsr ?? l.unitMsr) : (l.uomName || l.UoMName || l.UomName || l.UnitMsr || l.unitMsr || l.uomCode);
-        if (String(uomValue || '').trim()) docLine.UoMCode = String(uomValue).trim();
+        const manualUomEntry = Number(l.uomEntry ?? l.UoMEntry);
+        const usesManualUom = l.uomNameEdited || (Number.isInteger(manualUomEntry) && manualUomEntry < 0);
+        const uomValue = usesManualUom ? (l.uomName ?? l.UoMName ?? l.UomName ?? l.UnitMsr ?? l.unitMsr ?? l.uomCode) : (l.uomCode || l.UoMCode || l.UomCode || l.uomName || l.UoMName || l.UomName || l.UnitMsr || l.unitMsr);
+        if (String(uomValue || '').trim()) {
+          if (usesManualUom) {
+            docLine.MeasureUnit = String(uomValue).trim();
+          } else if (Number.isInteger(manualUomEntry) && manualUomEntry > 0) {
+            docLine.UoMEntry = manualUomEntry;
+          } else {
+            docLine.UoMCode = String(uomValue).trim();
+          }
+        }
       }
 
       if (l.stdDiscount && Number(l.stdDiscount) > 0) {
@@ -545,7 +572,7 @@ const submitAPCreditMemo = async (payload) => {
         docLine.SACEntry = sacEntry;
       }
 
-      applyUdfValues(docLine, buildLineUdfPayload(l, allowedLineUdfs), allowedLineUdfs);
+      applyUdfValues(docLine, buildLineUdfPayload(l, allowedLineUdfs, lineUdfDefinitionsByKey), allowedLineUdfs);
       documentLines.push(docLine);
     }
 
@@ -561,7 +588,8 @@ const submitAPCreditMemo = async (payload) => {
       NumAtCard: header.salesContractNo || '',
       DiscountPercent: header.discount ? parseFloat(header.discount) : 0,
       DocumentAdditionalExpenses: documentAdditionalExpenses,
-      Rounding: yesNo(header.rounding),
+      ...buildDocumentRoundingPayload(header),
+      ...buildDocumentConfirmationPayload(header),
       DocumentLines: documentLines,
     };
 
@@ -604,6 +632,8 @@ const submitAPCreditMemo = async (payload) => {
 };
 
 const updateAPCreditMemo = async (docEntry, payload) => {
+  const confirmationResult = await updateDocumentConfirmationOnly(docEntry, payload, 'PurchaseCreditNotes', sapService);
+  if (confirmationResult) return confirmationResult;
   try {
     const validatedPayload = await validateAPCreditMemoPayload(payload, docEntry);
     const header = validatedPayload.header;
@@ -618,7 +648,8 @@ const updateAPCreditMemo = async (docEntry, payload) => {
       JournalMemo: header.journalRemark || '',
       DiscountPercent: header.discount ? parseFloat(header.discount) : 0,
       DocumentAdditionalExpenses: documentAdditionalExpenses,
-      Rounding: yesNo(header.rounding),
+      ...buildDocumentRoundingPayload(header),
+      ...buildDocumentConfirmationPayload(header),
     };
 
     if (header.freight) sapPayload.TotalExpenses = parseFloat(header.freight);

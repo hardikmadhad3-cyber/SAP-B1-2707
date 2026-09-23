@@ -23,6 +23,30 @@ const firstItemValue = (item = {}, keys = []) => {
   return hasValue(value) ? String(value) : '';
 };
 
+export const getItemPurchaseUom = (item = {}, uomGroups = []) => {
+  if (uomGroups.length) return getItemDefaultUom(item, uomGroups, 'purchase');
+  const rawEntry = item.PurchaseUomEntry ?? item.PUoMEntry;
+  const numericEntry = Number(rawEntry);
+  const rawGroupEntry = item.UoMGroupEntry ?? item.UgpEntry;
+  const numericGroupEntry = Number(rawGroupEntry);
+  const uomCode = firstItemValue(item, [
+    'PurchaseUomCode', 'PurchaseUoMCode', 'UomCode', 'PurchaseUnit', 'InventoryUOM',
+  ]);
+  const uomName = firstItemValue(item, [
+    'PurchaseUomName', 'PurchaseUoMName', 'PurchaseUnit', 'UomName',
+  ]) || uomCode;
+  const explicitUomEntry = Number.isInteger(numericEntry) && numericEntry !== 0 ? numericEntry : null;
+  const isManualGroup = Number.isInteger(numericGroupEntry) && numericGroupEntry <= 0;
+  const uomEntry = explicitUomEntry ?? (isManualGroup && (uomName || uomCode) ? -1 : null);
+  return {
+    uomEntry,
+    uomCode,
+    uomName,
+    uomNameEdited: false,
+    uomGroupEntry: rawGroupEntry ?? null,
+  };
+};
+
 export const hydrateDocumentLineFromItem = (line = {}, item = {}, {
   side = 'sales',
   hsnCode = '',
@@ -34,11 +58,13 @@ export const hydrateDocumentLineFromItem = (line = {}, item = {}, {
   syncUnitPriceUdf = false,
   calcLineTotal,
   formatTotal,
+  uomGroups = [],
 } = {}) => {
   const itemCode = item.ItemCode || item.itemCode || '';
-  const uomCode = side === 'purchase'
-    ? String(item.PurchaseUnit || item.InventoryUOM || '').trim()
-    : String(item.SalesUnit || item.InventoryUOM || '').trim();
+  const selectedUom = getItemDefaultUom(item, uomGroups, side);
+  const uomCode = selectedUom.uomCode || (side === 'purchase'
+    ? getItemPurchaseUom(item).uomCode
+    : String(item.SalesUnit || item.InventoryUOM || '').trim());
   const defaultWarehouse =
     item.DefaultWarehouse ||
     item.defaultWarehouse ||
@@ -97,7 +123,7 @@ export const hydrateDocumentLineFromItem = (line = {}, item = {}, {
     itemDescription: item.ItemName || item.itemName || line.itemDescription || '',
     hsnCode: hsnCode || item.HSNCode || item.SWW || item.U_HSNCode || line.hsnCode || '',
     uomCode: uomCode || line.uomCode || '',
-    uomName: line.uomName || uomCode || line.uomCode || '',
+    uomName: selectedUom.uomName || line.uomName || uomCode || line.uomCode || '',
     countryOfOrigin: item.ItemCountryOrg || item.CountryOrg || line.countryOfOrigin || '',
     sacCode: item.SACEntry != null ? String(item.SACEntry) : (line.sacCode || ''),
     glAccount: line.glAccount || salesGlAccount || '',
@@ -109,6 +135,9 @@ export const hydrateDocumentLineFromItem = (line = {}, item = {}, {
     inventoryUOM: item.InventoryUOM || line.inventoryUOM || '',
     batchManaged: item.BatchManaged === 'Y' || item.ManageBatchNumbers === 'tYES' || item.ManBtchNum === 'Y' || line.batchManaged || false,
   };
+
+  if (uomGroups.length) Object.assign(next, selectedUom);
+  else if (side === 'purchase') Object.assign(next, getItemPurchaseUom(item));
 
   if (side === 'sales') {
     next.stcode = line.stcode || '';
@@ -139,3 +168,4 @@ export const hydrateDocumentLineFromItem = (line = {}, item = {}, {
 
   return next;
 };
+import { getItemDefaultUom } from './documentUom';

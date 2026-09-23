@@ -485,6 +485,15 @@
   box-shadow: 0 14px 24px rgba(217, 45, 32, 0.16);
 }
 
+.admin-panel-button--compact {
+  width: auto;
+  min-width: 0;
+  padding: 7px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  box-shadow: none;
+}
+
 .admin-entity-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(340px, 0.95fr);

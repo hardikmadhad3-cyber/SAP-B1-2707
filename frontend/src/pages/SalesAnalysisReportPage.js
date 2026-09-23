@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import BusinessPartnerLookupModal from '../components/reports/BusinessPartnerLookupModal';
@@ -17,7 +17,6 @@ import {
   fetchSalesEmployeeSalesAnalysisReport,
 } from '../api/salesAnalysisApi';
 import { exportReportAsExcel, exportReportAsPdf } from '../utils/reportExportUtils';
-import { createActiveCompanyScopedRouteState } from '../utils/companyStorageScope';
 import '../styles/sales-analysis-report.css';
 
 const TAB_OPTIONS = [
@@ -92,6 +91,14 @@ const parseSapDateToIso = (value) => {
   const [, dayText, monthText, yearText] = match;
   const year = yearText.length === 2 ? `20${yearText}` : yearText;
   return `${year}-${monthText.padStart(2, '0')}-${dayText.padStart(2, '0')}`;
+};
+
+const isoToSapDate = (value) => {
+  const match = String(value || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return '';
+
+  const [, year, month, day] = match;
+  return `${day}/${month}/${year.slice(2)}`;
 };
 
 const formatAmount = (value, currencyCode = '') => {
@@ -234,6 +241,7 @@ function SalesAnalysisReportPage() {
   const [showItemLookup, setShowItemLookup] = useState(false);
   const [showSalesEmployeeLookup, setShowSalesEmployeeLookup] = useState(false);
   const [activeCustomerLookupTarget, setActiveCustomerLookupTarget] = useState('customerSelection');
+  const [activeCustomerLookupField, setActiveCustomerLookupField] = useState('codeFrom');
   const [activeItemLookupField, setActiveItemLookupField] = useState('codeFrom');
   const [activeSalesEmployeeLookupTarget, setActiveSalesEmployeeLookupTarget] = useState({
     section: 'salesEmployeeSelection',
@@ -243,6 +251,7 @@ function SalesAnalysisReportPage() {
   const [itemProperties, setItemProperties] = useState(DEFAULT_ITEM_PROPERTIES);
   const [customerGroups, setCustomerGroups] = useState([{ code: '', name: 'All' }]);
   const [itemGroups, setItemGroups] = useState([{ code: '', name: 'All' }]);
+  const dateNativeInputRefs = useRef({});
   const criteriaWindow = useFloatingWindow({
     isOpen: true,
     defaultTop: 22,
@@ -416,6 +425,9 @@ function SalesAnalysisReportPage() {
 
       setReportResult(response);
       setStatusMessage('');
+      if (!criteriaWindow.isMinimized) {
+        criteriaWindow.toggleMinimize();
+      }
     } catch (error) {
       const selectionType =
         formState.activeTab === 'items'
@@ -437,6 +449,9 @@ function SalesAnalysisReportPage() {
     setReportResult(null);
     setDetailReport(null);
     setStatusMessage('');
+    if (criteriaWindow.isMinimized) {
+      criteriaWindow.toggleMinimize();
+    }
   };
 
   const handleCloseCriteriaWindow = () => {
@@ -447,6 +462,9 @@ function SalesAnalysisReportPage() {
   const handleCloseReportWindow = () => {
     setReportResult(null);
     setDetailReport(null);
+    if (criteriaWindow.isMinimized) {
+      criteriaWindow.toggleMinimize();
+    }
   };
 
   const handleMinimizeCriteriaWindow = () => {
@@ -700,14 +718,15 @@ function SalesAnalysisReportPage() {
     }
 
     navigate('/ar-invoice', {
-      state: createActiveCompanyScopedRouteState({
+      state: {
         arInvoiceDocEntry: docEntry,
-      }),
+      },
     });
   };
 
   const handleCustomerSelect = (businessPartner) => {
     const targetSelection = activeCustomerLookupTarget || 'customerSelection';
+    const targetField = activeCustomerLookupField || 'codeFrom';
     const selectedCode = String(businessPartner?.CardCode || '');
 
     setFormState((current) => ({
@@ -718,14 +737,14 @@ function SalesAnalysisReportPage() {
             ...current.itemSelection,
             secondaryCustomerSelection: {
               ...current.itemSelection.secondaryCustomerSelection,
-              codeFrom: selectedCode,
+              [targetField]: selectedCode,
             },
           },
         }
         : {
           customerSelection: {
             ...current.customerSelection,
-            codeFrom: selectedCode,
+            [targetField]: selectedCode,
           },
         }),
     }));
@@ -733,6 +752,7 @@ function SalesAnalysisReportPage() {
       `Customer ${businessPartner?.CardCode || ''}${businessPartner?.CardName ? ` - ${businessPartner.CardName}` : ''} selected for Sales Analysis.`,
     );
     setActiveCustomerLookupTarget('customerSelection');
+    setActiveCustomerLookupField('codeFrom');
   };
 
   const handleItemSelect = (item) => {
@@ -868,8 +888,46 @@ function SalesAnalysisReportPage() {
     );
   };
 
+  const getDateNativeInputRef = (key, field) => (node) => {
+    dateNativeInputRefs.current[`${key}-${field}`] = node;
+  };
+
+  const openDatePicker = (key, field) => {
+    const input = dateNativeInputRefs.current[`${key}-${field}`];
+    if (!input) return;
+
+    if (typeof input.showPicker === 'function') {
+      input.showPicker();
+    } else {
+      input.focus();
+      input.click();
+    }
+  };
+
   const renderDateRow = (key, label) => {
     const range = formState.dateRanges[key];
+
+    const renderDatePickerButton = (field) => (
+      <React.Fragment key={field}>
+        <input
+          ref={getDateNativeInputRef(key, field)}
+          type="date"
+          className="sales-analysis__date-native-input"
+          tabIndex={-1}
+          value={parseSapDateToIso(range[field])}
+          onChange={(event) => updateDateRange(key, field, isoToSapDate(event.target.value))}
+        />
+        <button
+          type="button"
+          className="sales-analysis__picker-btn"
+          aria-label={`Open ${field === 'from' ? 'From' : 'To'} date picker`}
+          onClick={() => openDatePicker(key, field)}
+        >
+          ...
+        </button>
+      </React.Fragment>
+    );
+
     return (
       <div className="sales-analysis__date-row" key={key}>
         <label className="sales-analysis__checkbox-line">
@@ -888,17 +946,14 @@ function SalesAnalysisReportPage() {
             value={range.from}
             onChange={(event) => updateDateRange(key, 'from', event.target.value)}
           />
+          {renderDatePickerButton('from')}
           <span className="sales-analysis__field-label">To</span>
           <input
             type="text"
             value={range.to}
             onChange={(event) => updateDateRange(key, 'to', event.target.value)}
           />
-          {key === 'postingDate' ? (
-            <button type="button" className="sales-analysis__picker-btn" aria-label="Open picker">
-              ...
-            </button>
-          ) : null}
+          {renderDatePickerButton('to')}
         </div>
       </div>
     );
@@ -947,6 +1002,7 @@ function SalesAnalysisReportPage() {
                   setActiveItemLookupField('codeFrom');
                   setShowItemLookup(true);
                 } else {
+                  setActiveCustomerLookupField('codeFrom');
                   setActiveCustomerLookupTarget(selectionKey);
                   setShowCustomerLookup(true);
                 }
@@ -971,8 +1027,14 @@ function SalesAnalysisReportPage() {
                 className="sales-analysis__lookup-btn"
                 aria-label="Lookup to code"
                 onClick={() => {
-                  setActiveItemLookupField('codeTo');
-                  setShowItemLookup(true);
+                  if (selectionKey === 'itemSelection') {
+                    setActiveItemLookupField('codeTo');
+                    setShowItemLookup(true);
+                  } else {
+                    setActiveCustomerLookupField('codeTo');
+                    setActiveCustomerLookupTarget(selectionKey);
+                    setShowCustomerLookup(true);
+                  }
                 }}
               >
                 ...
@@ -1111,7 +1173,7 @@ function SalesAnalysisReportPage() {
               ? customerPropertiesSummary
               : itemPropertiesSummary,
           enableLookup: formState.activeTab === 'customers' || selectionKey === 'itemSelection',
-          enableToLookup: selectionKey === 'itemSelection',
+          enableToLookup: formState.activeTab === 'customers' || selectionKey === 'itemSelection',
         })}
 
         {formState.activeTab === 'items' ? (
@@ -1136,6 +1198,7 @@ function SalesAnalysisReportPage() {
                   groupOptions: customerGroups,
                   propertiesSummary: secondaryCustomerPropertiesSummary,
                   enableLookup: true,
+                  enableToLookup: true,
                   nestedSection: 'secondaryCustomerSelection',
                 })}
 

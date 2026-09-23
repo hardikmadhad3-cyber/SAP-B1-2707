@@ -1,10 +1,21 @@
 import React from 'react';
 
-export default function AccountingTab({ header, onHeaderChange, paymentTermOptions }) {
+export default function AccountingTab({
+  header,
+  onHeaderChange,
+  paymentTermOptions,
+  referenceDocuments = [],
+  onOpenReferenceDocuments,
+  isEditable = true,
+}) {
+  const referenceCount = referenceDocuments.filter((row) => (
+    String(row.transactionType || row.docNumber || row.docEntry || row.extDocNumber || '').trim()
+  )).length;
+
   return (
-    <div style={{ display: 'flex', gap: 20 }}>
+    <div className="grpo-accounting-layout">
       {/* LEFT */}
-      <div style={{ flex: 1 }}>
+      <div className="grpo-accounting-layout__column">
         <div className="po-field">
           <label className="po-field__label">Journal Remark</label>
           <input className="po-field__input" name="journalRemark" value={header.journalRemark} onChange={onHeaderChange} />
@@ -64,7 +75,7 @@ export default function AccountingTab({ header, onHeaderChange, paymentTermOptio
       </div>
 
       {/* RIGHT */}
-      <div style={{ flex: 1 }}>
+      <div className="grpo-accounting-layout__column">
         <div className="po-field">
           <label className="po-field__label">Balance Payment</label>
           <input className="po-field__input" name="balancePaymentAgainst" value={header.balancePaymentAgainst} onChange={onHeaderChange} />
@@ -114,6 +125,26 @@ export default function AccountingTab({ header, onHeaderChange, paymentTermOptio
         <div className="po-field">
           <label className="po-field__label">Order Number</label>
           <input className="po-field__input" name="orderNumber" value={header.orderNumber} onChange={onHeaderChange} />
+        </div>
+        <div className="po-field">
+          <label className="po-field__label">Referenced Document</label>
+          <div className="grpo-reference-control">
+            <input
+              className="po-field__input grpo-reference-control__input"
+              readOnly
+              value={referenceCount ? `(${referenceCount})` : ''}
+              aria-label="Referenced Document count"
+            />
+            <button
+              type="button"
+              className="po-btn grpo-reference-control__button"
+              onClick={onOpenReferenceDocuments}
+              disabled={!isEditable && !referenceCount}
+              aria-label="Open Referenced Documents"
+            >
+              ...
+            </button>
+          </div>
         </div>
       </div>
     </div>

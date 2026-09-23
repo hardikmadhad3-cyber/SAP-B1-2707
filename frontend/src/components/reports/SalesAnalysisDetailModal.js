@@ -227,7 +227,7 @@ function SalesAnalysisDetailModal({
 }) {
   const quarterChartRef = useRef(null);
   const monthChartRef = useRef(null);
-  const windowFrame = useFloatingWindow({ isOpen, defaultTop: 20 });
+  const windowFrame = useFloatingWindow({ isOpen, defaultTop: 20, bounds: 'parent' });
   const chartSeries = useMemo(() => {
     const baseQuarterValues = {
       grossProfit: [0, 0, 0, 0],
@@ -389,7 +389,14 @@ function SalesAnalysisDetailModal({
             >
               {windowFrame.isMinimized ? '□' : '-'}
             </button>
-            <button type="button" aria-label="Restore">□</button>
+            <button
+              type="button"
+              aria-label={windowFrame.isMaximized ? 'Restore' : 'Maximize'}
+              title={windowFrame.isMaximized ? 'Restore' : 'Maximize'}
+              onClick={windowFrame.toggleMaximize}
+            >
+              []
+            </button>
             <button type="button" aria-label="Close" onClick={onClose}>x</button>
           </div>
         </div>

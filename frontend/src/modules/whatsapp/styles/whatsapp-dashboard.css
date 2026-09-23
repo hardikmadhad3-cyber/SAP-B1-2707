@@ -1,0 +1,278 @@
+.wa-page {
+  padding: 12px;
+  font-family: var(--sap-font-family);
+  color: var(--sap-text);
+  height: calc(100vh - 96px);
+  display: flex;
+  flex-direction: column;
+}
+
+.wa-stats {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.wa-stat-card {
+  flex: 1;
+  border: 1px solid var(--sap-border);
+  background: var(--sap-surface);
+  border-radius: var(--sap-radius-sm);
+  padding: 10px 14px;
+}
+
+.wa-stat-card__label {
+  font-size: 11px;
+  color: var(--sap-text-muted, #6b7280);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.wa-stat-card__value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--sap-heading);
+}
+
+.wa-layout {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 300px 1fr 300px;
+  gap: 10px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.wa-panel {
+  border: 1px solid var(--sap-border);
+  background: var(--sap-surface);
+  border-radius: var(--sap-radius-sm);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.wa-panel__header {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--sap-border);
+  background: var(--sap-toolbar-bg);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--sap-heading);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wa-panel__body {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.wa-status-filter {
+  height: 24px;
+  font-size: 11px;
+  border: 1px solid var(--sap-border-strong);
+  border-radius: var(--sap-radius-sm);
+  background: var(--sap-button-bg);
+  color: var(--sap-text);
+}
+
+.wa-convo {
+  padding: 10px;
+  border-bottom: 1px solid var(--sap-border);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.wa-convo:hover {
+  background: var(--sap-button-bg-hover);
+}
+
+.wa-convo--active {
+  background: var(--sap-button-bg-hover);
+  border-left: 3px solid var(--sap-primary);
+}
+
+.wa-convo__top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.wa-convo__name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--sap-heading);
+}
+
+.wa-convo__time {
+  font-size: 10px;
+  color: var(--sap-text-muted, #6b7280);
+}
+
+.wa-convo__preview {
+  font-size: 12px;
+  color: var(--sap-text-muted, #6b7280);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wa-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  text-transform: capitalize;
+  align-self: flex-start;
+}
+
+.wa-badge--open { background: #e6f4ea; color: #1a7a30; }
+.wa-badge--pending { background: #fff4e0; color: #b06a00; }
+.wa-badge--closed { background: #ececec; color: #666; }
+
+.wa-empty {
+  padding: 20px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--sap-text-muted, #6b7280);
+}
+
+.wa-chat {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.wa-chat__messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wa-bubble {
+  max-width: 70%;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.wa-bubble--inbound {
+  align-self: flex-start;
+  background: var(--sap-button-bg);
+  border: 1px solid var(--sap-border);
+  color: var(--sap-text);
+}
+
+.wa-bubble--outbound {
+  align-self: flex-end;
+  background: var(--sap-button-primary-bg, #1a73e8);
+  color: #fff;
+}
+
+.wa-bubble__meta {
+  display: block;
+  margin-top: 4px;
+  font-size: 9.5px;
+  opacity: 0.75;
+}
+
+.wa-reply-box {
+  border-top: 1px solid var(--sap-border);
+  padding: 8px;
+  display: flex;
+  gap: 8px;
+}
+
+.wa-reply-box textarea {
+  flex: 1;
+  resize: none;
+  height: 40px;
+  padding: 6px 8px;
+  border: 1px solid var(--sap-border-strong);
+  border-radius: var(--sap-radius-sm);
+  font-size: 12.5px;
+  font-family: var(--sap-font-family);
+}
+
+.wa-insights__section {
+  padding: 10px;
+  border-bottom: 1px solid var(--sap-border);
+}
+
+.wa-insights__label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--sap-text-muted, #6b7280);
+  margin-bottom: 4px;
+}
+
+.wa-insights__row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  padding: 3px 0;
+}
+
+.wa-insights__row span:last-child {
+  font-weight: 600;
+  color: var(--sap-heading);
+}
+
+.wa-cardcode-form {
+  display: flex;
+  gap: 6px;
+}
+
+.wa-cardcode-form input {
+  flex: 1;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--sap-border-strong);
+  border-radius: var(--sap-radius-sm);
+  font-size: 12px;
+}
+
+.wa-send-phone {
+  width: 100%;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--sap-border-strong);
+  border-radius: var(--sap-radius-sm);
+  font-size: 12px;
+  box-sizing: border-box;
+}
+
+.wa-invoice-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--sap-border);
+}
+
+.wa-invoice-row:last-child {
+  border-bottom: none;
+}
+
+.wa-invoice-row__num {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--sap-heading);
+}
+
+.wa-invoice-row__meta {
+  font-size: 11px;
+  color: var(--sap-text-muted, #6b7280);
+}

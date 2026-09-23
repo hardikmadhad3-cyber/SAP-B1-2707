@@ -1,4 +1,6 @@
+const { buildDocumentConfirmationPayload, updateDocumentConfirmationOnly } = require('./documentConfirmationUtils');
 const sapService = require('./sapService');
+const { buildDocumentRoundingPayload } = require('./documentRoundingPayloadUtils');
 const apInvoiceDb = require('./apInvoiceDbService');
 const purchaseOrderDb = require('./purchaseOrderDbService');
 const { getDocumentFreightCharges } = require('./freightChargesDbService');
@@ -24,6 +26,22 @@ const formatDateForSAP = (value) => {
 const parseNum = (value) => {
   const num = Number(value);
   return Number.isFinite(num) ? num : 0;
+};
+
+const BATCH_QTY_TOLERANCE = 0.001;
+const getRequiredBatchQty = (line = {}) => {
+  const explicitFactor = parseNum(line.uomFactor ?? line.UomFactor ?? line.NumPerMsr);
+  const factor = explicitFactor > 0 ? explicitFactor : 1;
+  return parseNum(line.quantity ?? line.Quantity) * factor;
+};
+
+const createBatchSelectionError = (message, lineIndex, itemCode, type) => {
+  const error = new Error(message);
+  error.code = 'BATCH_SELECTION_REQUIRED';
+  error.status = 400;
+  error.statusCode = 400;
+  error.details = { lines: [{ lineIndex, itemCode, type, message }] };
+  return error;
 };
 
 const toSapYesNo = (value) => {
@@ -191,7 +209,7 @@ const validateAPInvoicePayload = async (payload, docEntry = null) => {
 
   await apInvoiceDb.validateAPInvoiceBaseDocuments(effectiveLines);
 
-  for (const line of effectiveLines) {
+  for (const [lineIndex, line] of effectiveLines.entries()) {
     const itemCode = String(line.itemNo || '').trim();
     if (!itemCode) throw new Error('ItemCode is required');
 
@@ -202,6 +220,37 @@ const validateAPInvoicePayload = async (payload, docEntry = null) => {
 
     if (parseNum(line.quantity) <= 0) throw new Error('Quantity must be > 0');
     if (parseNum(line.unitPrice) < 0) throw new Error('Price must be >= 0');
+
+    // A direct Purchase Order -> A/P Invoice posts the receipt itself. Like
+    // SAP B1, it therefore requires incoming batch allocation. A GRPO-based
+    // invoice must not allocate batches again because stock was posted by GRPO.
+    const requiresBatchAllocation = Number(line.baseType ?? line.BaseType) !== 20
+      && String(item.ManBtchNum || '').trim().toUpperCase() === 'Y';
+    if (requiresBatchAllocation) {
+      const batches = Array.isArray(line.batches) ? line.batches : [];
+      if (!batches.length) {
+        throw createBatchSelectionError(
+          `Batch selection is mandatory for batch-managed item ${itemCode}`,
+          lineIndex,
+          itemCode,
+          'missing',
+        );
+      }
+      const allocatedQty = batches.reduce(
+        (total, batch) => total + parseNum(batch.quantity ?? batch.Quantity),
+        0,
+      );
+      const requiredQty = getRequiredBatchQty(line);
+      if (Math.abs(allocatedQty - requiredQty) > BATCH_QTY_TOLERANCE) {
+        const inventoryUom = String(line.inventoryUOM || item.InvntryUom || line.uomCode || 'Base UoM').trim();
+        throw createBatchSelectionError(
+          `Batch quantity must match base quantity for item ${itemCode}. Required: ${requiredQty.toFixed(2)} ${inventoryUom}, Allocated: ${allocatedQty.toFixed(2)} ${inventoryUom}`,
+          lineIndex,
+          itemCode,
+          'quantity',
+        );
+      }
+    }
 
     const taxCode = String(line.taxCode || '').trim();
     if (!taxCode) throw new Error('TaxCode is required');
@@ -219,15 +268,22 @@ const validateAPInvoicePayload = async (payload, docEntry = null) => {
       line.baseLine != null && line.baseLine !== '';
 
     if (hasBaseDoc) {
-      if (parseInt(line.baseType, 10) !== 20) {
-        throw new Error('BaseType must be 20');
+      const baseType = parseInt(line.baseType, 10);
+      const baseDocument = apInvoiceDb.resolveApInvoiceBaseDocument(baseType);
+      if (!baseDocument) {
+        const allowed = Object.values(apInvoiceDb.AP_INVOICE_BASE_DOCUMENTS)
+          .map((item) => `${item.label} (${item.baseType})`)
+          .join(' or ');
+        throw new Error(`BaseType must be ${allowed}`);
       }
-      const grpoLine = await apInvoiceDb.getGRPOOpenLineValidation(parseInt(line.baseEntry, 10), parseInt(line.baseLine, 10));
-      if (!grpoLine) {
+      const baseLineRow = await apInvoiceDb.getBaseDocumentOpenLineValidation(
+        baseType, parseInt(line.baseEntry, 10), parseInt(line.baseLine, 10),
+      );
+      if (!baseLineRow) {
         throw new Error('BaseEntry must exist');
       }
-      if (parseNum(line.quantity) > parseNum(grpoLine.OpenQty)) {
-        throw new Error('Quantity exceeds open GRPO quantity');
+      if (parseNum(line.quantity) > parseNum(baseLineRow.OpenQty)) {
+        throw new Error(`Quantity exceeds open ${baseDocument.label} quantity`);
       }
     }
 
@@ -409,6 +465,21 @@ const getOpenGRPO = async (vendorCode = null) => {
   }
 };
 
+const getBaseDocumentForCopy = async (docEntry, baseType) => {
+  const baseDocument = apInvoiceDb.resolveApInvoiceBaseDocument(baseType);
+  try {
+    return normalizeCopyDocumentRate(
+      await apInvoiceDb.getBaseDocumentForCopy(docEntry, baseType),
+      await loadDocumentCurrencyReferenceData(),
+    );
+  } catch (error) {
+    error.message = `Failed to load ${baseDocument?.label || 'base document'}: ${error.message}`;
+    throw error;
+  }
+};
+
+const getPurchaseOrderForCopy = (docEntry) => getBaseDocumentForCopy(docEntry, 22);
+
 const getGRPOForCopy = async (docEntry) => {
   try {
     return normalizeCopyDocumentRate(
@@ -427,10 +498,11 @@ const submitAPInvoice = async (payload) => {
     const header = validatedPayload.header;
     const lines = validatedPayload.lines;
     const { header_udfs } = payload;
-    const [allowedHeaderUdfs, allowedLineUdfs, headerUdfDefinitionsByKey] = await Promise.all([
+    const [allowedHeaderUdfs, allowedLineUdfs, headerUdfDefinitionsByKey, lineUdfDefinitionsByKey] = await Promise.all([
       getAllowedUdfKeys('OPCH'),
       getAllowedUdfKeys('PCH1'),
       getUdfDefinitionsByKey('OPCH'),
+      getUdfDefinitionsByKey('PCH1'),
     ]);
     console.log('Validated Payload:', { header, lines, header_udfs });
     if (!String(header.gstin || '').trim()) {
@@ -439,7 +511,7 @@ const submitAPInvoice = async (payload) => {
 
     const documentLines = [];
     for (const l of lines.filter((line) => line.itemNo && String(line.itemNo).trim())) {
-      documentLines.push(buildAPInvoiceDocumentLine(l, allowedLineUdfs));
+      documentLines.push(buildAPInvoiceDocumentLine(l, allowedLineUdfs, lineUdfDefinitionsByKey));
     }
 
     const documentAdditionalExpenses = buildDocumentAdditionalExpenses(payload.freightCharges);
@@ -455,7 +527,8 @@ const submitAPInvoice = async (payload) => {
       NumAtCard: header.salesContractNo || '',
       DiscountPercent: header.discount ? parseFloat(header.discount) : 0,
       DocumentAdditionalExpenses: documentAdditionalExpenses,
-      Rounding: toSapYesNo(header.rounding),
+      ...buildDocumentRoundingPayload(header),
+      ...buildDocumentConfirmationPayload(header),
       DocumentLines: documentLines,
     };
     if (withholdingTaxData.length) {
@@ -502,6 +575,8 @@ const submitAPInvoice = async (payload) => {
 };
 
 const updateAPInvoice = async (docEntry, payload) => {
+  const confirmationResult = await updateDocumentConfirmationOnly(docEntry, payload, 'PurchaseInvoices', sapService);
+  if (confirmationResult) return confirmationResult;
   try {
     const validatedPayload = await validateAPInvoicePayload(payload, docEntry);
     const header = validatedPayload.header;
@@ -516,7 +591,8 @@ const updateAPInvoice = async (docEntry, payload) => {
       JournalMemo: header.journalRemark || '',
       DiscountPercent: header.discount ? parseFloat(header.discount) : 0,
       DocumentAdditionalExpenses: documentAdditionalExpenses,
-      Rounding: toSapYesNo(header.rounding),
+      ...buildDocumentRoundingPayload(header),
+      ...buildDocumentConfirmationPayload(header),
     };
 
     if (header.freight) sapPayload.TotalExpenses = parseFloat(header.freight);
@@ -576,7 +652,9 @@ module.exports = {
   getNextNumber,
   getStateFromWarehouse,
   getOpenGRPO,
+  getBaseDocumentForCopy,
   getGRPOForCopy,
+  getPurchaseOrderForCopy,
   submitAPInvoice,
   updateAPInvoice,
   getItemsForModal,

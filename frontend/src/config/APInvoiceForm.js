@@ -1,3 +1,4 @@
+import { mergeSavedFormSettings } from '../utils/formSettingsPreferences';
 import { filterSafePurchaseMatrixColumns } from '../utils/purchaseDocumentFormSettings';
 
 const FORM_SETTINGS_STORAGE_KEY = 'sapb1.apInvoice.formSettings.v1';
@@ -18,6 +19,7 @@ const CONFIGURED_MATRIX_COLUMNS = [
   { key: 'glAccount', label: 'G/L Account', minWidth: 130, lookup: true },
   { key: 'glAccountName', label: 'G/L Account Name', minWidth: 190, readOnly: true },
   { key: 'uomCode', label: 'UoM Code', minWidth: 105 },
+  { key: 'uomName', label: 'UoM Name', minWidth: 120 },
   { key: 'itemCost', label: 'Item Cost', minWidth: 110, readOnly: true },
   { key: 'countryOfOrigin', label: 'Country/Region of Origin', minWidth: 190 },
   { key: 'distRule', label: 'Distr. Rule', minWidth: 115, lookup: true },
@@ -83,8 +85,11 @@ const createUdfState = (definitions = [], values = {}) =>
   }, {});
 
 const buildVisibilitySettings = (definitions = []) =>
-  asDefinitionArray(definitions).reduce((acc, field) => {
+  asDefinitionArray(definitions).reduce((acc, field, index) => {
     acc[field.key] = {
+      order: Number(field.order ?? field.columnOrder ?? index + 1),
+      minWidth: field.minWidth,
+      sapControlled: Boolean(field.sapControlled),
       visible: field.visible !== false,
       active: field.active !== false,
     };
@@ -101,15 +106,6 @@ const createDefaultFormSettings = (
   rowUdfs: buildVisibilitySettings(rowUdfs),
 });
 
-const mergeNestedSettings = (defaults, saved = {}) =>
-  Object.keys(defaults).reduce((acc, groupKey) => {
-    acc[groupKey] = {
-      ...defaults[groupKey],
-      ...(saved[groupKey] || {}),
-    };
-    return acc;
-  }, {});
-
 const readSavedFormSettings = (
   headerUdfs = HEADER_UDF_DEFINITIONS,
   rowUdfs = ROW_UDF_DEFINITIONS,
@@ -123,7 +119,7 @@ const readSavedFormSettings = (
   try {
     const raw = localStorage.getItem(effectiveStorageKey);
     if (!raw) return defaults;
-    return mergeNestedSettings(defaults, JSON.parse(raw));
+    return mergeSavedFormSettings(defaults, JSON.parse(raw));
   } catch (_error) {
     return defaults;
   }

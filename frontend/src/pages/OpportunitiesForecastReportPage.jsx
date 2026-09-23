@@ -178,6 +178,8 @@ export default function OpportunitiesForecastReportPage() {
   const criteriaWindow = useFloatingWindow({
     isOpen: true,
     defaultTop: 22,
+    bounds: 'parent',
+    allowPersistedMinimized: false,
     taskId: 'opportunities-forecast-criteria',
     taskTitle: 'Opportunities Forecast Report - Selection Criteria',
     taskPath: '/reports/crm/opportunities/forecast',
@@ -185,6 +187,7 @@ export default function OpportunitiesForecastReportPage() {
   const reportWindow = useFloatingWindow({
     isOpen: hasReport,
     defaultTop: 12,
+    bounds: 'parent',
     taskId: 'opportunities-forecast-report',
     taskTitle: 'Opportunities Forecast Report',
     taskPath: '/reports/crm/opportunities/forecast',
@@ -388,7 +391,8 @@ export default function OpportunitiesForecastReportPage() {
               onChange={handleCriteriaChange}
               onOpenExternalLookup={handleOpenExternalLookup}
               onSubmit={handleSubmit}
-              onCancel={handleCancel}
+              onClear={handleCancel}
+              onClose={handleCloseCriteriaWindow}
               loading={loading}
             />
             {statusMessage ? <div className="sales-analysis__status opp-status">{statusMessage}</div> : null}

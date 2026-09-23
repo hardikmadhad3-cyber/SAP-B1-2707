@@ -1,3 +1,5 @@
+import useConfirmationOnlyUpdate from '../../utils/useConfirmationOnlyUpdate';
+import useDocumentSeries from '../../hooks/useDocumentSeries';
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import './styles/APInvoice.css';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -19,6 +21,7 @@ import StateSelectionModal from '../../components/common/StateSelectionModal';
 import HSNCodeModal from '../../components/common/HSNCodeModal';
 import WithholdingTaxTableModal from './components/WithholdingTaxTableModal';
 import CopyFromModal from '../../components/document/CopyFromModal';
+import BatchAllocationModal from '../grpo/components/BatchAllocationModal';
 import FreightChargesModal from '../../components/freight/FreightChargesModal';
 import PurchasePrintLayoutActions from '../../components/print-layout/PurchasePrintLayoutActions';
 import JournalEntryPreviewButton from '../../components/journal-entry/JournalEntryPreviewButton';
@@ -29,21 +32,24 @@ import { copyToDocument } from '../../services/documentCopyService';
 import { duplicateDocumentInPlace, refreshDuplicateSeries } from '../../utils/documentDuplicate';
 import { summarizeFreightRows } from '../../components/freight/freightUtils';
 import { filterWarehousesByBranch } from '../../utils/warehouseBranch';
-import { hydrateDocumentLineFromItem, mergeItemMaster } from '../../utils/documentItemHydration';
-import { mapAddressToModalForm, resolveAddressForModal } from '../../utils/documentAddress';
-import { getDefaultSeriesForCurrentYear, getSapVisibleDocumentSeries, normalizeDocumentSeriesList } from '../../utils/seriesDefaults';
+import { getItemPurchaseUom, hydrateDocumentLineFromItem, mergeItemMaster } from '../../utils/documentItemHydration';
+import { applyUomCodeSelection, getLineUomOptions } from '../../utils/documentUom';
+import { applyDocumentTablePaste } from '../../utils/documentTableClipboard';
+import { mapAddressToModalForm, resolveAddressForModal, resolveBuyerBillToAddress } from '../../utils/documentAddress';
+import { getSapVisibleDocumentSeries, canUseManualSeries } from '../../utils/seriesDefaults';
 import {
   SAP_MANUAL_SERIES_VALUE,
   isManualDocumentSeries,
   isValidManualDocumentNumber,
 } from '../../utils/documentSeries';
 import { useCompanyScopedFormSettings } from '../../utils/formSettingsStorage';
+import { buildCompanyFormQueryContext } from '../../utils/companyFormQueryContext';
 import { getDocumentLayout } from '../../api/sapLayoutApi';
 import { fetchSalesDocumentSchema } from '../../api/salesDocumentSchemaApi';
 import { buildSalesDocumentLiveFields } from '../../utils/salesDocumentLiveFields';
 import { readGeneralSettings } from '../../utils/generalSettingsStorage';
 import { getStateCodeValue, getStateDisplayName } from '../../utils/stateDisplay';
-import { calculateDocumentRounding } from '../../utils/documentRounding';
+import { calculateDocumentRounding, getDocumentRoundingPolicy } from '../../utils/documentRounding';
 import { resolveWithholdingTaxBaseAmount } from '../../utils/withholdingTax';
 import useSalesEmployeeSetup from '../../hooks/useSalesEmployeeSetup';
 import { useAuth } from '../../auth/AuthContext';
@@ -51,6 +57,12 @@ import { consumeCopyToState, replaceRouteStatePreservingWindow } from '../../uti
 import useDocumentDraftTask from '../../hooks/useDocumentDraftTask';
 import useValidationHighlights from '../../utils/useValidationHighlights';
 import useClosedDocumentViewMode from '../../hooks/useClosedDocumentViewMode';
+import {
+  BATCH_QTY_TOLERANCE,
+  getRequiredBatchQty,
+  sumBatchQty,
+} from '../../utils/batchQuantity';
+import { fetchNextBatchNumber } from '../../api/grpoApi';
 import { buildLocationLookupOptions } from '../../utils/locationLookup';
 import {
   fetchAPInvoiceReferenceData,
@@ -58,8 +70,6 @@ import {
   submitAPInvoice,
   updateAPInvoice,
   fetchAPInvoiceByDocEntry,
-  fetchAPInvoiceSeries,
-  fetchNextNumber,
   fetchOpenGRPO,
   fetchGRPOForCopy,
   fetchItemsForModal,
@@ -168,85 +178,10 @@ const DEFAULT_TRANSACTION_TYPES = [
   { value: 'GST Debit Memo', label: 'GST Debit Memo' },
 ];
 
-const dedupeSeriesOptions = (series = []) => {
-  const seen = new Set();
-  return (Array.isArray(series) ? series : []).filter((item) => {
-    const id = String(item?.Series || '').trim();
-    const label = String(item?.SeriesName || item?.DisplayName || item?.RawSeriesName || item?.BeginStr || id).trim().toUpperCase();
-    const indicator = String(item?.Indicator || '').trim().toUpperCase();
-    const docSubType = String(item?.DocSubType || '').trim().toUpperCase();
-    const key = label ? `${label}|${indicator}|${docSubType}` : id;
-    if (!key || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-};
 
-const normalizeSeriesIdentity = (value) =>
-  String(value || '').toUpperCase().replace(/FY/g, '').replace(/[^A-Z0-9]/g, '');
 
-const resolveTransactionSeriesKind = (transactionType = '') => {
-  const normalizedType = normalizeSeriesIdentity(transactionType);
-  if (normalizedType.includes('DEBIT')) return 'debit';
-  if (normalizedType.includes('BILLOFSUPPLY') || normalizedType.includes('SUPPLY')) return 'bill';
-  if (normalizedType.includes('TAXINVOICE') || normalizedType.includes('GST')) return 'tax';
-  return '';
-};
 
-const scoreSeriesForTransactionType = (series = {}, transactionType = '') => {
-  const targetKind = resolveTransactionSeriesKind(transactionType);
-  if (!targetKind) return 0;
 
-  const text = normalizeSeriesIdentity([
-    series.SeriesName,
-    series.DisplayName,
-    series.RawSeriesName,
-    series.BeginStr,
-    series.Indicator,
-    series.DocSubType,
-  ].filter(Boolean).join(' '));
-  const docSubType = String(series.DocSubType || '').trim().toUpperCase();
-  const isManual = Number(series.Series) === -1 || String(series.SeriesName || '').trim().toUpperCase() === 'MANUAL';
-  if (isManual) return -10000;
-
-  let score = series.IsDefault || series.isDefault ? 25 : 0;
-  if (targetKind === 'debit') {
-    if (docSubType === 'GD') score += 250;
-    if (text.includes('CAN')) score += 180;
-    if (text.includes('DEBIT') || text.includes('DBN')) score += 160;
-    if (text.includes('AP')) score -= 40;
-    if (docSubType === 'GA' || text.includes('TAX')) score -= 80;
-  } else if (targetKind === 'bill') {
-    if (docSubType === '--') score += 120;
-    if (text.includes('BILLOFSUPPLY') || text.includes('SUPPLY') || text.includes('BOS') || text.includes('BILL')) score += 180;
-    if (text.includes('AP')) score += 140;
-    if (text.includes('CAN') || text.includes('DEBIT') || docSubType === 'GD') score -= 120;
-    if (docSubType === 'GA' || text.includes('TAX')) score -= 60;
-  } else if (targetKind === 'tax') {
-    if (docSubType === 'GA') score += 180;
-    if (text.includes('GST') || text.includes('TAXINVOICE') || text.includes('TAX')) score += 160;
-    if (!text.includes('AP') && !text.includes('CAN') && !text.includes('DEBIT') && !text.includes('BILL')) score += 120;
-    if (text.includes('AP')) score -= 100;
-    if (text.includes('CAN') || text.includes('DEBIT') || docSubType === 'GD') score -= 160;
-  }
-  return score;
-};
-
-const pickSapSeriesForTransactionType = (series = [], transactionType = '') => {
-  const rows = (Array.isArray(series) ? series : []).filter(Boolean);
-  if (!rows.length || !String(transactionType || '').trim()) return null;
-  const candidates = rows.filter((row) => (
-    Number(row.Series) !== -1 &&
-    String(row.SeriesName || '').trim().toUpperCase() !== 'MANUAL'
-  ));
-  const pool = candidates.length ? candidates : rows;
-  return [...pool]
-    .map((row, index) => ({ row, index, score: scoreSeriesForTransactionType(row, transactionType) }))
-    .sort((left, right) =>
-      right.score - left.score ||
-      Number(right.row.IsDefault || right.row.isDefault || 0) - Number(left.row.IsDefault || left.row.isDefault || 0) ||
-      left.index - right.index)[0]?.row || null;
-};
 
 const normalizeMetadataIdentity = (value) =>
   String(value || '').replace(/^U_/i, '').replace(/[^a-z0-9]/gi, '').toLowerCase();
@@ -331,6 +266,10 @@ const createLine = (rowUdfDefinitions = ROW_UDF_DEFINITIONS) => ({
   baseEntry: null,
   baseType: null,
   baseLine: null,
+  inventoryUOM: '',
+  uomFactor: 1,
+  batchManaged: false,
+  batches: [],
   taxCodeManuallyOverridden: false,
   udf: createUdfState(rowUdfDefinitions),
 });
@@ -357,8 +296,13 @@ const INIT_HEADER = {
   branchRegNo: '',
   shipTo: '',
   shipToCode: '',
+  shipToAddress: '',
+  billTo: '',
+  billToCode: '',
+  billToAddress: '',
   payTo: '',
   payToCode: '',
+  payToAddress: '',
   shippingType: '',
   usePayToForTax: false,
   toOrder: '',
@@ -367,7 +311,7 @@ const INIT_HEADER = {
   notifyPartyAddress: '',
   language: '',
   splitAPInvoice: false,
-  confirmed: false,
+  confirmed: undefined,
   journalRemark: '',
   paymentTerms: '',
   paymentMethod: '',
@@ -438,7 +382,14 @@ const INIT_ATTACH = Array.from({ length: 9 }, (_, i) => ({
 
 const AP_INVOICE_COPY_BASE_TYPE = {
   grpo: 20,
+  purchaseOrder: 22,
   apInvoice: 18,
+};
+
+const AP_INVOICE_COPY_SOURCE_LABEL = {
+  grpo: 'GRPO',
+  purchaseOrder: 'Purchase Order',
+  apInvoice: 'A/P Invoice',
 };
 
 const getLineBaseTypeNumber = (line = {}) => {
@@ -446,11 +397,17 @@ const getLineBaseTypeNumber = (line = {}) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 const isGrpoBasedLine = (line = {}) => getLineBaseTypeNumber(line) === 20;
+const isPurchaseOrderBasedLine = (line = {}) => getLineBaseTypeNumber(line) === 22;
+// A Goods Receipt PO and a Purchase Order both carry an open quantity that caps
+// what this invoice may draw.
+const isOpenQuantityBasedLine = (line = {}) => (
+  isGrpoBasedLine(line) || isPurchaseOrderBasedLine(line)
+);
 
 // â”€â”€â”€ Main Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-const FALLBACK_UOM = ['EA', 'PCS', 'KG', 'LTR', 'MTR', 'BOX', 'SET', 'NOS', 'PKT', 'DZN'];
-
 function APInvoice() {
+  const [seriesRevision, setSeriesRevision] = useState(0);
+
   const location = useLocation();
   const navigate = useNavigate();
   const workspaceRef = useRef(null);
@@ -467,11 +424,11 @@ function APInvoice() {
   const [attachments] = useState(INIT_ATTACH);
   const [activeTab, setActiveTab] = useState('Contents');
   const [headerUdfs, setHeaderUdfs] = useState(() => createUdfState(HEADER_UDF_DEFINITIONS));
-  const [formSettings, setFormSettings, formSettingsStorageKey, , formSettingsStatus] = useCompanyScopedFormSettings(
+  const [formSettings, setFormSettings, formSettingsStorageKey, replaceFormSettings, formSettingsStatus] = useCompanyScopedFormSettings(
     FORM_SETTINGS_STORAGE_KEY,
     readSavedFormSettings,
     [headerUdfDefinitions, rowUdfDefinitions, matrixColumnDefinitions],
-    { saveMode: 'explicit' },
+    { saveMode: 'explicit', followPublishedVersion: true },
   );
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [formSettingsOpen, setFormSettingsOpen] = useState(false);
@@ -482,6 +439,7 @@ function APInvoice() {
     local_currency: '',
     system_currency: '',
     currencies: [],
+    rounding_settings: { method: '', currencies: [] },
     vendors: [],
     contacts: [],
     pay_to_addresses: [],
@@ -528,6 +486,7 @@ function APInvoice() {
   const [addressModal, setAddressModal] = useState(null);
   const [taxInfoModal, setTaxInfoModal] = useState(false);
   const [itemModal, setItemModal] = useState({ open: false, lineIndex: -1, items: [], loading: false });
+  const [batchModal, setBatchModal] = useState({ open: false, lineIndex: null, loading: false, error: '' });
   const [lineLookupModal, setLineLookupModal] = useState({
     open: false,
     lineIndex: -1,
@@ -619,14 +578,43 @@ function APInvoice() {
   });
   const isDocumentEditable = !currentDocEntry || String(header.status || '').toLowerCase() === 'open';
   const hasUnsavedChanges = Boolean(currentDocEntry && isDirty);
+  const hydrateAPInvoiceBatchLine = useCallback((line = {}) => {
+    const itemCode = String(line.itemNo || line.ItemCode || '').trim();
+    const item = refData.items.find((candidate) => String(candidate.ItemCode || '').trim() === itemCode);
+    const grpoBased = isGrpoBasedLine(line);
+    return {
+      ...line,
+      batchManaged: grpoBased ? false : Boolean(line.batchManaged || isYesValue(item?.BatchManaged) || isYesValue(item?.ManBtchNum)),
+      batches: grpoBased ? [] : (Array.isArray(line.batches) ? line.batches : []),
+      inventoryUOM: String(line.inventoryUOM || item?.InventoryUOM || line.uomCode || '').trim(),
+      uomFactor: Number(line.uomFactor) > 0 ? Number(line.uomFactor) : 1,
+    };
+  }, [refData.items]);
+
+  useEffect(() => {
+    if (!refData.items.length) return;
+    setLines((previous) => {
+      let changed = false;
+      const next = previous.map((line) => {
+        const hydrated = hydrateAPInvoiceBatchLine(line);
+        if (
+          hydrated.batchManaged !== line.batchManaged
+          || hydrated.inventoryUOM !== line.inventoryUOM
+          || hydrated.uomFactor !== line.uomFactor
+        ) changed = true;
+        return hydrated;
+      });
+      return changed ? next : previous;
+    });
+  }, [hydrateAPInvoiceBatchLine, refData.items.length]);
   const updateActionLabel = hasUnsavedChanges ? 'Update' : 'OK';
   const primaryActionLabel = pageState.posting
-    ? 'Savingâ€¦'
+    ? 'Saving...'
     : currentDocEntry
       ? updateActionLabel
       : 'Add';
   const secondaryActionLabel = pageState.posting
-    ? 'Savingâ€¦'
+    ? 'Saving...'
     : currentDocEntry
       ? updateActionLabel
       : 'Add & New';
@@ -764,11 +752,6 @@ function APInvoice() {
           return;
         }
 
-        if (!currentDocEntry && !location.state?.APInvoiceDocEntry && !location.state?.apInvoiceDraft) {
-          setHeader(INIT_HEADER);
-          setLines([createLine(rowUdfDefinitions)]);
-        }
-
         const [refDataRes, layoutRes, schema] = await Promise.all([
           fetchAPInvoiceReferenceData(activeCompanyId),
           getDocumentLayout({
@@ -819,18 +802,7 @@ function APInvoice() {
             nextMatrixColumns,
             formSettingsStorageKey,
           );
-          setFormSettings((prev) => ({
-            ...nextDefaults,
-            ...prev,
-            headerUdfs: {
-              ...nextDefaults.headerUdfs,
-              ...(prev.headerUdfs || {}),
-            },
-            rowUdfs: {
-              ...nextDefaults.rowUdfs,
-              ...(prev.rowUdfs || {}),
-            },
-          }));
+          replaceFormSettings(nextDefaults);
 
           setRefData({
             company: refDataRes.data.company || '',
@@ -839,6 +811,7 @@ function APInvoice() {
             local_currency: refDataRes.data.local_currency || refDataRes.data.company_currency || '',
             system_currency: refDataRes.data.system_currency || refDataRes.data.company_currency || '',
             currencies: refDataRes.data.currencies || [],
+            rounding_settings: refDataRes.data.rounding_settings || { method: '', currencies: [] },
             vendors: refDataRes.data.vendors || [],
             contacts: refDataRes.data.contacts || [],
             pay_to_addresses: refDataRes.data.pay_to_addresses || [],
@@ -950,7 +923,9 @@ function APInvoice() {
 
     const sourceType = copyFrom.type || 'grpo';
     const normalizedHeader = { ...normaliseDocumentHeader(copyFrom.header || {}) };
-    if (sourceType === 'grpo') {
+    // The vendor reference on an invoice is the vendor's own invoice number, so
+    // it is never inherited from the receipt or order it is drawn from.
+    if (sourceType === 'grpo' || sourceType === 'purchaseOrder') {
       normalizedHeader.salesContractNo = '';
       normalizedHeader.customerRefNo = '';
     }
@@ -964,7 +939,7 @@ function APInvoice() {
         line.branch || normalizedHeader.branch
       );
       const openQty = String(line.openQty ?? line.OpenQty ?? normalizedLine.openQty ?? line.quantity ?? line.Quantity ?? '');
-      const copiedQuantity = isGrpoBasedLine(normalizedLine) && parseNum(openQty) > 0
+      const copiedQuantity = isOpenQuantityBasedLine(normalizedLine) && parseNum(openQty) > 0
         ? openQty
         : normalizedLine.quantity;
 
@@ -975,14 +950,13 @@ function APInvoice() {
         openQty,
         batchManaged: isGrpoBasedLine(normalizedLine) ? false : normalizedLine.batchManaged,
         batches: isGrpoBasedLine(normalizedLine) ? [] : normalizedLine.batches,
-        taxCodeManuallyOverridden: false,
         udf: { ...createUdfState(rowUdfDefinitions), ...(line.udf || {}) },
       });
     });
 
     setHeader((prev) => ({ ...prev, ...normalizedHeader }));
     setLines(copiedLines.length ? copiedLines : [createLine(rowUdfDefinitions)]);
-    setFreightModal({ open: false, freightCharges: [], loading: false });
+    setFreightModal({ open: false, freightCharges: Array.isArray(copyFrom.freightCharges) ? copyFrom.freightCharges : [], loading: false });
     setWithholdingTax((prev) => ({ ...prev, open: false, rows: [] }));
     setValErrors({ header: {}, lines: {}, form: '' });
 
@@ -990,20 +964,13 @@ function APInvoice() {
       loadVendorDetails(normalizedHeader.vendor);
     }
 
-    const label = sourceType === 'apInvoice' ? 'A/P Invoice' : 'GRPO';
+    const label = AP_INVOICE_COPY_SOURCE_LABEL[sourceType] || 'GRPO';
     setPageState((prev) => ({ ...prev, error: '', success: `Copied from ${label}. Please review and save.` }));
     replaceRouteStatePreservingWindow(navigate, location.pathname, location.state);
   }, [location.pathname, location.state, navigate]);
 
   useEffect(() => {
-    if (!currentDocEntry) {
-      setFreightModal(prev => (
-        prev.freightCharges.length || prev.loading
-          ? { ...prev, freightCharges: [], loading: false }
-          : prev
-      ));
-      return;
-    }
+    if (!currentDocEntry) return;
 
     let ignore = false;
     const loadSavedFreightCharges = async () => {
@@ -1042,6 +1009,15 @@ function APInvoice() {
   const vendorBillToAddresses = refData.bill_to_addresses.filter(a => String(a.CardCode || '') === String(header.vendor || ''));
   const vendorEffectiveShipToAddresses = vendorShipToAddresses.length ? vendorShipToAddresses : vendorPayToAddresses;
   const vendorEffectiveBillToAddresses = vendorBillToAddresses.length ? vendorBillToAddresses : vendorPayToAddresses;
+  const selectedWarehouse = refData.warehouses.find(
+    (warehouse) => String(warehouse.WhsCode || '') === String(header.warehouse || ''),
+  );
+  const autoBillToAddressRef = useRef('');
+  const buyerBillToAddress = useMemo(() => resolveBuyerBillToAddress({
+    warehouse: selectedWarehouse,
+    companyAddress: refData.company_address,
+    formatAddress: fmtAddr,
+  }), [refData.company_address, selectedWarehouse]);
 
   const payTermOpts = refData.payment_terms.length
     ? refData.payment_terms.map(t => ({ value: String(t.GroupNum), label: t.PymntGroup }))
@@ -1066,57 +1042,7 @@ function APInvoice() {
     }));
   }, [currentDocEntry, header.transactionType, transactionTypeOptions]);
 
-  useEffect(() => {
-    if (currentDocEntry || location.state?.APInvoiceDocEntry) return undefined;
-    if (!header.transactionType && transactionTypeOptions.length) return undefined;
 
-    let ignore = false;
-    const loadSeriesForHeader = async () => {
-      setPageState((prev) => ({ ...prev, seriesLoading: true }));
-      try {
-        const response = await fetchAPInvoiceSeries({
-          date: header.postingDate || header.documentDate,
-          branch: header.branch || '',
-          transactionType: header.transactionType || '',
-        });
-        if (ignore) return;
-
-        let nextSeries = dedupeSeriesOptions(normalizeDocumentSeriesList(response.data?.series || []));
-        if (!nextSeries.length) {
-          const fallbackResponse = await fetchAPInvoiceSeries({
-            date: header.postingDate || header.documentDate,
-            branch: header.branch || '',
-          });
-          nextSeries = dedupeSeriesOptions(normalizeDocumentSeriesList(fallbackResponse.data?.series || []));
-        }
-        if (!nextSeries.length) {
-          return;
-        }
-
-        setRefData((prev) => ({ ...prev, series: nextSeries }));
-
-        const hasCurrentSeries = nextSeries.some((series) => String(series.Series) === String(header.series || ''));
-        const defaultSeries =
-          pickSapSeriesForTransactionType(nextSeries, header.transactionType) ||
-          (hasCurrentSeries
-            ? nextSeries.find((series) => String(series.Series) === String(header.series || ''))
-            : getDefaultSeriesForCurrentYear(nextSeries, header.postingDate || header.documentDate));
-
-        if (defaultSeries?.Series != null && String(defaultSeries.Series) !== String(header.series || '')) {
-          await handleSeriesChange(defaultSeries.Series);
-        } else if (!String(header.nextNumber || '').trim() && defaultSeries?.Series != null) {
-          await handleSeriesChange(defaultSeries.Series);
-        }
-      } catch (error) {
-        // Keep the last known live SAP series. A transient reload failure must not collapse the document to Manual.
-      } finally {
-        if (!ignore) setPageState((prev) => ({ ...prev, seriesLoading: false }));
-      }
-    };
-
-    loadSeriesForHeader();
-    return () => { ignore = true; };
-  }, [currentDocEntry, location.state, header.postingDate, header.documentDate, header.branch, header.transactionType, transactionTypeOptions.length]);
 
   const lineItemOptions = lines.reduce((acc, line, i) => {
     const code = String(line.itemNo || '').trim();
@@ -1191,7 +1117,6 @@ function APInvoice() {
     }).filter(Boolean);
   }, [rowUdfDefinitions]);
 
-  const uomGroupMap = (refData.uom_groups || []).reduce((acc, g) => { acc[g.AbsEntry] = g.uomCodes || []; return acc; }, {});
   const FALLBACK_WAREHOUSES = [{ WhsCode: 'WH01', WhsName: 'Main Warehouse' }];
 
   const effectiveTaxCodes = refData.tax_codes || [];
@@ -1221,14 +1146,8 @@ function APInvoice() {
 
   const getUomOptions = useCallback((line) => {
     const item = refData.items.find(i => String(i.ItemCode || '') === String(line.itemNo || ''));
-    if (item) {
-      const codes = uomGroupMap[item.UoMGroupEntry];
-      if (codes && codes.length) return codes;
-      const fb = String(item.PurchaseUnit || item.InventoryUOM || '').trim();
-      if (fb) return [fb];
-    }
-    return FALLBACK_UOM;
-  }, [refData.items, uomGroupMap]);
+    return getLineUomOptions(line, item, refData.uom_groups).map((uom) => uom.uomCode);
+  }, [refData.items, refData.uom_groups]);
 
   const fmtTaxLabel = (t) => {
     const code = String(t?.Code || '').trim();
@@ -1282,8 +1201,7 @@ function APInvoice() {
     const rounding = calculateDocumentRounding(
       discSub + freight + taxAmt,
       header.rounding,
-      numDec.totalPaymentDue,
-    );
+      numDec.totalPaymentDue, currentDocEntry ? header : null, getDocumentRoundingPolicy(refData, header));
     return { subtotal, discAmt, discSub, freight, freightTaxAmt, taxAmt, ...rounding, taxBreakdown: Array.from(taxMap.values()) };
   };
 
@@ -1597,6 +1515,27 @@ function APInvoice() {
   }, [header.warehouse]);
 
   useEffect(() => {
+    if (!buyerBillToAddress.address) return;
+    const previousDefaultAddress = autoBillToAddressRef.current;
+    autoBillToAddressRef.current = buyerBillToAddress.address;
+    setHeader(prev => {
+      const currentAddress = prev.billToAddress || prev.billTo || '';
+      if (currentAddress && currentAddress !== previousDefaultAddress) return prev;
+      if (
+        prev.billToCode === buyerBillToAddress.code
+        && prev.billTo === buyerBillToAddress.address
+        && prev.billToAddress === buyerBillToAddress.address
+      ) return prev;
+      return {
+        ...prev,
+        billToCode: buyerBillToAddress.code || prev.billToCode || '',
+        billTo: buyerBillToAddress.address,
+        billToAddress: buyerBillToAddress.address,
+      };
+    });
+  }, [buyerBillToAddress]);
+
+  useEffect(() => {
     const shouldAutoPopulateAddresses = true;
     if (!shouldAutoPopulateAddresses) return;
     if (!header.vendor) return;
@@ -1628,7 +1567,7 @@ function APInvoice() {
       if (!def) return prev;
       const fmt = fmtAddr(def);
       if (prev.payToCode === def.Address && prev.payTo === fmt) return prev;
-      return { ...prev, payToCode: def.Address || '', payTo: fmt };
+      return { ...prev, payToCode: def.Address || '', payTo: fmt, payToAddress: fmt };
     });
   }, [header.vendor, vendorEffectiveBillToAddresses]);
 
@@ -1808,8 +1747,7 @@ function APInvoice() {
     setLines(prev => prev.map((line, idx) => {
       if (idx !== i) return line;
       const next = { ...line, [name]: numDec[name] !== undefined ? sanitize(value, numDec[name]) : value };
-                if (name === 'uomName') next.uomNameEdited = true;
-                if (name === 'uomCode') { next.uomName = value; next.uomNameEdited = false; }
+      if (name === 'uomName') next.uomNameEdited = true;
 
       if (name === 'taxCode') {
         next.taxCodeManuallyOverridden = true;
@@ -1820,7 +1758,7 @@ function APInvoice() {
         if (item) {
           next.itemDescription = item.ItemName || next.itemDescription;
           next.hsnCode = item.HSNCode || next.hsnCode || '';
-          next.uomCode = String(item.PurchaseUnit || item.InventoryUOM || '').trim();
+          Object.assign(next, getItemPurchaseUom(item, refData.uom_groups));
           next.glAccount = next.glAccount || item.PurchaseAccount || item.PurchaseAcct || item.ExpenseAccount || item.ExpensesAccount || item.ExpensesAc || '';
           const glAccount = accountLookupOptions.find((account) => String(account.value) === String(next.glAccount || ''));
           next.glAccountName = next.glAccountName || glAccount?.accountName || '';
@@ -1841,6 +1779,10 @@ function APInvoice() {
           }
         }
       }
+      if (name === 'uomCode') {
+        const item = refData.items.find(it => String(it.ItemCode || '') === String(next.itemNo || ''));
+        Object.assign(next, applyUomCodeSelection(next, value, getLineUomOptions(next, item, refData.uom_groups)));
+      }
 
       next.total = fmtDec(calcLineTotal(next), numDec.total);
       return next;
@@ -1860,6 +1802,60 @@ function APInvoice() {
     if (d === undefined) return;
     if (target === 'header') { setHeader(p => ({ ...p, [field]: fmtDec(p[field], d) })); return; }
     setLines(p => p.map((l, idx) => idx === i ? { ...l, [field]: fmtDec(l[field], d) } : l));
+  };
+
+  const handleTablePaste = ({ startRowIndex, patches }) => {
+    if (!isDocumentEditable) return;
+    markDirty();
+    setPageState(previous => ({ ...previous, error: '', success: '' }));
+    setValErrors(previous => ({ ...previous, form: '' }));
+    setLines(previous => applyDocumentTablePaste({
+      lines: previous,
+      patches,
+      startRowIndex,
+      createLine: () => ({
+        ...createLine(rowUdfDefinitions),
+        branch: header.branch || '',
+        whse: header.warehouse || '',
+      }),
+      transformLine: (pastedLine, _rowIndex, rowPatch) => {
+        const next = { ...pastedLine };
+        const pastedKeys = new Set(rowPatch.cells.map(cell => cell.key));
+        if (pastedKeys.has('itemNo')) {
+          const item = refData.items.find(candidate => String(candidate.ItemCode || '') === String(next.itemNo || ''));
+          if (item) {
+            next.itemDescription = item.ItemName || next.itemDescription;
+            next.hsnCode = item.HSNCode || next.hsnCode || '';
+            Object.assign(next, getItemPurchaseUom(item, refData.uom_groups));
+            next.glAccount = next.glAccount || item.PurchaseAccount || item.PurchaseAcct || item.ExpenseAccount || item.ExpensesAccount || item.ExpensesAc || '';
+            if (!pastedKeys.has('whse') && item.DefaultWarehouse) next.whse = item.DefaultWarehouse;
+          }
+          if (!next.taxCodeManuallyOverridden) {
+            const preferredTaxCode = findPreferredGstTaxCode({
+              taxCodes: refData.tax_codes,
+              gstType: derivedGstType,
+              currentTaxCode: next.taxCode,
+            });
+            if (preferredTaxCode?.Code) next.taxCode = preferredTaxCode.Code;
+          }
+        }
+        if (pastedKeys.has('uomCode')) {
+          const item = refData.items.find(candidate => String(candidate.ItemCode || '') === String(next.itemNo || ''));
+          Object.assign(next, applyUomCodeSelection(next, next.uomCode, getLineUomOptions(next, item, refData.uom_groups)));
+        }
+        if (pastedKeys.has('taxCode')) next.taxCodeManuallyOverridden = true;
+        next.total = fmtDec(calcLineTotal(next), numDec.total);
+        return next;
+      },
+    }));
+  };
+
+  const handleTableClipboardFeedback = (message, type) => {
+    setPageState(previous => ({
+      ...previous,
+      error: type === 'error' ? message : '',
+      success: type === 'error' ? '' : message,
+    }));
   };
 
   const openFreightModal = async () => {
@@ -1962,28 +1958,13 @@ function APInvoice() {
   };
 
   // â”€â”€ Series and Auto-Numbering handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  const handleSeriesChange = async (seriesValue) => {
-    if (!seriesValue) return;
-
-    if (isManualDocumentSeries(seriesValue)) {
-      setHeader(p => ({ ...p, series: SAP_MANUAL_SERIES_VALUE, nextNumber: '' }));
-      setPageState(p => ({ ...p, seriesLoading: false, error: '', success: '' }));
-      return;
-    }
-
-    setPageState(p => ({ ...p, seriesLoading: true }));
-    setHeader(p => ({ ...p, series: seriesValue, nextNumber: '...' }));
-
-    try {
-      const res = await fetchNextNumber(seriesValue);
-      setHeader(p => ({ ...p, nextNumber: String(res.data.nextNumber || '') }));
-    } catch (err) {
-      setHeader(p => ({ ...p, nextNumber: 'Error' }));
-      setPageState(p => ({ ...p, error: 'Failed to get next document number' }));
-    } finally {
-      setPageState(p => ({ ...p, seriesLoading: false }));
-    }
-  };
+  const handleSeriesChange = (seriesValue) => {
+      const manual = ['-1', 'manual', '__sap_manual__'].includes(String(seriesValue).toLowerCase());
+      if (manual && !canUseManualSeries(refData)) return;
+      const selected = (refData.series || []).find(row => String(row.Series) === String(seriesValue));
+      setHeader(prev => ({ ...prev, series: manual ? '-1' : selected ? String(selected.Series) : '', nextNumber: manual ? '' : String(selected?.NextNumber ?? ''), docNo: '' }));
+      setPageState(prev => ({ ...prev, error: '', success: '' }));
+    };
 
   const handleShipToChange = (addressCode) => {
     if (!addressCode) {
@@ -2181,10 +2162,57 @@ function APInvoice() {
   };
 
   // â”€â”€ validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const openBatchModal = useCallback((lineIndex, lineOverride = null) => {
+    if (!isDocumentEditable) return;
+    const line = lineOverride || lines[lineIndex];
+    if (isGrpoBasedLine(line)) {
+      setPageState((previous) => ({
+        ...previous,
+        error: 'Batch assignment is not required for an A/P Invoice copied from GRPO.',
+        success: '',
+      }));
+      return;
+    }
+    if (!line?.itemNo) {
+      setPageState((previous) => ({ ...previous, error: 'Select an item before allocating batches.', success: '' }));
+      return;
+    }
+    if (!line?.whse) {
+      setPageState((previous) => ({ ...previous, error: 'Select a warehouse before allocating batches.', success: '' }));
+      return;
+    }
+    setBatchModal({ open: true, lineIndex, loading: false, error: '' });
+  }, [isDocumentEditable, lines]);
+
+  const closeBatchModal = useCallback(() => {
+    setBatchModal({ open: false, lineIndex: null, loading: false, error: '' });
+  }, []);
+
+  const saveLineBatches = useCallback((nextBatches) => {
+    if (batchModal.lineIndex == null) return;
+    markDirty();
+    setLines((previous) => previous.map((line, index) => (
+      index === batchModal.lineIndex ? { ...line, batches: nextBatches } : line
+    )));
+    setValErrors((previous) => {
+      const lineErrors = { ...(previous.lines?.[batchModal.lineIndex] || {}) };
+      delete lineErrors.batches;
+      return {
+        ...previous,
+        form: '',
+        lines: { ...(previous.lines || {}), [batchModal.lineIndex]: lineErrors },
+      };
+    });
+    setPageState((previous) => ({ ...previous, error: '', success: '' }));
+    closeBatchModal();
+  }, [batchModal.lineIndex, closeBatchModal, markDirty]);
+
   const handleCopyFrom = (data, docType) => {
+    setSeriesRevision(value => value + 1);
+
     const copySource = unwrapCopyFromDocument(data);
     const normalizedHeader = { ...normaliseDocumentHeader(copySource.header) };
-    if (docType === 'grpo') {
+    if (docType === 'grpo' || docType === 'purchaseOrder') {
       normalizedHeader.salesContractNo = '';
       normalizedHeader.customerRefNo = '';
     }
@@ -2198,7 +2226,7 @@ function APInvoice() {
         normalizedHeader.branch,
       );
       const openQty = String(line.OpenQty ?? line.openQty ?? normalizedLine.openQty ?? line.Quantity ?? line.quantity ?? '');
-      const copiedQuantity = isGrpoBasedLine(normalizedLine) && parseNum(openQty) > 0
+      const copiedQuantity = isOpenQuantityBasedLine(normalizedLine) && parseNum(openQty) > 0
         ? openQty
         : normalizedLine.quantity;
 
@@ -2209,7 +2237,6 @@ function APInvoice() {
         openQty,
         batchManaged: isGrpoBasedLine(normalizedLine) ? false : normalizedLine.batchManaged,
         batches: isGrpoBasedLine(normalizedLine) ? [] : normalizedLine.batches,
-        taxCodeManuallyOverridden: false,
         udf: { ...createUdfState(rowUdfDefinitions), ...(line.udf || {}) },
       });
     });
@@ -2267,7 +2294,7 @@ function APInvoice() {
       sourceDocEntry: currentDocEntry,
       sourceDocNo: header.docNo,
       sourcePath: location.pathname,
-      sourceSnapshot: { header, lines },
+      sourceSnapshot: { header, lines, freightCharges: freightModal.freightCharges },
       restoreState: { APInvoiceDocEntry: currentDocEntry },
       navigate,
       upsertTask,
@@ -2278,6 +2305,8 @@ function APInvoice() {
   };
 
   const handleDuplicate = () => {
+    setSeriesRevision(value => value + 1);
+
     const sourceSeries = header.series;
     const duplicated = duplicateDocumentInPlace({
       currentDocEntry,
@@ -2376,6 +2405,25 @@ function APInvoice() {
         return e;
       }
 
+      if (!isUpdate && !isGrpoBasedLine(l) && l.batchManaged) {
+        if (!Array.isArray(l.batches) || l.batches.length === 0) {
+          e.lines[i] = { ...(e.lines[i] || {}), batches: 'Batch selection is mandatory for batch-managed item' };
+          e.form = 'Please assign incoming batches before adding this A/P Invoice.';
+          return e;
+        }
+        const requiredBatchQty = getRequiredBatchQty(l);
+        const assignedBatchQty = sumBatchQty(l.batches);
+        const inventoryUOM = l.inventoryUOM || l.uomCode || 'Base UoM';
+        if (Math.abs(assignedBatchQty - requiredBatchQty) > BATCH_QTY_TOLERANCE) {
+          e.lines[i] = {
+            ...(e.lines[i] || {}),
+            batches: `Batch quantity (${assignedBatchQty.toFixed(2)} ${inventoryUOM}) must match base quantity (${requiredBatchQty.toFixed(2)} ${inventoryUOM}).`,
+          };
+          e.form = 'Please correct the batch allocation.';
+          return e;
+        }
+      }
+
       if (l.baseEntry != null && l.baseEntry !== '' && parseNum(l.openQty) > 0 && parseNum(l.quantity) > parseNum(l.openQty)) {
         e.lines[i] = { ...(e.lines[i] || {}), quantity: `Quantity cannot exceed open quantity ${l.openQty}` };
         e.form = 'Please correct the highlighted fields.';
@@ -2399,6 +2447,11 @@ function APInvoice() {
   };
 
   // â”€â”€ submit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const narrowConfirmationUpdate = useConfirmationOnlyUpdate({
+    docEntry: currentDocEntry, isDirty,
+    state: { header, lines, headerUdfs, withholdingTax, freightCharges: freightModal.freightCharges , company_id: activeCompanyId, companyKey: formSettingsStorageKey },
+  });
+
   const handleSubmit = async (ev) => {
     ev.preventDefault();
     if (!isDocumentEditable) {
@@ -2417,6 +2470,16 @@ function APInvoice() {
           rows: prev.rows.length ? recalcWithholdingRows(prev.rows) : createDefaultWithholdingRows(),
         }));
       }
+      const firstBatchErrorLineIndex = Object.entries(e.lines || {}).find(([, lineErrors]) => (
+        Boolean(lineErrors?.batches)
+      ))?.[0];
+      if (firstBatchErrorLineIndex !== undefined) {
+        const lineIndex = Number(firstBatchErrorLineIndex);
+        if (Number.isInteger(lineIndex) && lineIndex >= 0) {
+          setActiveTab('Contents');
+          window.setTimeout(() => openBatchModal(lineIndex), 0);
+        }
+      }
       return;
     }
 
@@ -2426,6 +2489,7 @@ function APInvoice() {
       const prep = {
         ...header,
         deliveryDate: header.deliveryDate || header.postingDate || header.documentDate,
+        roundingAmount: totals.roundingAmount,
         series: isManualDocumentSeries(header.series) ? SAP_MANUAL_SERIES_VALUE : (header.series ? Number(header.series) : undefined),
         gstType: inferredGstType,
         allowGstOverride: false,
@@ -2444,7 +2508,7 @@ function APInvoice() {
         withholdingTaxRows: wtaxRowsForTotals,
         header_udfs: headerUdfs,
       };
-      const r = currentDocEntry ? await updateAPInvoice(currentDocEntry, payload) : await submitAPInvoice(payload);
+      const r = currentDocEntry ? await updateAPInvoice(currentDocEntry, narrowConfirmationUpdate(payload)) : await submitAPInvoice(payload);
       const dn = r.data.doc_num ? ` Doc No: ${r.data.doc_num}.` : '';
       const warningMsg = r.data.warning?.message ? ` Warning: ${r.data.warning.message}` : '';
       setSnapshotPending(false);
@@ -2456,11 +2520,40 @@ function APInvoice() {
       setValErrors({ header: {}, lines: {}, form: '' });
 
       if (refData.series.length > 0) {
-        handleSeriesChange(refData.series[0].Series);
+        setHeader(prev => ({ ...prev, series: '', nextNumber: '', docNo: '' }));
       }
 
       setPageState(p => ({ ...p, success: `${r.data.message || 'A/P Invoice saved.'}${dn}${warningMsg}` }));
     } catch (e) {
+      const responseBody = e?.response?.data || {};
+      if (responseBody.code === 'BATCH_SELECTION_REQUIRED') {
+        const detailLine = Array.isArray(responseBody.details?.lines) ? responseBody.details.lines[0] : null;
+        const detailIndex = Number(detailLine?.lineIndex);
+        const itemCode = String(detailLine?.itemCode || '').trim();
+        let lineIndex = Number.isInteger(detailIndex) && detailIndex >= 0 && detailIndex < lines.length
+          ? detailIndex
+          : -1;
+        if (lineIndex < 0 && itemCode) {
+          lineIndex = lines.findIndex((line) => (
+            !isGrpoBasedLine(line) && String(line.itemNo || '').trim() === itemCode
+          ));
+        }
+        if (lineIndex >= 0) {
+          const message = detailLine?.message || getErrMsg(e, 'Please assign incoming batches.');
+          setValErrors((previous) => ({
+            ...previous,
+            form: message,
+            lines: {
+              ...(previous.lines || {}),
+              [lineIndex]: { ...(previous.lines?.[lineIndex] || {}), batches: message },
+            },
+          }));
+          setPageState((previous) => ({ ...previous, error: message, success: '' }));
+          setActiveTab('Contents');
+          window.setTimeout(() => openBatchModal(lineIndex), 0);
+          return;
+        }
+      }
       setPageState(p => ({ ...p, error: getErrMsg(e, 'A/P Invoice submission failed.') }));
     } finally {
       setPageState(p => ({ ...p, posting: false }));
@@ -2468,6 +2561,8 @@ function APInvoice() {
   };
 
   const resetForm = () => {
+    setSeriesRevision(value => value + 1);
+
     setSnapshotPending(false);
     setIsDirty(false);
     setCurrentDocEntry(null); setHeader(INIT_HEADER); setLines([createLine(rowUdfDefinitions)]);
@@ -2491,6 +2586,8 @@ function APInvoice() {
   // Continue in next message with render...
 
   // â”€â”€ render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  useDocumentSeries({ endpoint: '/ap-invoice', companyKey: formSettingsStorageKey, currentDocEntry, header: header, setHeader, setRefData, setPageState, ready: !pageState.loading && !pageState.posting , refreshKey: seriesRevision});
+
   return (
     <form
       ref={workspaceRef}
@@ -2502,8 +2599,8 @@ function APInvoice() {
 
       {/* â”€â”€ Toolbar â”€â”€ */}
       <div className="po-toolbar sap-document-toolbar">
-        <span className="po-toolbar__title sap-document-toolbar__title">A/P Invoice{currentDocEntry ? ` â€” #${header.docNo || currentDocEntry}` : ''}</span>
-        <button type="submit" className="po-btn po-btn--primary sap-document-toolbar__primary" disabled={pageState.posting}>
+        <span className="po-toolbar__title sap-document-toolbar__title">A/P Invoice{currentDocEntry ? ` - #${header.docNo || currentDocEntry}` : ''}</span>
+        <button type="submit" className="po-btn po-btn--primary sap-document-toolbar__primary" disabled={pageState.posting || formSettingsStatus.queryModeActive}>
           {primaryActionLabel}
         </button>
         <button type="button" className="po-btn sap-document-toolbar__cancel" onClick={resetForm}>Cancel</button>
@@ -2512,12 +2609,12 @@ function APInvoice() {
         <button type="button" className="po-btn sap-document-toolbar__udf" onClick={toggleHeaderUdfs}>
           {sidebarOpen ? 'Hide UDFs' : 'Show UDFs'}
         </button>
-        <button type="button" className="po-btn sap-document-toolbar__settings" onClick={toggleFormSettings}>Form Settings</button>
+        <button type="button" className="po-btn sap-document-toolbar__settings" onClick={toggleFormSettings} disabled={formSettingsStatus.queryModeActive} title={formSettingsStatus.queryModeActive ? 'Company SQL Content layout is active' : 'Choose document-line fields'}>Form Settings</button>
         <div className="po-dropdown">
           <button
             type="button"
             className="po-btn"
-            disabled={!isDocumentEditable || !!currentDocEntry}
+            disabled={!isDocumentEditable || !!currentDocEntry || formSettingsStatus.queryModeActive}
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -2527,7 +2624,7 @@ function APInvoice() {
               if (!isActive) dropdown.classList.add('active');
             }}
           >
-            Copy From â–¼
+            Copy From ▼
           </button>
           <div className="po-dropdown-menu">
             <button
@@ -2547,7 +2644,7 @@ function APInvoice() {
           <button
             type="button"
             className="po-btn"
-            disabled={!currentDocEntry}
+            disabled={!currentDocEntry || formSettingsStatus.queryModeActive}
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -2557,7 +2654,7 @@ function APInvoice() {
               if (!isActive) dropdown.classList.add('active');
             }}
           >
-            Copy To â–¼
+            Copy To ▼
           </button>
           <div className="po-dropdown-menu">
             <button
@@ -2574,7 +2671,7 @@ function APInvoice() {
           </div>
         </div>
         {currentDocEntry && (
-          <button type="button" className="po-btn sap-document-toolbar__duplicate" onClick={handleDuplicate}>
+          <button type="button" className="po-btn sap-document-toolbar__duplicate" onClick={handleDuplicate} disabled={formSettingsStatus.queryModeActive}>
             Duplicate
           </button>
         )}
@@ -2600,7 +2697,7 @@ function APInvoice() {
       </div>
 
       {/* â”€â”€ Alerts â”€â”€ */}
-      {pageState.loading && <div className="po-alert po-alert--warning">Loadingâ€¦</div>}
+      {pageState.loading && <div className="po-alert po-alert--warning">Loading...</div>}
       {pageState.error   && <div className="po-alert po-alert--error">{pageState.error}</div>}
       {pageState.success && <div className="po-alert po-alert--success">{pageState.success}</div>}
       {refData.warnings?.length > 0 && (
@@ -2714,10 +2811,10 @@ function APInvoice() {
                   <div className="po-field">
                     <label className="po-field__label">No.</label>
                     <select name="series" className="po-field__select" value={header.series} onChange={handleHeaderChange} disabled={!!currentDocEntry || pageState.seriesLoading}>
-                      <option value="">Select Series</option>
-                      <option value={SAP_MANUAL_SERIES_VALUE}>Manual</option>
+                      <option value="">{pageState.seriesLoading ? 'Loading series...' : pageState.seriesError ? 'Series unavailable' : 'Select Series'}</option>
+                      {(canUseManualSeries(refData) || (currentDocEntry && ['-1','manual','__sap_manual__'].includes(String(header.series)))) && (<option value={SAP_MANUAL_SERIES_VALUE}>Manual</option>)}
                       {getSapVisibleDocumentSeries(refData.series, {
-                        selectedSeries: header.series,
+                        selectedSeries: header.series, includeHistorical: Boolean(currentDocEntry),
                         postingDate: header.postingDate || header.documentDate,
                       }).map(s => <option key={s.Series} value={s.Series}>{s.SeriesName} ({s.Indicator})</option>)}
                       {header.series && !isManualDocumentSeries(header.series) && !refData.series.some(s => String(s.Series) === String(header.series)) && (
@@ -2779,11 +2876,13 @@ function APInvoice() {
             <div className={activeTab === 'Tax' ? 'sap-b1-tax-panel' : 'po-tab-panel'}>
             {activeTab === 'Contents' && (
               <ContentsTab
+                companyQueryContext={buildCompanyFormQueryContext(currentDocEntry, header)}
                 lines={lines}
                 onLineChange={handleLineChange}
                 onNumBlur={handleNumBlur}
                 onAddLine={addLine}
                 onRemoveLine={removeLine}
+                onOpenBatchModal={openBatchModal}
                 lineItemOptions={lineItemOptions}
                 getUomOptions={getUomOptions}
                 effectiveTaxCodes={effectiveTaxCodes}
@@ -2800,6 +2899,9 @@ function APInvoice() {
                 formSettings={formSettings}
                 rowUdfFields={rowUdfDefinitions}
                 onRowUdfChange={handleRowUdfChange}
+                canPasteTable={isDocumentEditable}
+                onPasteTable={handleTablePaste}
+                onClipboardFeedback={handleTableClipboardFeedback}
               />
             )}
 
@@ -2967,7 +3069,7 @@ function APInvoice() {
                       if (!isActive) dropdown.classList.add('active');
                     }}
                   >
-                    Copy From â–¼
+                    Copy From ▼
                   </button>
                   <div className="po-dropdown-menu">
                     <button
@@ -2997,7 +3099,7 @@ function APInvoice() {
                       if (!isActive) dropdown.classList.add('active');
                     }}
                   >
-                    Copy To â–¼
+                    Copy To ▼
                   </button>
                   <div className="po-dropdown-menu">
                     <button
@@ -3144,6 +3246,19 @@ function APInvoice() {
           ...prev,
           rows: recalcWithholdingRows(rows),
         }))}
+      />
+
+      <BatchAllocationModal
+        isOpen={batchModal.open}
+        mode="receipt"
+        documentLabel="A/P Invoice"
+        line={batchModal.lineIndex != null ? lines[batchModal.lineIndex] : null}
+        loading={batchModal.loading}
+        error={batchModal.error}
+        onGenerateBatchNumber={() => fetchNextBatchNumber('JKL')}
+        workspaceRef={workspaceRef}
+        onClose={closeBatchModal}
+        onSave={saveLineBatches}
       />
 
       <FreightChargesModal

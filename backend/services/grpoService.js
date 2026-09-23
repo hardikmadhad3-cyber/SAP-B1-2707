@@ -1,4 +1,6 @@
+const { buildDocumentConfirmationPayload, updateDocumentConfirmationOnly } = require('./documentConfirmationUtils');
 const sapService = require('./sapService');
+const { buildDocumentRoundingPayload } = require('./documentRoundingPayloadUtils');
 const grpoDb = require('./grpoDbService');
 const purchaseOrderDb = require('./purchaseOrderDbService');
 const { getDocumentFreightCharges } = require('./freightChargesDbService');
@@ -8,6 +10,7 @@ const { applyUdfValues } = require('./udfPayloadUtils');
 const { buildGRPODocumentLine } = require('./grpoPayloadUtils');
 const { applyPlaceOfSupplyUdf } = require('./placeOfSupplyUtils');
 const { buildDocumentSeriesPayload } = require('./documentSeriesPayloadUtils');
+const { buildDocumentReferencesPayload } = require('./documentReferencesPayloadUtils');
 const {
   applySapDocumentCurrency,
   loadCompanyCurrencyContext,
@@ -258,7 +261,9 @@ const submitGRPO = async (payload) => {
       NumAtCard: header.salesContractNo || '',
       DiscountPercent: header.discount ? parseFloat(header.discount) : 0,
       DocumentAdditionalExpenses: documentAdditionalExpenses,
-      Rounding: toSapYesNo(header.rounding),
+      DocumentReferences: buildDocumentReferencesPayload(payload.reference_documents),
+      ...buildDocumentRoundingPayload(header),
+      ...buildDocumentConfirmationPayload(header),
       ...buildDocumentSeriesPayload(header),
       DocumentLines: lines
         .filter(l => l.itemNo && l.itemNo.trim())
@@ -317,6 +322,8 @@ const submitGRPO = async (payload) => {
 // ───────── UPDATE GRPO (USING SERVICE LAYER) ─────────
 
 const updateGRPO = async (docEntry, payload) => {
+  const confirmationResult = await updateDocumentConfirmationOnly(docEntry, payload, 'PurchaseDeliveryNotes', sapService);
+  if (confirmationResult) return confirmationResult;
   try {
     const { header, lines, header_udfs } = payload;
     const documentAdditionalExpenses = buildDocumentAdditionalExpenses(payload.freightCharges);
@@ -326,7 +333,9 @@ const updateGRPO = async (docEntry, payload) => {
       JournalMemo: header.journalRemark || '',
       DiscountPercent: header.discount ? parseFloat(header.discount) : 0,
       DocumentAdditionalExpenses: documentAdditionalExpenses,
-      Rounding: toSapYesNo(header.rounding),
+      DocumentReferences: buildDocumentReferencesPayload(payload.reference_documents),
+      ...buildDocumentRoundingPayload(header),
+      ...buildDocumentConfirmationPayload(header),
     };
 
     if (header.freight) sapPayload.TotalExpenses = parseFloat(header.freight);

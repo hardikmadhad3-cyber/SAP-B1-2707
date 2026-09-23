@@ -53,6 +53,57 @@ export const resolveUdfDefinitionKey = (targetKey, rowUdfDefinitions = []) => {
   return '';
 };
 
+export const getMappedLineKeyForUdf = (udfKey, rowUdfDefinitions = []) => {
+  const udfToken = normalizeUdfLookupKey(udfKey);
+  if (!udfToken) return '';
+
+  for (const [lineKey, configuredUdfKeys] of Object.entries(GRPO_LINE_UDF_FIELD_MAP)) {
+    const aliases = Array.isArray(configuredUdfKeys) ? configuredUdfKeys : [configuredUdfKeys];
+    const actualUdfKey = resolveUdfDefinitionKey(aliases, rowUdfDefinitions);
+    if (
+      normalizeUdfLookupKey(actualUdfKey) === udfToken ||
+      aliases.some((alias) => normalizeUdfLookupKey(alias) === udfToken)
+    ) {
+      return lineKey;
+    }
+  }
+
+  return '';
+};
+
+export const synchronizeGRPOLineUdfChange = (
+  line = {},
+  udfKey,
+  value,
+  rowUdfDefinitions = [],
+) => {
+  const lineKey = getMappedLineKeyForUdf(udfKey, rowUdfDefinitions);
+  return {
+    ...line,
+    ...(lineKey ? { [lineKey]: value } : {}),
+    udf: { ...(line.udf || {}), [udfKey]: value },
+  };
+};
+
+export const synchronizeGRPOLineFieldChange = (
+  line = {},
+  lineKey,
+  value,
+  rowUdfDefinitions = [],
+) => {
+  const configuredUdfKeys = GRPO_LINE_UDF_FIELD_MAP[lineKey];
+  if (!configuredUdfKeys) return { ...line, [lineKey]: value };
+
+  const actualUdfKey = resolveUdfDefinitionKey(configuredUdfKeys, rowUdfDefinitions);
+  return {
+    ...line,
+    [lineKey]: value,
+    ...(actualUdfKey
+      ? { udf: { ...(line.udf || {}), [actualUdfKey]: value } }
+      : {}),
+  };
+};
+
 export const getLineUdfValue = (line = {}, aliases = []) => {
   const normalizedAliases = Array.isArray(aliases) ? aliases : [aliases];
   const aliasTokens = new Set(normalizedAliases.map(normalizeUdfLookupKey).filter(Boolean));

@@ -1,8 +1,11 @@
+const { getMarketingDocumentSeries: getSharedDocumentSeries } = require('./documentSeriesDbUtils');
 /**
  * AR Credit Memo DB Service - ODBC/Direct SQL for GET operations
  * Reads data directly from SAP B1 SQL Server database
  */
 const db = require('./dbService');
+const { getDocumentUomSql, loadCompanyUomGroups } = require('./documentUomDbUtils');
+const { getDocumentUnitPriceSql } = require('./documentUnitPriceDbUtils');
 const { loadBusinessPartnerAddresses } = require('./businessPartnerAddressDbUtils');
 const masterDataDbService = require('./masterDataDbService');
 const salesOrderDb = require('./salesOrderDbService');
@@ -112,7 +115,8 @@ const getItems = () => safe(db.query(`
   SELECT ItemCode, ItemName,
          SalUnitMsr  AS SalesUnit,
          InvntryUom  AS InventoryUOM,
-         SUoMEntry   AS UoMGroupEntry,
+         UgpEntry    AS UoMGroupEntry,
+         SUoMEntry   AS SalesUomEntry,
          DfltWH      AS DefaultWarehouse,
          SWW         AS HSNCode,
          ManBtchNum  AS BatchManaged,
@@ -166,18 +170,7 @@ const getStates = () => safe(db.query(`
 
 const getTaxCodes = () => masterDataDbService.searchDocumentTaxCodes('', 'sales', 500, 0);
 
-const getUomGroups = () => safe(db.query(`
-  SELECT g.UgpEntry AS AbsEntry,
-         g.UgpCode  AS Name,
-         u.UomCode,
-         d.BaseQty AS BaseQty,
-         d.AltQty AS AltQty
-  FROM   OUGP g
-  LEFT JOIN UGP1 d ON d.UgpEntry = g.UgpEntry
-  LEFT JOIN OUOM u ON u.UomEntry = d.UomEntry
-  WHERE  g.Locked <> 'Y'
-  ORDER  BY g.UgpEntry, d.LineNum
-`));
+const getUomGroups = () => loadCompanyUomGroups(db);
 
 const getDecimalSettings = () => safe(db.query(`
   SELECT TOP 1
@@ -416,11 +409,7 @@ const getARCreditMemo = async (docEntry) => {
     : hasTableField(lineFieldMetadata, 'VatGroup')
       ? 'T0.VatGroup'
       : "''";
-  const lineUomExpression = hasTableField(lineFieldMetadata, 'unitMsr')
-    ? 'T0.unitMsr'
-    : hasTableField(lineFieldMetadata, 'UomCode')
-      ? 'T0.UomCode'
-      : "''";
+  const documentUom = await getDocumentUomSql(db, 'RIN1');
   const lineSacExpression = hasTableField(lineFieldMetadata, 'SacEntry')
     ? 'T0.SacEntry'
     : hasTableField(lineFieldMetadata, 'SACEntry')
@@ -448,14 +437,16 @@ const getARCreditMemo = async (docEntry) => {
         COALESCE(NULLIF(LTRIM(RTRIM(T0.Dscription)), ''), ITM.ItemName, '') AS ItemDescription,
         T0.Quantity,
         ${optionalColumn(lineFieldMetadata, 'T0', 'ShipDate', 'ShipDate', 'NULL')},
-        T0.Price AS UnitPrice,
+        ${await getDocumentUnitPriceSql(db, 'RIN1', 'T0')} AS UnitPrice,
         T0.DiscPrcnt AS DiscountPercent,
         ${lineTaxExpression} AS TaxCode,
         T0.LineTotal,
         ${lineTaxAmountExpression} AS TaxAmount,
         ${optionalColumn(lineFieldMetadata, 'T0', 'WTLiable', 'WTLiable', "'N'")},
         T0.WhsCode AS Warehouse,
-        ${lineUomExpression} AS UoMCode,
+        ${documentUom.entrySql} AS UoMEntry,
+        ${documentUom.codeSql} AS UoMCode,
+        ${documentUom.nameSql} AS UoMName,
         ${optionalColumn(lineFieldMetadata, 'T0', 'AcctCode', 'GLAccount', "''")},
         ${optionalColumn(lineFieldMetadata, 'T0', 'OcrCode', 'DistributionRule', "''")},
         ${optionalColumn(lineFieldMetadata, 'T0', 'CogsOcrCod', 'COGSDistributionRule', "''")},
@@ -474,6 +465,7 @@ const getARCreditMemo = async (docEntry) => {
         T0.BaseLine,
         COALESCE(CHP.ChapterID, ITM.SWW, '') AS HSNCode
       FROM RIN1 T0
+      ${documentUom.joinSql}
       LEFT JOIN OITM ITM ON ITM.ItemCode = T0.ItemCode
       LEFT JOIN OCHP CHP ON CHP.AbsEntry = ITM.ChapterID
       WHERE T0.DocEntry = @docEntry
@@ -490,18 +482,21 @@ const getARCreditMemo = async (docEntry) => {
         T0.Dscription AS ItemDescription,
         T0.Quantity,
         ${optionalColumn(lineFieldMetadata, 'T0', 'ShipDate', 'ShipDate', 'NULL')},
-        T0.Price AS UnitPrice,
+        ${await getDocumentUnitPriceSql(db, 'RIN1', 'T0')} AS UnitPrice,
         T0.DiscPrcnt AS DiscountPercent,
         ${lineTaxExpression} AS TaxCode,
         T0.LineTotal,
         ${lineTaxAmountExpression} AS TaxAmount,
         T0.WhsCode AS Warehouse,
-        ${lineUomExpression} AS UoMCode,
+        ${documentUom.entrySql} AS UoMEntry,
+        ${documentUom.codeSql} AS UoMCode,
+        ${documentUom.nameSql} AS UoMName,
         T0.BaseEntry,
         T0.BaseType,
         T0.BaseLine,
         COALESCE(ITM.SWW, '') AS HSNCode
       FROM RIN1 T0
+      ${documentUom.joinSql}
       LEFT JOIN OITM ITM ON ITM.ItemCode = T0.ItemCode
       WHERE T0.DocEntry = @docEntry
         AND ISNULL(LTRIM(RTRIM(T0.ItemCode)), '') <> ''
@@ -603,9 +598,10 @@ const getARCreditMemo = async (docEntry) => {
       loc: l.Loc || '',
       Loc: l.Loc || '',
       branch: l.BranchCode || (header.Branch ? String(header.Branch) : ''),
+      uomEntry: l.UoMEntry != null ? Number(l.UoMEntry) : null,
       uomCode: l.UoMCode || '',
       UoMCode: l.UoMCode || '',
-      uomName: l.UoMCode || '',
+      uomName: l.UoMName || l.UoMCode || '',
       enableSettingCost: String(l.EnableSettingCost || '').toUpperCase() === 'Y' ? 'Y' : 'N',
       withoutQtyPosting: String(l.WithoutQtyPosting || '').toUpperCase() === 'Y' ? 'Y' : 'N',
       returnCost: l.ReturnCost != null ? String(l.ReturnCost) : '',
@@ -704,107 +700,7 @@ const getARCreditMemo = async (docEntry) => {
 
 // ── DOCUMENT SERIES ───────────────────────────────────────────────────────────
 
-const getDocumentSeries = async (targetDate = null, transactionType = '', branch = '') => {
-  const effectiveTargetDate = targetDate || new Date().toISOString().split('T')[0];
-  const [seriesMetadata, numberingMetadata] = await Promise.all([
-    getTableFieldMetadata('NNM1'),
-    getTableFieldMetadata('ONNM'),
-  ]);
-  const hasSeriesBranch = hasTableField(seriesMetadata, 'BPLId');
-  const defaultSeriesColumn = hasTableField(numberingMetadata, 'DfltSeries')
-    ? 'DfltSeries'
-    : hasTableField(numberingMetadata, 'DfltSerie')
-      ? 'DfltSerie'
-      : '';
-  const branchId = Number(branch);
-  const hasBranchFilter = hasSeriesBranch && Number.isFinite(branchId) && String(branch || '').trim() !== '';
-  const defaultSeriesJoin = defaultSeriesColumn
-    ? `LEFT JOIN ONNM T2 ON T2.ObjectCode = T0.ObjectCode AND T2.${defaultSeriesColumn} = T0.Series`
-    : '';
-  const defaultSeriesSelect = defaultSeriesColumn
-    ? `CASE WHEN T2.${defaultSeriesColumn} IS NOT NULL THEN 1 ELSE 0 END`
-    : '0';
-  const beginStrRef = sqlColumnRef(seriesMetadata, 'T0', 'BeginStr');
-  const lastNumRef = sqlColumnRef(seriesMetadata, 'T0', 'LastNum');
-  const seriesLabelSelect = beginStrRef
-    ? `COALESCE(NULLIF(LTRIM(RTRIM(CAST(${beginStrRef} AS NVARCHAR(50)))), ''), T0.SeriesName) AS SeriesLabel`
-    : 'T0.SeriesName AS SeriesLabel';
-  const numberRangeFilter = lastNumRef
-    ? `AND (${lastNumRef} IS NULL OR ${lastNumRef} = 0 OR T0.NextNumber <= ${lastNumRef})`
-    : '';
-  const requestedDocSubType = resolveSeriesDocSubType(transactionType);
-  const docSubTypeRef = sqlColumnRef(seriesMetadata, 'T0', 'DocSubType');
-  const docSubTypeFilter = requestedDocSubType && docSubTypeRef
-    ? `AND COALESCE(NULLIF(${docSubTypeRef}, ''), '--') = @docSubType`
-    : '';
-  const branchSeriesFilter = hasBranchFilter ? 'AND T0.BPLId = @branchId' : '';
-  const globalSeriesFilter = hasBranchFilter ? 'AND (T0.BPLId IS NULL OR T0.BPLId IN (-1, 0))' : '';
-  const datedParams = hasBranchFilter ? { targetDate: effectiveTargetDate, branchId } : { targetDate: effectiveTargetDate };
-  const fallbackParams = hasBranchFilter ? { branchId } : {};
-  const withDocSubTypeParam = (params) => (docSubTypeFilter ? { ...params, docSubType: requestedDocSubType } : params);
-
-  const runSeriesQuery = (withPeriod, branchFilterSql, queryParams) => safe(db.query(`
-    SELECT
-      T0.Series,
-      T0.SeriesName,
-      ${seriesLabelSelect},
-      ${optionalColumn(seriesMetadata, 'T0', 'BeginStr', 'BeginStr', "''")},
-      ${optionalColumn(seriesMetadata, 'T0', 'EndStr', 'EndStr', "''")},
-      T0.Indicator,
-      T0.NextNumber,
-      ${optionalColumn(seriesMetadata, 'T0', 'BPLId', 'BPLId', 'NULL')},
-      ${defaultSeriesSelect} AS IsDefault,
-      ${withPeriod ? 'T1.Name' : 'NULL'} AS FinancialYear,
-      ${withPeriod ? 'T1.F_RefDate' : 'NULL'} AS FromDate,
-      ${withPeriod ? 'T1.T_RefDate' : 'NULL'} AS ToDate
-    FROM NNM1 T0
-    ${withPeriod ? 'INNER JOIN OFPR T1 ON T0.Indicator = T1.Indicator' : ''}
-    ${defaultSeriesJoin}
-    WHERE T0.ObjectCode = '14'
-      AND T0.Locked = 'N'
-      ${branchFilterSql}
-      ${numberRangeFilter}
-      ${docSubTypeFilter}
-      ${withPeriod ? 'AND CAST(@targetDate AS date) BETWEEN T1.F_RefDate AND T1.T_RefDate' : ''}
-    ORDER BY IsDefault DESC, T0.SeriesName, T0.Series
-  `, queryParams));
-
-  let result = hasBranchFilter
-    ? await runSeriesQuery(true, branchSeriesFilter, withDocSubTypeParam(datedParams))
-    : await runSeriesQuery(true, '', withDocSubTypeParam(datedParams));
-
-  if (!result.length && hasBranchFilter) {
-    result = await runSeriesQuery(true, globalSeriesFilter, withDocSubTypeParam(datedParams));
-  }
-
-  if (!result.length) {
-    result = hasBranchFilter
-      ? await runSeriesQuery(false, branchSeriesFilter, withDocSubTypeParam(fallbackParams))
-      : await runSeriesQuery(false, '', withDocSubTypeParam(fallbackParams));
-  }
-
-  if (!result.length && hasBranchFilter) {
-    result = await runSeriesQuery(false, globalSeriesFilter, withDocSubTypeParam(fallbackParams));
-  }
-
-  const series = result.map(s => ({
-    Series: s.Series,
-    SeriesName: s.SeriesName || s.SeriesLabel || s.BeginStr,
-    DisplayName: s.SeriesName || s.SeriesLabel || s.BeginStr,
-    RawSeriesName: s.SeriesName || '',
-    BeginStr: s.BeginStr || '',
-    EndStr: s.EndStr || '',
-    NextNumber: s.NextNumber,
-    Indicator: s.Indicator,
-    BPLId: s.BPLId != null ? String(s.BPLId) : '',
-    IsDefault: Number(s.IsDefault || 0) === 1,
-    FinancialYear: s.FinancialYear || '',
-    FromDate: s.FromDate || null,
-    ToDate: s.ToDate || null,
-  }));
-
-  return keepSapVisibleNumberingSeries(series);
-};
+const getDocumentSeries = async (targetDate = null, transactionType = '', branch = '', docSubType) => getSharedDocumentSeries({ db, objectCode: '14', targetDate, branch, docSubType, transactionType });
 
 const getNextNumber = async (series) => {
   const result = await safe(db.query(`
@@ -922,7 +818,8 @@ const getItemsForModal = () => safe(db.query(`
     T0.OnOrder AS Ordered,
     T0.SalUnitMsr AS SalesUnit,
     T0.InvntryUom AS InventoryUOM,
-    T0.SUoMEntry AS UoMGroupEntry,
+    T0.UgpEntry AS UoMGroupEntry,
+    T0.SUoMEntry AS SalesUomEntry,
     CHP.ChapterID AS HSNCode,
     T0.validFor AS Active,
     T0.frozenFor AS Frozen,
@@ -965,13 +862,14 @@ const getUomConversionFactor = async (itemCode, uomCode) => {
     SELECT 
       T0.ItemCode,
       T0.InvntryUom AS InventoryUOM,
-      T0.SUoMEntry AS UoMGroupEntry,
+      T0.UgpEntry AS UoMGroupEntry,
+      T0.SUoMEntry AS SalesUomEntry,
       T0.SalUnitMsr AS SalesUnit,
       T2.BaseQty,
       T2.AltQty,
       T3.UomCode
     FROM OITM T0
-    LEFT JOIN OUGP T1 ON T0.SUoMEntry = T1.UgpEntry
+    LEFT JOIN OUGP T1 ON T0.UgpEntry = T1.UgpEntry
     LEFT JOIN UGP1 T2 ON T1.UgpEntry = T2.UgpEntry
     LEFT JOIN OUOM T3 ON T2.UomEntry = T3.UomEntry
     WHERE T0.ItemCode = @itemCode
@@ -1051,8 +949,8 @@ const AR_CREDIT_MEMO_MATRIX_COLUMN_DEFS = [
   { key: 'taxLiable', label: 'Tax Liable', minWidth: 95, sapField: 'TaxOnly', type: 'checkbox', sapColumnIds: ['22', 'TaxOnly', 'Tax Liable'] },
   { key: 'weight', label: 'Weight', minWidth: 95, sapField: 'Weight1', alternativeFields: ['Weight'], sapColumnIds: ['23', 'Weight1', 'Weight'] },
   { key: 'taxAmount', label: 'Tax Amount (LC)', minWidth: 125, sapField: 'VatSum', calculated: true, sapColumnIds: ['24', 'VatSum', 'Tax Amount (LC)'] },
-  { key: 'uomCode', label: 'UoM Code', minWidth: 105, sapField: 'UomCode', alternativeFields: ['unitMsr', 'UomEntry'], sapColumnIds: ['1470002149', '1470002145', 'UomCode', 'unitMsr', 'UoM Code', 'UoM'] },
-  { key: 'uomName', label: 'UoM Name', minWidth: 120, sapField: 'unitMsr', alternativeFields: ['UomCode'], sapColumnIds: ['unitMsr', 'UoM Name'] },
+  { key: 'uomCode', label: 'UoM Code', minWidth: 105, sapField: 'UomCode', alternativeFields: ['UomEntry'], sapColumnIds: ['1470002149', 'UomCode', 'UoMCode', 'UoM Code'] },
+  { key: 'uomName', label: 'UoM Name', minWidth: 120, sapField: 'unitMsr', alternativeFields: [], sapColumnIds: ['1470002145', 'unitMsr', 'UoM Name'] },
   { key: 'cogsDistRule', label: 'COGS Distr. Rule', minWidth: 135, sapField: 'CogsOcrCod', sapColumnIds: ['29', 'CogsOcrCod', 'COGS Distr. Rule'] },
   { key: 'countryOfOrigin', label: 'Country/Region of Origin', minWidth: 185, sapField: 'CountryOrg', sapColumnIds: ['10002037', 'CountryOrg', 'Country/Region of Origin'] },
   { key: 'loc', label: 'Loc.', source: 'branch', sapColumnIds: ['10002047', 'LocCode', 'Location', 'LOC', 'Loc.'], minWidth: 115 },
@@ -1364,29 +1262,7 @@ const getReferenceData = async () => {
     lineFieldMetadata._preferencesByKey || {},
   );
 
-  const uomGroupMap = {};
-  uomGroupsRaw.forEach(row => {
-    if (!uomGroupMap[row.AbsEntry]) {
-      uomGroupMap[row.AbsEntry] = {
-        AbsEntry: row.AbsEntry,
-        Name: row.Name,
-        uomCodes: [],
-        conversions: {}
-      };
-    }
-    if (row.UomCode) {
-      uomGroupMap[row.AbsEntry].uomCodes.push(row.UomCode);
-      const baseQty = parseFloat(row.BaseQty || 1);
-      const altQty = parseFloat(row.AltQty || 1);
-      const factor = baseQty > 0 ? altQty / baseQty : 1;
-      uomGroupMap[row.AbsEntry].conversions[row.UomCode] = {
-        baseQty,
-        altQty,
-        factor
-      };
-    }
-  });
-  const uom_groups = Object.values(uomGroupMap);
+  const uom_groups = uomGroupsRaw;
 
   const decimalSettings = decimalRows.length > 0 ? {
     QtyDec: decimalRows[0].QtyDec || 2,
@@ -1594,7 +1470,7 @@ const getOpenReturns = (customerCode = null) => {
   return safe(db.query(query, customerCode ? { customerCode } : {}));
 };
 
-const getReturnForCopy = (docEntry) => safe(db.query(`
+const getReturnForCopy = async (docEntry) => safe(db.query(`
   SELECT 
     T0.DocEntry, T0.DocNum, T0.DocDate, T0.DocDueDate, T0.TaxDate,
     T0.CardCode, T0.CardName, T0.CntctCode AS ContactPerson,
@@ -1605,7 +1481,7 @@ const getReturnForCopy = (docEntry) => safe(db.query(`
     T0.VatSum AS TaxTotal, T0.DocTotal,
     T0.BPLId AS Branch, T0.IndicatorCode AS PlaceOfSupply,
     T1.LineNum, T1.ItemCode, T1.Dscription AS ItemDescription,
-    T1.Quantity, T1.Price AS UnitPrice, T1.Currency AS LineCurrency,
+    T1.Quantity, ${await getDocumentUnitPriceSql(db, 'RIN1', 'T1')} AS UnitPrice, T1.Currency AS LineCurrency,
     T1.Rate AS LineRate, T1.DiscPrcnt AS LineDiscountPercent,
     T1.LineTotal, T1.TaxCode, T1.VatPrcnt AS TaxRate,
     T1.VatSum AS LineTaxAmount, T1.GTotal AS LineGrossTotal,
@@ -1630,7 +1506,7 @@ const getOpenReturnRequests = (customerCode = null) => {
   return safe(db.query(query, customerCode ? { customerCode } : {}));
 };
 
-const getReturnRequestForCopy = (docEntry) => safe(db.query(`
+const getReturnRequestForCopy = async (docEntry) => safe(db.query(`
   SELECT 
     T0.DocEntry, T0.DocNum, T0.DocDate, T0.DocDueDate, T0.TaxDate,
     T0.CardCode, T0.CardName, T0.CntctCode AS ContactPerson,
@@ -1641,7 +1517,7 @@ const getReturnRequestForCopy = (docEntry) => safe(db.query(`
     T0.VatSum AS TaxTotal, T0.DocTotal,
     T0.BPLId AS Branch, T0.IndicatorCode AS PlaceOfSupply,
     T1.LineNum, T1.ItemCode, T1.Dscription AS ItemDescription,
-    T1.Quantity, T1.Price AS UnitPrice, T1.Currency AS LineCurrency,
+    T1.Quantity, ${await getDocumentUnitPriceSql(db, 'RDN1', 'T1')} AS UnitPrice, T1.Currency AS LineCurrency,
     T1.Rate AS LineRate, T1.DiscPrcnt AS LineDiscountPercent,
     T1.LineTotal, T1.TaxCode, T1.VatPrcnt AS TaxRate,
     T1.VatSum AS LineTaxAmount, T1.GTotal AS LineGrossTotal,
@@ -1666,7 +1542,7 @@ const getOpenDownPayments = (customerCode = null) => {
   return safe(db.query(query, customerCode ? { customerCode } : {}));
 };
 
-const getDownPaymentForCopy = (docEntry) => safe(db.query(`
+const getDownPaymentForCopy = async (docEntry) => safe(db.query(`
   SELECT 
     T0.DocEntry, T0.DocNum, T0.DocDate, T0.DocDueDate, T0.TaxDate,
     T0.CardCode, T0.CardName, T0.CntctCode AS ContactPerson,
@@ -1677,7 +1553,7 @@ const getDownPaymentForCopy = (docEntry) => safe(db.query(`
     T0.VatSum AS TaxTotal, T0.DocTotal,
     T0.BPLId AS Branch, T0.IndicatorCode AS PlaceOfSupply,
     T1.LineNum, T1.ItemCode, T1.Dscription AS ItemDescription,
-    T1.Quantity, T1.Price AS UnitPrice, T1.Currency AS LineCurrency,
+    T1.Quantity, ${await getDocumentUnitPriceSql(db, 'DPI1', 'T1')} AS UnitPrice, T1.Currency AS LineCurrency,
     T1.Rate AS LineRate, T1.DiscPrcnt AS LineDiscountPercent,
     T1.LineTotal, T1.TaxCode, T1.VatPrcnt AS TaxRate,
     T1.VatSum AS LineTaxAmount, T1.GTotal AS LineGrossTotal,

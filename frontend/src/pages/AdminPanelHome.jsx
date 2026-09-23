@@ -19,6 +19,13 @@ const WORKSPACE_LINKS = [
     path: '/admin/transaction-field-configuration',
     count: 'Open',
   },
+  {
+    key: 'company-form-settings',
+    title: 'Company Form Settings',
+    description: 'Set a page layout once per company; users may still save their own preference.',
+    path: '/admin/company-form-settings',
+    count: 'Open',
+  },
 ];
 
 const AdminPanelHome = () => {

@@ -199,7 +199,7 @@ const selectLookupRows = async (tableName, codeCandidates, nameCandidates, optio
     `
       SELECT DISTINCT
         CAST([${codeColumn}] AS NVARCHAR(100)) AS code,
-        CAST(ISNULL([${nameColumn}], [${codeColumn}]) AS NVARCHAR(254)) AS name
+        COALESCE(CAST([${nameColumn}] AS NVARCHAR(254)), CAST([${codeColumn}] AS NVARCHAR(254))) AS name
       FROM [${tableName}]
       WHERE [${codeColumn}] IS NOT NULL
       ORDER BY name
@@ -226,7 +226,7 @@ const selectFinancialReportTemplates = async (options = {}) => {
     `
       SELECT DISTINCT
         CAST([${codeColumn}] AS NVARCHAR(100)) AS code,
-        CAST(ISNULL([${nameColumn}], [${codeColumn}]) AS NVARCHAR(254)) AS name
+        COALESCE(CAST([${nameColumn}] AS NVARCHAR(254)), CAST([${codeColumn}] AS NVARCHAR(254))) AS name
         ${extraSelect ? `,\n        ${extraSelect}` : ""}
       FROM [${tableName}]
       WHERE [${codeColumn}] IS NOT NULL
@@ -979,7 +979,7 @@ const getCashFlowReferenceReport = async (criteria = {}, options = {}) => {
         ISNULL(H.TransType, L.TransType) AS TransType,
         H.TransId,
         ISNULL(H.Number, H.TransId) AS JournalNumber,
-        COALESCE(U.USER_CODE, U.U_NAME, CAST(ISNULL(H.UserSign, '') AS NVARCHAR(50)), '') AS Creator,
+        COALESCE(U.USER_CODE, U.U_NAME, ISNULL(CAST(H.UserSign AS NVARCHAR(50)), ''), '') AS Creator,
         ISNULL(L.Line_ID, 0) AS LineId,
         COALESCE(NULLIF(L.ShortName, ''), L.Account, '') AS EntityCode,
         COALESCE(NULLIF(BP.CardName, ''), NULLIF(A.AcctName, ''), NULLIF(L.ShortName, ''), L.Account, '') AS EntityName,

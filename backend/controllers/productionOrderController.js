@@ -9,10 +9,17 @@ const getErrorPayload = (error) => ({
     error.message ||
     'Unknown error',
 });
+const getStatus = (error, fallback = 500) => {
+  const status = error.statusCode || error.response?.status || fallback;
+  return status === 412 ? 409 : status;
+};
 
 const getReferenceData = async (req, res) => {
   try {
-    const data = await productionDbService.getProductionOrderReferenceData();
+    const data = await productionDbService.getProductionOrderReferenceData({
+      postingDate: req.query.date,
+      branch: req.query.branch || '',
+    });
     res.json(data);
   } catch (error) {
     console.error('[ProdOrder] getReferenceData:', error.response?.data || error.message);
@@ -33,10 +40,11 @@ const getProductionOrders = async (req, res) => {
 const getProductionOrderByDocEntry = async (req, res) => {
   try {
     const data = await productionDbService.getProductionOrderByDocEntry(req.params.docEntry);
+    if (!data) return res.status(404).json({ detail: 'Production order not found.' });
     res.json(data);
   } catch (error) {
     console.error('[ProdOrder] get:', error.response?.data || error.message);
-    res.status(error.response?.status || 500).json(getErrorPayload(error));
+    res.status(getStatus(error)).json(getErrorPayload(error));
   }
 };
 
@@ -46,7 +54,7 @@ const createProductionOrder = async (req, res) => {
     res.status(201).json(result);
   } catch (error) {
     console.error('[ProdOrder] create:', error.response?.data || error.message);
-    res.status(error.response?.status || 500).json(getErrorPayload(error));
+    res.status(getStatus(error)).json(getErrorPayload(error));
   }
 };
 
@@ -56,7 +64,7 @@ const updateProductionOrder = async (req, res) => {
     res.json(result);
   } catch (error) {
     console.error('[ProdOrder] update:', error.response?.data || error.message);
-    res.status(error.response?.status || 500).json(getErrorPayload(error));
+    res.status(getStatus(error)).json(getErrorPayload(error));
   }
 };
 
@@ -66,7 +74,7 @@ const closeProductionOrder = async (req, res) => {
     res.json(result);
   } catch (error) {
     console.error('[ProdOrder] close:', error.response?.data || error.message);
-    res.status(error.response?.status || 500).json(getErrorPayload(error));
+    res.status(getStatus(error)).json(getErrorPayload(error));
   }
 };
 
@@ -76,7 +84,7 @@ const releaseProductionOrder = async (req, res) => {
     res.json(result);
   } catch (error) {
     console.error('[ProdOrder] release:', error.response?.data || error.message);
-    res.status(error.response?.status || 500).json(getErrorPayload(error));
+    res.status(error.statusCode || error.response?.status || 500).json(getErrorPayload(error));
   }
 };
 
@@ -86,7 +94,7 @@ const explodeBOM = async (req, res) => {
     res.json(data);
   } catch (error) {
     console.error('[ProdOrder] explodeBOM:', error.response?.data || error.message);
-    res.status(error.response?.status || 500).json(getErrorPayload(error));
+    res.status(error.statusCode || error.response?.status || 500).json(getErrorPayload(error));
   }
 };
 
@@ -97,6 +105,14 @@ const lookupItems = async (req, res) => {
     res.json(data);
   } catch (error) {
     res.status(500).json(getErrorPayload(error));
+  }
+};
+
+const getSeries = async (req, res) => {
+  try {
+    res.json(await productionDbService.lookupSeriesContext('202', req.query.date, req.query.branch || ''));
+  } catch (error) {
+    res.status(error.statusCode || 500).json(getErrorPayload(error));
   }
 };
 
@@ -204,6 +220,7 @@ const lookupLinkedOrders = async (req, res) => {
 
 module.exports = {
   getReferenceData,
+  getSeries,
   getProductionOrders,
   getProductionOrderByDocEntry,
   createProductionOrder,

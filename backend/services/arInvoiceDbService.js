@@ -1,8 +1,11 @@
+const { getMarketingDocumentSeries: getSharedDocumentSeries } = require('./documentSeriesDbUtils');
 /**
  * AR Invoice reference data — loaded directly from SAP B1 SQL Server database.
  * Column names verified against SAP B1 schema.
  */
 const db = require('./dbService');
+const { loadCompanyUomGroups } = require('./documentUomDbUtils');
+const { getDocumentUnitPriceSql } = require('./documentUnitPriceDbUtils');
 const { loadBusinessPartnerAddresses } = require('./businessPartnerAddressDbUtils');
 const masterDataDbService = require('./masterDataDbService');
 const salesOrderDb = require('./salesOrderDbService');
@@ -127,8 +130,8 @@ const AR_INVOICE_MATRIX_COLUMN_DEFS = [
   { key: 'distRule', label: 'Distr. Rule', minWidth: 105, sapField: 'OcrCode', sapColumnIds: ['21', 'OcrCode', 'Distr. Rule', 'DistributionRule'] },
   { key: 'weight', label: 'Weight', minWidth: 95, numeric: true, sapField: 'Weight1', alternativeFields: ['Weight'], sapColumnIds: ['23', 'Weight1', 'Weight'] },
   { key: 'taxAmount', label: 'Tax Amount (LC)', minWidth: 125, readOnly: true, sapField: 'VatSum', sapColumnIds: ['24', 'VatSum', 'Tax Amount (LC)'] },
-  { key: 'uomCode', label: 'UoM Code', minWidth: 105, sapField: 'UomCode', alternativeFields: ['unitMsr', 'UomEntry'], sapColumnIds: ['1470002149', '1470002145', 'UomCode', 'unitMsr', 'UoM Code', 'UoM'] },
-  { key: 'uomName', label: 'UoM Name', minWidth: 120, sapField: 'unitMsr', alternativeFields: ['UomCode'], sapColumnIds: ['1470002145', 'unitMsr', 'UoM Name'] },
+  { key: 'uomCode', label: 'UoM Code', minWidth: 105, sapField: 'UomCode', alternativeFields: ['UomEntry'], sapColumnIds: ['1470002149', 'UomCode', 'UoMCode', 'UoM Code'] },
+  { key: 'uomName', label: 'UoM Name', minWidth: 120, sapField: 'unitMsr', alternativeFields: [], sapColumnIds: ['1470002145', 'unitMsr', 'UoM Name'] },
   { key: 'cogsDistRule', label: 'COGS Distr. Rule', minWidth: 135, sapField: 'CogsOcrCod', sapColumnIds: ['29', 'CogsOcrCod', 'COGS Distr. Rule'] },
   { key: 'countryOfOrigin', label: 'Country/Region of Origin', minWidth: 185, sapField: 'CountryOrg', sapColumnIds: ['10002037', 'CountryOrg', 'Country/Region of Origin'] },
   { key: 'loc', label: 'Loc.', minWidth: 115, readOnly: true, sapField: 'LocCode', alternativeFields: ['WhsCode', 'BPLId'], sapColumnIds: ['10002047', 'LocCode', 'Location', 'Loc.'] },
@@ -565,12 +568,15 @@ const getItems = async () => {
   SELECT T0.ItemCode, T0.ItemName,
          T0.SalUnitMsr  AS SalesUnit,
          T0.InvntryUom  AS InventoryUOM,
-         T0.SUoMEntry   AS UoMGroupEntry,
+         T0.UgpEntry    AS UoMGroupEntry,
+         T0.SUoMEntry   AS SalesUomEntry,
          T0.SWW         AS HSNCode,
          T0.CountryOrg  AS ItemCountryOrg,
          T0.SACEntry    AS SACEntry,
          T0.VatGourpSa  AS TaxCodeAR,
          T0.DfltWH      AS DefaultWarehouse,
+         T0.ManBtchNum  AS BatchManaged,
+         T0.ManSerNum   AS SerialManaged,
          ${salesGlAccountExpression} AS SalesGLAccount,
          ${salesGlAccountExpression} AS IncomeAccount,
          ${distributionRuleExpression} AS DistributionRule,
@@ -640,16 +646,7 @@ const getTaxCodes = () => masterDataDbService.searchDocumentTaxCodes('', 'sales'
 
 const getWithholdingTaxCodes = () => masterDataDbService.lookupWithholdingTaxCodes('');
 
-const getUomGroups = () => safe(db.query(`
-  SELECT g.UgpEntry AS AbsEntry,
-         g.UgpCode  AS Name,
-         u.UomCode
-  FROM   OUGP g
-  LEFT JOIN UGP1 d ON d.UgpEntry = g.UgpEntry
-  LEFT JOIN OUOM u ON u.UomEntry = d.UomEntry
-  WHERE  g.Locked <> 'Y'
-  ORDER  BY g.UgpEntry, d.LineNum
-`));
+const getUomGroups = () => loadCompanyUomGroups(db);
 
 const getSalesEmployees = () => safe(db.query(`
   SELECT SlpCode, SlpName, Memo, Commission, Active
@@ -749,114 +746,7 @@ const keepSapVisibleNumberingSeries = (series = []) => {
   return selectSapEligibleSeries(series);
 };
 
-const getDocumentSeries = async (targetDate = null, transactionType = '', branch = '') => {
-  const effectiveTargetDate = targetDate || new Date().toISOString().split('T')[0];
-  const [seriesMetadata, numberingMetadata] = await Promise.all([
-    getTableFieldMetadata('NNM1'),
-    getTableFieldMetadata('ONNM'),
-  ]);
-  const hasSeriesBranch = hasTableField(seriesMetadata, 'BPLId');
-  const defaultSeriesColumn = hasTableField(numberingMetadata, 'DfltSeries')
-    ? 'DfltSeries'
-    : hasTableField(numberingMetadata, 'DfltSerie')
-      ? 'DfltSerie'
-      : '';
-  const branchId = Number(branch);
-  const hasBranchFilter = hasSeriesBranch && Number.isFinite(branchId) && String(branch || '').trim() !== '';
-  const defaultSeriesJoin = defaultSeriesColumn
-    ? `LEFT JOIN ONNM T2 ON T2.ObjectCode = T0.ObjectCode AND T2.${defaultSeriesColumn} = T0.Series`
-    : '';
-  const defaultSeriesSelect = defaultSeriesColumn
-    ? `CASE WHEN T2.${defaultSeriesColumn} IS NOT NULL THEN 1 ELSE 0 END`
-    : '0';
-  const beginStrRef = sqlColumnRef(seriesMetadata, 'T0', 'BeginStr');
-  const lastNumRef = sqlColumnRef(seriesMetadata, 'T0', 'LastNum');
-  const seriesLabelSelect = beginStrRef
-    ? `COALESCE(NULLIF(LTRIM(RTRIM(CAST(${beginStrRef} AS NVARCHAR(50)))), ''), T0.SeriesName) AS SeriesLabel`
-    : 'T0.SeriesName AS SeriesLabel';
-  const numberRangeFilter = lastNumRef
-    ? `AND (${lastNumRef} IS NULL OR ${lastNumRef} = 0 OR T0.NextNumber <= ${lastNumRef})`
-    : '';
-  const requestedDocSubType = resolveSeriesDocSubType(transactionType);
-  const docSubTypeRef = sqlColumnRef(seriesMetadata, 'T0', 'DocSubType');
-  const docSubTypeFilter = requestedDocSubType && docSubTypeRef
-    ? `AND COALESCE(NULLIF(${docSubTypeRef}, ''), '--') = @docSubType`
-    : '';
-  const docSubTypeSelect = optionalColumn(seriesMetadata, 'T0', 'DocSubType', 'DocSubType', "''");
-  const branchSeriesFilter = hasBranchFilter ? 'AND T0.BPLId = @branchId' : '';
-  const globalSeriesFilter = hasBranchFilter ? 'AND (T0.BPLId IS NULL OR T0.BPLId IN (-1, 0))' : '';
-  const datedParams = hasBranchFilter ? { targetDate: effectiveTargetDate, branchId } : { targetDate: effectiveTargetDate };
-  const fallbackParams = hasBranchFilter ? { branchId } : {};
-  const withDocSubTypeParam = (params) => (docSubTypeFilter ? { ...params, docSubType: requestedDocSubType } : params);
-
-  const runSeriesQuery = (withPeriod, branchFilterSql, params) => safe(db.query(`
-    SELECT
-      T0.Series,
-      T0.SeriesName,
-      ${seriesLabelSelect},
-      ${optionalColumn(seriesMetadata, 'T0', 'BeginStr', 'BeginStr', "''")},
-      ${optionalColumn(seriesMetadata, 'T0', 'EndStr', 'EndStr', "''")},
-      T0.Indicator,
-      T0.NextNumber,
-      ${docSubTypeSelect},
-      ${optionalColumn(seriesMetadata, 'T0', 'BPLId', 'BPLId', 'NULL')},
-      ${defaultSeriesSelect} AS IsDefault,
-      ${withPeriod ? 'T1.Name' : 'NULL'} AS FinancialYear,
-      ${withPeriod ? 'T1.F_RefDate' : 'NULL'} AS FromDate,
-      ${withPeriod ? 'T1.T_RefDate' : 'NULL'} AS ToDate
-    FROM NNM1 T0
-    ${withPeriod ? 'INNER JOIN OFPR T1 ON T0.Indicator = T1.Indicator' : ''}
-    ${defaultSeriesJoin}
-    WHERE T0.ObjectCode = '13'
-      AND T0.Locked = 'N'
-      ${branchFilterSql}
-      ${numberRangeFilter}
-      ${docSubTypeFilter}
-      ${withPeriod ? 'AND CAST(@targetDate AS date) BETWEEN T1.F_RefDate AND T1.T_RefDate' : ''}
-    ORDER BY
-      IsDefault DESC,
-      T0.SeriesName,
-      T0.Series
-  `, params));
-
-  let result = hasBranchFilter
-    ? await runSeriesQuery(true, branchSeriesFilter, withDocSubTypeParam(datedParams))
-    : await runSeriesQuery(true, '', withDocSubTypeParam(datedParams));
-
-  if (!result.length && hasBranchFilter) {
-    result = await runSeriesQuery(true, globalSeriesFilter, withDocSubTypeParam(datedParams));
-  }
-
-  if (!result.length) {
-    result = hasBranchFilter
-      ? await runSeriesQuery(false, branchSeriesFilter, withDocSubTypeParam(fallbackParams))
-      : await runSeriesQuery(false, '', withDocSubTypeParam(fallbackParams));
-  }
-
-  if (!result.length && hasBranchFilter) {
-    result = await runSeriesQuery(false, globalSeriesFilter, withDocSubTypeParam(fallbackParams));
-  }
-
-  const series = preferRegularInvoiceSeries(result, transactionType).map(s => ({
-    Series: s.Series,
-    SeriesName: s.SeriesName || s.SeriesLabel || s.BeginStr,
-    DisplayName: s.SeriesName || s.SeriesLabel || s.BeginStr,
-    RawSeriesName: s.SeriesName || '',
-    BeginStr: s.BeginStr || '',
-    EndStr: s.EndStr || '',
-    NextNumber: s.NextNumber,
-    Indicator: s.Indicator,
-    DocSubType: s.DocSubType || '',
-    BPLId: s.BPLId != null ? String(s.BPLId) : '',
-    IsDefault: Number(s.IsDefault || 0) === 1,
-    FinancialYear: s.FinancialYear || '',
-    FromDate: s.FromDate || null,
-    ToDate: s.ToDate || null,
-  }));
-
-  const transactionMatchedSeries = filterSeriesByTransactionType(series, transactionType);
-  return keepSapVisibleNumberingSeries(transactionMatchedSeries);
-};
+const getDocumentSeries = async (targetDate = null, transactionType = '', branch = '', docSubType) => getSharedDocumentSeries({ db, objectCode: '13', targetDate, branch, docSubType, transactionType });
 
 const getNextNumber = async (series) => {
   const result = await safe(db.query(`
@@ -1002,17 +892,7 @@ const loadReferenceDataUncached = async () => {
     lineFieldMetadata._preferencesByKey || {},
   );
 
-  // Process UOM groups
-  const uomGroupsMap = {};
-  uomGroups.forEach(g => {
-    if (!uomGroupsMap[g.AbsEntry]) {
-      uomGroupsMap[g.AbsEntry] = { AbsEntry: g.AbsEntry, Name: g.Name, uomCodes: [] };
-    }
-    if (g.UomCode) {
-      uomGroupsMap[g.AbsEntry].uomCodes.push(g.UomCode);
-    }
-  });
-  const processedUomGroups = Object.values(uomGroupsMap);
+  const processedUomGroups = uomGroups;
   const companyInfo = companyRows.length > 0 ? {
     name: companyRows[0].CompnyName || 'SAP B1',
     address: companyRows[0].Address || '',
@@ -1327,18 +1207,25 @@ const getARInvoice = async (docEntry) => {
   const lineUomEntryRef = sqlColumnRef(lineFieldMetadata, 'T0', 'UomEntry');
   const lineUomCodeRef = sqlColumnRef(lineFieldMetadata, 'T0', 'UomCode');
   const lineUnitMsrRef = sqlColumnRef(lineFieldMetadata, 'T0', 'unitMsr');
-  const lineUomCodeExpression = coalesceText(
-    lineUomEntryRef ? "NULLIF(NULLIF(LTRIM(RTRIM(CAST(UOM.UomCode AS NVARCHAR(254)))), ''), 'Manual')" : 'NULL',
+  const resolvedLineUomCodeExpression = coalesceText(
+    lineUomEntryRef ? "NULLIF(LTRIM(RTRIM(CAST(UOM.UomCode AS NVARCHAR(254)))), '')" : 'NULL',
     lineUomCodeRef ? `NULLIF(NULLIF(LTRIM(RTRIM(CAST(${lineUomCodeRef} AS NVARCHAR(254)))), ''), 'Manual')` : 'NULL',
     lineUnitMsrRef ? `NULLIF(LTRIM(RTRIM(CAST(${lineUnitMsrRef} AS NVARCHAR(254)))), '')` : 'NULL',
     "''"
   );
-  const lineUomNameExpression = coalesceText(
+  const resolvedLineUomNameExpression = coalesceText(
+    lineUomEntryRef ? 'NULLIF(LTRIM(RTRIM(CAST(UOM.UomName AS NVARCHAR(254)))), \'\')' : 'NULL',
     lineUnitMsrRef ? `NULLIF(LTRIM(RTRIM(CAST(${lineUnitMsrRef} AS NVARCHAR(254)))), '')` : 'NULL',
     lineUomCodeRef ? `NULLIF(LTRIM(RTRIM(CAST(${lineUomCodeRef} AS NVARCHAR(254)))), '')` : 'NULL',
     lineUomEntryRef ? 'UOM.UomCode' : 'NULL',
     "''"
   );
+  const lineUomCodeExpression = lineUomEntryRef
+    ? `CASE WHEN ${lineUomEntryRef} < 0 THEN 'Manual' ELSE ${resolvedLineUomCodeExpression} END`
+    : resolvedLineUomCodeExpression;
+  const lineUomNameExpression = lineUomEntryRef
+    ? `CASE WHEN ${lineUomEntryRef} < 0 THEN ${coalesceText(lineUnitMsrRef || 'NULL', "'Manual'")} ELSE ${resolvedLineUomNameExpression} END`
+    : resolvedLineUomNameExpression;
   const lineUomJoin = lineUomEntryRef ? `LEFT JOIN OUOM UOM ON UOM.UomEntry = ${lineUomEntryRef}` : '';
 
   const headerRows = await safe(db.query(`
@@ -1452,7 +1339,7 @@ const getARInvoice = async (docEntry) => {
       T0.Quantity,
       T0.OpenQty AS OpenQuantity,
       ${optionalColumn(lineFieldMetadata, 'T0', 'ShipDate', 'ShipDate', 'NULL')},
-      T0.Price AS UnitPrice,
+      ${await getDocumentUnitPriceSql(db, 'INV1', 'T0')} AS UnitPrice,
       T0.DiscPrcnt AS DiscountPercent,
       ${lineTaxExpression} AS TaxCode,
       T0.LineTotal,
@@ -1500,7 +1387,7 @@ const getARInvoice = async (docEntry) => {
         T0.Quantity,
         T0.Quantity AS OpenQuantity,
         ${optionalColumn(lineFieldMetadata, 'T0', 'ShipDate', 'ShipDate', 'NULL')},
-        T0.Price AS UnitPrice,
+        ${await getDocumentUnitPriceSql(db, 'INV1', 'T0')} AS UnitPrice,
         T0.DiscPrcnt AS DiscountPercent,
         ${lineTaxExpression} AS TaxCode,
         T0.LineTotal,
@@ -1982,9 +1869,10 @@ const validateARInvoiceBaseDocuments = async (lines = []) => {
 
 const validateBatchSelection = async (lines = []) => {
   const errors = [];
+  const lineErrors = [];
   const allocatedByStockBatch = new Map();
 
-  for (const line of lines || []) {
+  for (const [lineIndex, line] of (lines || []).entries()) {
     if (Number(line?.baseType ?? line?.BaseType) === 15) continue;
 
     const itemCode = String(line.itemNo || line.ItemCode || '').trim();
@@ -2000,7 +1888,9 @@ const validateBatchSelection = async (lines = []) => {
     if (!item || !isSapYes(item.InvntItem) || !isSapYes(item.ManBtchNum)) continue;
 
     if (!Array.isArray(line.batches) || line.batches.length === 0) {
-      errors.push(`Batch selection is mandatory for batch-managed item ${itemCode}`);
+      const message = `Batch selection is mandatory for batch-managed item ${itemCode}`;
+      errors.push(message);
+      lineErrors.push({ lineIndex, itemCode, type: 'missing', message });
       continue;
     }
 
@@ -2012,9 +1902,9 @@ const validateBatchSelection = async (lines = []) => {
     const inventoryUOM = String(line.inventoryUOM || line.InventoryUOM || line.uomCode || 'Base UoM').trim();
 
     if (Math.abs(totalBatchQty - requiredBatchQty) > BATCH_QTY_TOLERANCE) {
-      errors.push(
-        `Batch quantity must match base quantity for item ${itemCode}. Required: ${requiredBatchQty.toFixed(2)} ${inventoryUOM}, Allocated: ${totalBatchQty.toFixed(2)} ${inventoryUOM}`
-      );
+      const message = `Batch quantity must match base quantity for item ${itemCode}. Required: ${requiredBatchQty.toFixed(2)} ${inventoryUOM}, Allocated: ${totalBatchQty.toFixed(2)} ${inventoryUOM}`;
+      errors.push(message);
+      lineErrors.push({ lineIndex, itemCode, type: 'quantity', message });
     }
 
     for (const batch of line.batches) {
@@ -2064,7 +1954,7 @@ const validateBatchSelection = async (lines = []) => {
     }
   }
 
-  return { errors, isValid: errors.length === 0 };
+  return { errors, lineErrors, isValid: errors.length === 0 };
 };
 
 const getFreightCharges = (docEntry) => {
@@ -2118,7 +2008,8 @@ const getItemsForModal = () => safe(db.query(`
     T0.OnOrder AS Ordered,
     T0.SalUnitMsr AS SalesUnit,
     T0.InvntryUom AS InventoryUOM,
-    T0.SUoMEntry AS UoMGroupEntry,
+    T0.UgpEntry AS UoMGroupEntry,
+    T0.SUoMEntry AS SalesUomEntry,
     CHP.ChapterID AS HSNCode,
     T0.validFor AS Active,
     T0.frozenFor AS Frozen,
@@ -2181,7 +2072,7 @@ const getARInvoiceForCopy = async (docEntry) => {
   `, { DocEntry: docEntry });
   const l = await db.query(`
     SELECT T0.LineNum, T0.ItemCode, T0.Dscription AS ItemDescription,
-      T0.OpenQty AS Quantity, T0.Price AS UnitPrice,
+      T0.OpenQty AS Quantity, ${await getDocumentUnitPriceSql(db, 'INV1', 'T0')} AS UnitPrice,
       T0.DiscPrcnt AS DiscountPercent, T0.WhsCode AS WarehouseCode,
       T0.TaxCode, T0.unitMsr AS UomCode, CHP.ChapterID AS HSNCode,
       T0.DocEntry AS BaseEntry, T0.LineNum AS BaseLine, 13 AS BaseType,
@@ -2276,7 +2167,7 @@ const getARInvoiceForCopy = async (docEntry) => {
     line_udfs: { ...(lineUdfs[line.LineNum] || {}) },
     udf: { ...(lineUdfs[line.LineNum] || {}) },
   }));
-  return { ...(h.recordset?.[0] || {}), DocumentLines: documentLines };
+  return { ...(h.recordset?.[0] || {}), freightCharges: (await getFreightCharges(docEntry)).filter(row => Number(row.LineTotal || 0) !== 0), DocumentLines: documentLines };
 };
 
 module.exports = {

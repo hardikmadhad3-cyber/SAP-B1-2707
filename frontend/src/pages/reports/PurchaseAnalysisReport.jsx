@@ -1,8 +1,7 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import "../../modules/item-master/styles/itemMaster.css";
 import "../../modules/sales-order/styles/salesOrder.css";
-import "../../styles/salesAnalysis.css";
 import "../../styles/sales-analysis-report.css";
 import SapLookupModal from "../../components/common/SapLookupModal";
 import SalesAnalysisPropertiesModal from "../../components/reports/SalesAnalysisPropertiesModal";
@@ -25,6 +24,8 @@ const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOStrin
 const todayIso = today.toISOString().slice(0, 10);
 
 const emptyRange = { codeFrom: "", codeTo: "" };
+
+const isIsoDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || "").trim());
 
 const createInitialCriteria = () => ({
   tab: "customers",
@@ -125,6 +126,7 @@ export default function PurchaseAnalysisReport() {
   const [detailResult, setDetailResult] = useState(null);
   const [lookupState, setLookupState] = useState({ open: false, type: "vendors", rangeKey: "from" });
   const [propertiesModal, setPropertiesModal] = useState({ open: false, type: "customer" });
+  const dateNativeInputRefs = useRef({});
 
   const criteriaWindow = useFloatingWindow({
     isOpen: true,
@@ -309,8 +311,45 @@ export default function PurchaseAnalysisReport() {
     });
   };
 
+  const getDateNativeInputRef = (key, field) => (node) => {
+    dateNativeInputRefs.current[`${key}-${field}`] = node;
+  };
+
+  const openDatePicker = (key, field) => {
+    const input = dateNativeInputRefs.current[`${key}-${field}`];
+    if (!input) return;
+    if (typeof input.showPicker === "function") {
+      input.showPicker();
+    } else {
+      input.focus();
+      input.click();
+    }
+  };
+
   const renderDateRow = (key, label) => {
     const range = criteria.dateFilters[key];
+
+    const renderDatePickerButton = (field) => (
+      <React.Fragment key={field}>
+        <input
+          ref={getDateNativeInputRef(key, field)}
+          type="date"
+          className="sales-analysis__date-native-input"
+          tabIndex={-1}
+          value={isIsoDate(range[field]) ? range[field] : ""}
+          onChange={(event) => handleChange(`dateFilters.${key}.${field}`, event.target.value)}
+        />
+        <button
+          type="button"
+          className="sales-analysis__picker-btn"
+          aria-label={`Open ${field === "from" ? "From" : "To"} date picker`}
+          onClick={() => openDatePicker(key, field)}
+        >
+          ...
+        </button>
+      </React.Fragment>
+    );
+
     return (
       <div className="sales-analysis__date-row" key={key}>
         <label className="sales-analysis__checkbox-line">
@@ -329,17 +368,14 @@ export default function PurchaseAnalysisReport() {
             value={range.from}
             onChange={(event) => handleChange(`dateFilters.${key}.from`, event.target.value)}
           />
+          {renderDatePickerButton("from")}
           <span className="sales-analysis__field-label">To</span>
           <input
             type="text"
             value={range.to}
             onChange={(event) => handleChange(`dateFilters.${key}.to`, event.target.value)}
           />
-          {key === 'postingDate' ? (
-            <button type="button" className="sales-analysis__picker-btn" aria-label="Open picker">
-              ...
-            </button>
-          ) : null}
+          {renderDatePickerButton("to")}
         </div>
       </div>
     );
@@ -523,7 +559,7 @@ export default function PurchaseAnalysisReport() {
           groupOptions,
           propertiesSummary: selectionKey === 'customer' ? customerPropertySummary : itemPropertySummary,
           enableLookup: true,
-          enableToLookup: selectionKey === 'item',
+          enableToLookup: true,
         })}
 
         {criteria.tab === 'items' ? (
@@ -546,6 +582,7 @@ export default function PurchaseAnalysisReport() {
                   groupOptions: customerGroupOptions,
                   propertiesSummary: "Ignore",
                   enableLookup: true,
+                  enableToLookup: true,
                   nestedSection: 'customer',
                 })}
 
@@ -885,7 +922,7 @@ export default function PurchaseAnalysisReport() {
   };
 
   return (
-    <div className="sar-page sap-report-page" style={{ overflow: 'hidden', position: 'relative', width: '100%', height: '100%' }}>
+    <div className="sales-analysis-page sap-report-page" style={{ overflow: 'hidden', position: 'relative', width: '100%', height: '100%' }}>
       {message && <div className="im-alert im-alert--error" style={{ margin: "10px 12px 0", position: "absolute", zIndex: 1000, top: 0, left: 0, right: 0 }}>{message}</div>}
 
       <div

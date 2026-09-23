@@ -4,7 +4,13 @@ import {
   fetchDocumentReportMetadata,
   printDocumentLayout,
 } from '../../api/documentPrintApi';
-import { base64ToPdfBlob, downloadPdfBlob } from '../../utils/pdfUtils';
+import {
+  base64ToPdfBlob,
+  choosePdfSaveTarget,
+  downloadPdfBlob,
+  savePdfBlobToTarget,
+} from '../../utils/pdfUtils';
+import { buildDefaultReportParameterPayload } from '../../utils/printParameterDefaults';
 import { useAuth } from '../../auth/AuthContext';
 import SapModalShell from '../common/SapModalShell';
 
@@ -23,61 +29,6 @@ const isPositiveDocumentKey = (value) => {
   const normalized = String(value ?? '').trim();
   return /^\d+$/.test(normalized) && Number(normalized) > 0;
 };
-
-const buildInputType = (paramType) => {
-  if (paramType === 'date') return 'date';
-  if (paramType === 'number') return 'number';
-  return 'text';
-};
-
-const normalizeOptionValue = (option) => String(
-  option && typeof option === 'object'
-    ? (option.value ?? option.label ?? '')
-    : option,
-).trim();
-
-const normalizeOptionLabel = (option) => String(
-  option && typeof option === 'object'
-    ? (option.label ?? option.value ?? '')
-    : option,
-).trim();
-
-const normalizeOptions = (parameter) =>
-  (Array.isArray(parameter?.options) ? parameter.options : [])
-    .map((option) => ({
-      value: normalizeOptionValue(option),
-      label: normalizeOptionLabel(option),
-    }))
-    .filter((option) => option.value || option.label);
-
-const buildInitialParameterValues = (parameters = []) =>
-  parameters.reduce((values, parameter) => ({
-    ...values,
-    [parameter.paramName]: parameter.defaultValue ?? parameter.value ?? '',
-  }), {});
-
-const buildReportParameterPayload = (parameters = [], values = {}) =>
-  parameters.map((parameter) => ({
-    name: parameter.paramName,
-    type: parameter.paramType,
-    value: values[parameter.paramName] ?? '',
-  }));
-
-const AUTO_APPLY_PROMPT_DOCUMENT_TYPES = new Set([
-  'salesOrder',
-]);
-
-const shouldAutoApplyPromptParameters = (documentType) =>
-  AUTO_APPLY_PROMPT_DOCUMENT_TYPES.has(String(documentType || '').trim());
-
-const buildDefaultReportParameterPayload = (parameters = []) =>
-  parameters
-    .map((parameter) => ({
-      name: parameter.paramName,
-      type: parameter.paramType,
-      value: parameter.defaultValue ?? parameter.value ?? '',
-    }))
-    .filter((parameter) => String(parameter.name || '').trim());
 
 const getLayoutCode = (layout) =>
   String(layout?.docCode || layout?.layoutId || layout?.layout_id || '').trim();
@@ -130,88 +81,6 @@ function PdfPreviewModal({ documentLabel, previewPdf, onClose, onDownload }) {
           src={previewPdf.url}
           title={`${documentLabel} PDF preview`}
         />
-      </section>
-    </div>
-  );
-}
-
-function PrintParameterModal({
-  isOpen,
-  documentLabel,
-  layoutName,
-  parameters,
-  values,
-  loading,
-  onChange,
-  onCancel,
-  onConfirm,
-}) {
-  if (!isOpen) {
-    return null;
-  }
-
-  return (
-    <div className="sap-print-params__backdrop" role="presentation" onClick={(event) => event.stopPropagation()}>
-      <section
-        className="sap-print-params__dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-label={`${documentLabel} print parameters`}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <header className="sap-print-params__header">
-          <div>
-            <div className="sap-print-params__title">Enter Parameter Values</div>
-            <div className="sap-print-params__layout">{layoutName || documentLabel}</div>
-          </div>
-          <button type="button" className="sap-print-params__close" onClick={onCancel} disabled={loading}>
-            x
-          </button>
-        </header>
-
-        <div className="sap-print-params__body">
-          {parameters.map((parameter) => {
-            const options = normalizeOptions(parameter);
-            const label = parameter.displayName || parameter.paramName;
-            const value = values[parameter.paramName] ?? '';
-
-            return (
-              <label key={parameter.paramName} className="sap-print-params__field">
-                <span>{label}{parameter.isRequired ? ':' : ''}</span>
-                {options.length ? (
-                  <select
-                    value={value}
-                    onChange={(event) => onChange(parameter.paramName, event.target.value)}
-                    disabled={loading}
-                  >
-                    <option value="">...</option>
-                    {options.map((option) => (
-                      <option key={`${parameter.paramName}-${option.value || option.label}`} value={option.value || option.label}>
-                        {option.label || option.value}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    type={buildInputType(parameter.paramType)}
-                    value={value}
-                    onChange={(event) => onChange(parameter.paramName, event.target.value)}
-                    disabled={loading}
-                  />
-                )}
-              </label>
-            );
-          })}
-        </div>
-
-        <footer className="sap-print-params__footer">
-          <button type="button" className="sap-print-params__button sap-print-params__button--primary" onClick={onConfirm} disabled={loading}>
-            OK
-          </button>
-          <button type="button" className="sap-print-params__button" onClick={onCancel} disabled={loading}>
-            Cancel
-          </button>
-        </footer>
       </section>
     </div>
   );
@@ -324,14 +193,6 @@ function PrintLayoutToolbar({
   const [layoutChooserOpen, setLayoutChooserOpen] = useState(false);
   const [pendingDocCode, setPendingDocCode] = useState('');
   const [previewPdf, setPreviewPdf] = useState(null);
-  const [parameterPrompt, setParameterPrompt] = useState({
-    open: false,
-    action: '',
-    parameters: [],
-    values: {},
-    layoutName: '',
-    metadata: null,
-  });
   const resolvedDefaultSchema = String(
     reportMetadata?.schema ||
       companySchema ||
@@ -538,7 +399,7 @@ function PrintLayoutToolbar({
     return nextPdf;
   };
 
-  const loadPromptParameters = async (action) => {
+  const loadPromptParameters = async (saveTarget = null) => {
     const metadataPayload = await loadReportMetadata();
     if (metadataPayload?.requiresLayoutSelection && !metadataPayload?.layout?.docCode) {
       throw new Error(`Choose a SAP B1 layout before printing ${documentLabel.toLowerCase()}.`);
@@ -548,27 +409,11 @@ function PrintLayoutToolbar({
       ? metadataPayload.promptParameters
       : [];
 
-    if (!parameters.length) {
-      return { metadata: metadataPayload, reportParameters: [] };
-    }
-
-    if (shouldAutoApplyPromptParameters(documentType)) {
-      return {
-        metadata: metadataPayload,
-        reportParameters: buildDefaultReportParameterPayload(parameters),
-      };
-    }
-
-    setParameterPrompt({
-      open: true,
-      action,
-      parameters,
-      values: buildInitialParameterValues(parameters),
-      layoutName: metadataPayload?.layout?.reportName || metadataPayload?.layout?.docName || metadataPayload?.layout?.docCode,
+    return {
       metadata: metadataPayload,
-    });
-
-    return null;
+      reportParameters: buildDefaultReportParameterPayload(parameters),
+      saveTarget,
+    };
   };
 
   const runPreview = async (reportParameters = [], metadataPayload = reportMetadata) => {
@@ -583,7 +428,7 @@ function PrintLayoutToolbar({
     notifySuccess(`${documentLabel} PDF preview loaded for layout ${pdfDocument.docCode}.`);
   };
 
-  const runDownload = async (reportParameters = [], metadataPayload = reportMetadata) => {
+  const runDownload = async (reportParameters = [], metadataPayload = reportMetadata, saveTarget = null) => {
     const resolvedMetadata = metadataPayload || await loadReportMetadata();
     const resolvedDocCode = String(resolvedMetadata?.layout?.docCode || '').trim();
     const resolvedSchema = String(resolvedMetadata?.schema || schema || '').trim();
@@ -601,8 +446,12 @@ function PrintLayoutToolbar({
       response.data?.fileName ||
       buildDefaultFileName(documentType, resolvedMetadata?.document?.docEntry || docEntry, docNumber, resolvedDocCode);
 
-    downloadPdfBlob(base64ToPdfBlob(response.data?.base64Pdf), fileName);
-    notifySuccess(`${documentLabel} PDF downloaded as ${fileName}.`);
+    const saveResult = saveTarget
+      ? await savePdfBlobToTarget(base64ToPdfBlob(response.data?.base64Pdf), fileName, saveTarget)
+      : await downloadPdfBlob(base64ToPdfBlob(response.data?.base64Pdf), fileName);
+    if (!saveResult.cancelled) {
+      notifySuccess(`${documentLabel} PDF saved as ${saveResult.fileName || fileName}.`);
+    }
   };
 
   const handlePreview = async (event) => {
@@ -616,7 +465,7 @@ function PrintLayoutToolbar({
     setLoading(true);
 
     try {
-      const promptedParameters = await loadPromptParameters('preview');
+      const promptedParameters = await loadPromptParameters();
       if (promptedParameters === null) {
         return;
       }
@@ -633,12 +482,19 @@ function PrintLayoutToolbar({
     setPreviewPdf(null);
   };
 
-  const downloadPreview = () => {
+  const downloadPreview = async () => {
     if (!previewPdf?.blob) {
       return;
     }
 
-    downloadPdfBlob(previewPdf.blob, previewPdf.fileName);
+    try {
+      const saveResult = await downloadPdfBlob(previewPdf.blob, previewPdf.fileName);
+      if (!saveResult.cancelled) {
+        notifySuccess(`${documentLabel} PDF saved as ${saveResult.fileName || previewPdf.fileName}.`);
+      }
+    } catch (error) {
+      notifyError(getErrorMessage(error, `Failed to save the ${documentLabel.toLowerCase()} PDF.`));
+    }
   };
 
   const handleDownload = async (event) => {
@@ -649,67 +505,32 @@ function PrintLayoutToolbar({
       return;
     }
 
+    let saveTarget;
+    try {
+      saveTarget = await choosePdfSaveTarget(
+        buildDefaultFileName(documentType, docEntry, docNumber, effectiveDocCode),
+      );
+      if (saveTarget.cancelled) return;
+    } catch (error) {
+      notifyError(getErrorMessage(error, `Failed to choose where to save the ${documentLabel.toLowerCase()} PDF.`));
+      return;
+    }
+
     setLoading(true);
 
     try {
-      const promptedParameters = await loadPromptParameters('download');
+      const promptedParameters = await loadPromptParameters(saveTarget);
       if (promptedParameters === null) {
         return;
       }
 
-      await runDownload(promptedParameters.reportParameters, promptedParameters.metadata);
+      await runDownload(
+        promptedParameters.reportParameters,
+        promptedParameters.metadata,
+        promptedParameters.saveTarget,
+      );
     } catch (error) {
       notifyError(getErrorMessage(error, `Failed to download the ${documentLabel.toLowerCase()} PDF.`));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const closeParameterPrompt = () => {
-    setParameterPrompt({
-      open: false,
-      action: '',
-      parameters: [],
-      values: {},
-      layoutName: '',
-      metadata: null,
-    });
-  };
-
-  const updatePromptValue = (paramName, value) => {
-    setParameterPrompt((current) => ({
-      ...current,
-      values: {
-        ...current.values,
-        [paramName]: value,
-      },
-    }));
-  };
-
-  const confirmParameterPrompt = async () => {
-    const missingParameter = parameterPrompt.parameters.find((parameter) =>
-      parameter.isRequired && !String(parameterPrompt.values[parameter.paramName] ?? '').trim(),
-    );
-
-    if (missingParameter) {
-      notifyError(`${missingParameter.displayName || missingParameter.paramName} is required before printing.`);
-      return;
-    }
-
-    const reportParameters = buildReportParameterPayload(parameterPrompt.parameters, parameterPrompt.values);
-    const action = parameterPrompt.action;
-
-    setLoading(true);
-
-    try {
-      closeParameterPrompt();
-      if (action === 'download') {
-        await runDownload(reportParameters, parameterPrompt.metadata);
-      } else {
-        await runPreview(reportParameters, parameterPrompt.metadata);
-      }
-    } catch (error) {
-      notifyError(getErrorMessage(error, `Failed to generate the ${documentLabel.toLowerCase()} PDF.`));
     } finally {
       setLoading(false);
     }
@@ -800,18 +621,6 @@ function PrintLayoutToolbar({
         previewPdf={previewPdf}
         onClose={closePreview}
         onDownload={downloadPreview}
-      />
-
-      <PrintParameterModal
-        isOpen={parameterPrompt.open}
-        documentLabel={documentLabel}
-        layoutName={parameterPrompt.layoutName}
-        parameters={parameterPrompt.parameters}
-        values={parameterPrompt.values}
-        loading={loading}
-        onChange={updatePromptValue}
-        onCancel={closeParameterPrompt}
-        onConfirm={confirmParameterPrompt}
       />
 
       <ChooseLayoutModal

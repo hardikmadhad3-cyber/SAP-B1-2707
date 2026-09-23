@@ -1,8 +1,10 @@
+const { resolveDocumentConfirmationStatus } = require('./documentConfirmationUtils');
 /**
  * Delivery DB Service - ODBC/Direct SQL for GET operations
  * Reads data directly from SAP B1 SQL Server database
  */
 const db = require('./dbService');
+const { loadCompanyUomGroups } = require('./documentUomDbUtils');
 const { loadBusinessPartnerAddresses } = require('./businessPartnerAddressDbUtils');
 const masterDataDbService = require('./masterDataDbService');
 const salesOrderDb = require('./salesOrderDbService');
@@ -18,10 +20,12 @@ const {
   getUdfDefinitions,
 } = require('./udfMetadataService');
 const { getMarketingDocumentSeries } = require('./documentSeriesDbUtils');
+const { getDocumentTaxCodeSql } = require('./documentTaxUtils');
 const {
   createTableColumnDetailsReader,
   createTableFieldMetadataReader,
   resolveDatabaseScope,
+  selectPhysicalOptionalColumn,
 } = require('./salesDocumentDbCompatibility');
 const authDbService = require('./authDbService');
 const { getRequestContext } = require('./requestContextService');
@@ -221,7 +225,8 @@ const getItems = () => safe(db.query(`
   SELECT ItemCode, ItemName,
          SalUnitMsr  AS SalesUnit,
          InvntryUom  AS InventoryUOM,
-         SUoMEntry   AS UoMGroupEntry,
+         UgpEntry    AS UoMGroupEntry,
+         SUoMEntry   AS SalesUomEntry,
          AvgPrice    AS ItemCost,
          CountryOrg  AS ItemCountryOrg,
          SACEntry    AS SACEntry,
@@ -448,21 +453,10 @@ const getStates = () => safe(db.query(`
 
 const getTaxCodes = () => masterDataDbService.searchDocumentTaxCodes('', 'sales', 500, 0);
 
-const getUomGroups = () => safe(db.query(`
-  SELECT g.UgpEntry AS AbsEntry,
-         g.UgpCode  AS Name,
-         u.UomCode,
-         d.BaseQty AS BaseQty,
-         d.AltQty AS AltQty
-  FROM   OUGP g
-  LEFT JOIN UGP1 d ON d.UgpEntry = g.UgpEntry
-  LEFT JOIN OUOM u ON u.UomEntry = d.UomEntry
-  WHERE  g.Locked <> 'Y'
-  ORDER  BY g.UgpEntry, d.LineNum
-`));
+const getUomGroups = () => loadCompanyUomGroups(db);
 
-const resolveDeliveryLineUomEntry = async (itemCode, uomValue) =>
-  salesOrderDb.resolveSalesOrderLineUomEntry(itemCode, uomValue);
+const resolveDeliveryLineUomEntry = async (itemCode, uomValue, options = {}) =>
+  salesOrderDb.resolveSalesOrderLineUomEntry(itemCode, uomValue, options);
 
 const getBaseSalesOrderLineItemCode = async (docEntry, lineNum) => {
   const rows = await safe(db.query(`
@@ -722,7 +716,7 @@ const DELIVERY_MATRIX_COLUMN_DEFS = [
   { key: 'itemNo', label: 'Item No.', minWidth: 160, sapField: 'ItemCode', sapColumnIds: ['1', 'ItemCode', 'Item No.', 'ItemNo'] },
   { key: 'itemDescription', label: 'Item Description', minWidth: 240, sapField: 'Dscription', sapColumnIds: ['3', 'Dscription', 'ItemDescription', 'Item Description'] },
   { key: 'quantity', label: 'Quantity', minWidth: 90, numeric: true, sapField: 'Quantity', sapColumnIds: ['11', 'Quantity', 'Qty'] },
-  { key: 'uomName', label: 'UoM Name', minWidth: 120, sapField: 'unitMsr', alternativeFields: ['UomCode', 'UomEntry'], sapColumnIds: ['1470002145', 'unitMsr', 'UomName', 'UoM Name'] },
+  { key: 'uomName', label: 'UoM Name', minWidth: 120, sapField: 'unitMsr', alternativeFields: [], sapColumnIds: ['1470002145', 'unitMsr', 'UomName', 'UoM Name'] },
   { key: 'hsnCode', label: 'HSN', minWidth: 95, readOnly: true, source: 'OITM', sapColumnIds: ['254000391', 'HsnEntry', 'HsnCode', 'HSN', 'HSN/SAC'] },
   { key: 'unitPrice', label: 'Unit Price', minWidth: 110, numeric: true, sapField: 'Price', alternativeFields: ['PriceBefDi'], sapColumnIds: ['14', 'Price', 'PriceBefDi', 'Unit Price'] },
   { key: 'taxCode', label: 'Tax Code', minWidth: 110, sapField: 'TaxCode', alternativeFields: ['VatGroup'], sapColumnIds: ['160', '234000377', 'TaxCode', 'VatGroup', 'Tax Code'] },
@@ -762,7 +756,7 @@ const DELIVERY_MATRIX_COLUMN_DEFS = [
   { key: 'taxAmount', label: 'Tax Amount (LC)', minWidth: 125, readOnly: true, numeric: true, sapField: 'VatSum', visible: false },
   { key: 'deliveredQty', label: 'Qty to Ship', minWidth: 110, readOnly: true, sapField: 'DelivrdQty', visible: false },
   { key: 'openQty', label: 'Ordered Qty', minWidth: 95, readOnly: true, sapField: 'OpenQty', visible: false },
-  { key: 'uomCode', label: 'UoM Code', minWidth: 105, sapField: 'UomCode', alternativeFields: ['unitMsr', 'UomEntry'], sapColumnIds: ['1470002149', 'UomCode', 'UoMCode', 'UoM Code'], visible: false },
+  { key: 'uomCode', label: 'UoM Code', minWidth: 105, sapField: 'UomCode', alternativeFields: ['UomEntry'], sapColumnIds: ['1470002149', 'UomCode', 'UoMCode', 'UoM Code'], visible: false },
   { key: 'distRule', label: 'Distr. Rule', minWidth: 105, sapField: 'OcrCode', visible: false },
   { key: 'countryOfOrigin', label: 'Country/Region of Origin', minWidth: 185, sapField: 'CountryOrg', visible: false },
   { key: 'loc', label: 'Loc.', minWidth: 115, readOnly: true, sapField: 'LocCode', visible: false },
@@ -1046,15 +1040,22 @@ const getUdfValidValues = (tableId, aliasId) => safe(db.query(`
 
 const getExistingLookupValues = async (aliasId) => {
   const normalizedAlias = normalizeLookupAlias(aliasId);
-  const columnName = LOOKUP_UDF_CONFIG[normalizedAlias]?.columnName;
+  const config = LOOKUP_UDF_CONFIG[normalizedAlias];
+  if (!config) return [];
+
+  const fieldMetadata = await getTableFieldMetadata(config.tableId);
+  const columnName = Object.keys(fieldMetadata || {}).find(
+    (fieldName) => fieldName.toLowerCase() === config.columnName.toLowerCase()
+  );
   if (!columnName) return [];
+  const quotedColumnName = quoteSqlIdentifier(columnName);
 
   return safe(db.query(`
     SELECT DISTINCT
-      LTRIM(RTRIM(CAST(${columnName} AS NVARCHAR(254)))) AS Value,
+      LTRIM(RTRIM(CAST(${quotedColumnName} AS NVARCHAR(254)))) AS Value,
       '' AS Description
-    FROM DLN1
-    WHERE NULLIF(LTRIM(RTRIM(CAST(${columnName} AS NVARCHAR(254)))), '') IS NOT NULL
+    FROM ${quoteSqlIdentifier(config.tableId)}
+    WHERE NULLIF(LTRIM(RTRIM(CAST(${quotedColumnName} AS NVARCHAR(254)))), '') IS NOT NULL
     ORDER BY Value
   `));
 };
@@ -1393,6 +1394,7 @@ const getArReserveInvoiceForCopy = async (docEntry) => {
 
 const getDeliveryForCopy = async (docEntry) => {
   const headerFieldMetadata = await getTableFieldMetadata('ODLN');
+  const taxCodeExpression = getDocumentTaxCodeSql(await getDeliveryLineFieldMetadata());
   const branchColumn = resolveColumnName(headerFieldMetadata, 'BPLId')
     || resolveColumnName(headerFieldMetadata, 'BPL_IDAssignedToInvoice');
   const branchAssignedExpression = hasTableField(headerFieldMetadata, 'BPL_IDAssignedToInvoice')
@@ -1413,7 +1415,7 @@ const getDeliveryForCopy = async (docEntry) => {
     SELECT T0.LineNum, T0.ItemCode, T0.Dscription AS ItemDescription,
       T0.OpenQty AS Quantity, COALESCE(T0.PriceBefDi, T0.Price) AS UnitPrice,
       T0.DiscPrcnt AS DiscountPercent, T0.WhsCode AS WarehouseCode,
-      T0.TaxCode, T0.unitMsr AS UomCode,
+      ${taxCodeExpression} AS TaxCode, T0.unitMsr AS UomCode,
       CASE
         WHEN ISNULL(T0.Quantity, 0) = 0 THEN ISNULL(T0.LineTotal, 0)
         ELSE ISNULL(T0.LineTotal, 0) * ISNULL(T0.OpenQty, 0) / NULLIF(T0.Quantity, 0)
@@ -1439,13 +1441,14 @@ const getDeliveryForCopy = async (docEntry) => {
     line_udfs: { ...(lineUdfs[line.LineNum] || {}) },
     udf: { ...(lineUdfs[line.LineNum] || {}) },
   }));
-  return { ...(h.recordset?.[0] || {}), DocumentLines: documentLines };
+  return { ...(h.recordset?.[0] || {}), freightCharges: (await getFreightCharges(docEntry)).filter(row => Number(row.LineTotal || 0) !== 0), DocumentLines: documentLines };
 };
 
 // ── GET DELIVERY FOR COPY TO CREDIT MEMO ──────────────────────────────────────
 
 const getDeliveryForCopyToCreditMemo = async (docEntry) => {
   const headerFieldMetadata = await getTableFieldMetadata('ODLN');
+  const taxCodeExpression = getDocumentTaxCodeSql(await getDeliveryLineFieldMetadata());
   const branchColumn = resolveColumnName(headerFieldMetadata, 'BPLId')
     || resolveColumnName(headerFieldMetadata, 'BPL_IDAssignedToInvoice');
   // Get delivery header
@@ -1501,7 +1504,7 @@ const getDeliveryForCopyToCreditMemo = async (docEntry) => {
       T0.OpenQty,
       COALESCE(T0.PriceBefDi, T0.Price) AS UnitPrice,
       T0.DiscPrcnt AS DiscountPercent,
-      T0.TaxCode,
+      ${taxCodeExpression} AS TaxCode,
       CASE
         WHEN ISNULL(T0.Quantity, 0) = 0 THEN ISNULL(T0.LineTotal, 0)
         ELSE ISNULL(T0.LineTotal, 0) * ISNULL(T0.OpenQty, 0) / NULLIF(T0.Quantity, 0)
@@ -1893,8 +1896,9 @@ const getDelivery = async (docEntry) => {
 
   const dln1FieldMetadata = await getDeliveryLineFieldMetadata();
   const hasDln1Column = (columnName) => hasTableField(dln1FieldMetadata, columnName);
-  const taxCodeColumn = resolveColumnName(dln1FieldMetadata, 'TaxCode')
-    || resolveColumnName(dln1FieldMetadata, 'VatGroup');
+  const physicalLineColumns = Object.keys(dln1FieldMetadata);
+  const lineTaxAmountSelect = selectPhysicalOptionalColumn(physicalLineColumns, 'T0', 'VatSum', 'LineTaxAmount');
+  const taxCodeExpression = getDocumentTaxCodeSql(dln1FieldMetadata);
   const commissionColumn = resolveColumnName(dln1FieldMetadata, 'CommPercent')
     || resolveColumnName(dln1FieldMetadata, 'Commission');
   const uomEntryColumn = resolveColumnName(dln1FieldMetadata, 'UomEntry');
@@ -1903,9 +1907,11 @@ const getDelivery = async (docEntry) => {
     ? `NULLIF(LTRIM(RTRIM(T0.${quoteSqlIdentifier(unitMeasureColumn)})), '')`
     : 'NULL';
   const uomCodeExpression = uomEntryColumn
-    ? `COALESCE(UOM.UomCode, ${unitMeasureExpression}, '')`
+    ? `CASE WHEN T0.${quoteSqlIdentifier(uomEntryColumn)} < 0 THEN 'Manual' ELSE COALESCE(UOM.UomCode, ${unitMeasureExpression}, '') END`
     : `COALESCE(${unitMeasureExpression}, '')`;
-  const uomNameExpression = `COALESCE(${unitMeasureExpression}${uomEntryColumn ? ', UOM.UomCode' : ''}, '')`;
+  const uomNameExpression = uomEntryColumn
+    ? `CASE WHEN T0.${quoteSqlIdentifier(uomEntryColumn)} < 0 THEN COALESCE(${unitMeasureExpression}, 'Manual') ELSE COALESCE(UOM.UomName, ${unitMeasureExpression}, UOM.UomCode, '') END`
+    : `COALESCE(${unitMeasureExpression}, '')`;
   const uomJoinSql = uomEntryColumn
     ? `LEFT JOIN OUOM UOM ON UOM.UomEntry = T0.${quoteSqlIdentifier(uomEntryColumn)}`
     : '';
@@ -1914,8 +1920,8 @@ const getDelivery = async (docEntry) => {
 
   const optionalLineSelects = [
     hasDln1Column('OpenQty') ? 'T0.OpenQty AS OpenQuantity' : 'CAST(NULL AS DECIMAL(19, 6)) AS OpenQuantity',
-    taxCodeColumn ? `T0.${quoteSqlIdentifier(taxCodeColumn)} AS TaxCode` : "'' AS TaxCode",
-    hasDln1Column('VatSum') ? 'ISNULL(T0.VatSum, 0) AS LineTaxAmount' : 'CAST(0 AS DECIMAL(19, 6)) AS LineTaxAmount',
+    `${taxCodeExpression} AS TaxCode`,
+    lineTaxAmountSelect,
     hasDln1Column('NumPerMsr') ? 'T0.NumPerMsr AS UomFactor' : 'CAST(1 AS DECIMAL(19, 6)) AS UomFactor',
     uomEntryColumn ? `T0.${quoteSqlIdentifier(uomEntryColumn)} AS UoMEntry` : 'NULL AS UoMEntry',
     `${uomCodeExpression} AS UoMCode`,
@@ -1934,7 +1940,7 @@ const getDelivery = async (docEntry) => {
     hasDln1Column('FreeTxt') ? 'T0.FreeTxt AS [FreeText]' : "'' AS [FreeText]",
     hasDln1Column('CountryOrg') ? 'T0.CountryOrg AS CountryOfOrigin' : "'' AS CountryOfOrigin",
     hasDln1Column('HsnEntry') ? 'T0.HsnEntry AS HSNEntry' : 'NULL AS HSNEntry',
-    hasDln1Column('SACEntry') ? 'T0.SACEntry AS SACEntry' : 'NULL AS SACEntry',
+    selectPhysicalOptionalColumn(physicalLineColumns, 'T0', 'SACEntry'),
     `${sacSql.displayExpression} AS SACCode`,
     `${sacSql.serviceNameExpression} AS SACServiceName`,
     `${sacSql.serviceCodeExpression} AS SACServiceCode`,
@@ -2008,21 +2014,24 @@ const getDelivery = async (docEntry) => {
         ${uomCodeExpression} AS UoMCode,
         ${uomNameExpression} AS UoMName,
         CAST(NULL AS DECIMAL(19, 6)) AS DiscountAmount,
-        ${taxCodeColumn ? `T0.${quoteSqlIdentifier(taxCodeColumn)}` : "''"} AS TaxCode,
-        CAST(0 AS DECIMAL(19, 6)) AS LineTaxAmount,
+        ${taxCodeExpression} AS TaxCode,
+        ${lineTaxAmountSelect},
         '' AS DistributionRule,
         '' AS [FreeText],
         '' AS CountryOfOrigin,
         CHP.ChapterID AS HSNCode,
-        ${hasDln1Column('SACEntry') ? 'T0.SACEntry' : 'NULL'} AS SACEntry,
-        ${sacSql.displayExpression} AS SACCode,
-        ${sacSql.serviceNameExpression} AS SACServiceName,
-        ${sacSql.serviceCodeExpression} AS SACServiceCode,
+        -- This is the schema-safe fallback after the rich query above fails.
+        -- Do not use SAC metadata here: older SAP B1 company schemas can have
+        -- OSAC or OITM SAC data while DLN1 itself has no SACEntry column.
+        NULL AS SACEntry,
+        '' AS SACCode,
+        '' AS SACServiceName,
+        '' AS SACServiceCode,
         ITM.ManBtchNum AS BatchManaged,
         ITM.AvgPrice AS ItemCost,
-        NULL AS BaseEntry,
-        NULL AS BaseType,
-        NULL AS BaseLine,
+        ${selectPhysicalOptionalColumn(physicalLineColumns, 'T0', 'BaseEntry')},
+        ${selectPhysicalOptionalColumn(physicalLineColumns, 'T0', 'BaseType')},
+        ${selectPhysicalOptionalColumn(physicalLineColumns, 'T0', 'BaseLine')},
         '' AS Branch,
         '' AS Loc
       FROM DLN1 T0
@@ -2030,13 +2039,13 @@ const getDelivery = async (docEntry) => {
       LEFT JOIN OITW ITW ON ITW.ItemCode = T0.ItemCode AND ITW.WhsCode = T0.WhsCode
       LEFT JOIN OCHP CHP ON CHP.AbsEntry = ITM.ChapterID
       ${uomJoinSql}
-      ${sacSql.joinSql}
       WHERE T0.DocEntry = @docEntry
       ORDER BY T0.LineNum
     `, { docEntry: resolvedDocEntry }));
   }
 
   console.log(`[DB] getDelivery - requested identifier: ${docEntry}, resolved DocEntry: ${resolvedDocEntry}, Line rows found: ${lineRows.length}`);
+  if (!lineRows.length) throw new Error('Delivery content lines could not be loaded. Retry or contact an administrator.');
   if (lineRows.length > 0) {
     console.log('[DB] getDelivery - First line:', lineRows[0]);
   } else {
@@ -2252,7 +2261,7 @@ const getDelivery = async (docEntry) => {
         branch: header.Branch ? String(header.Branch) : '',
         warehouse: lineRows.length > 0 && lineRows[0].Warehouse ? String(lineRows[0].Warehouse) : '', // Get warehouse from first line (empty if no lines)
         docNo: header.DocNum ? String(header.DocNum) : '',
-        status: header.DocumentStatus || 'Open',
+        status: resolveDocumentConfirmationStatus(header.DocumentStatus || 'Open', header.Confirmed),
         series: header.Series ? String(header.Series) : '',
         seriesName: header.SeriesName || '',
         seriesIndicator: header.SeriesIndicator || '',
@@ -2705,31 +2714,7 @@ const loadReferenceDataUncached = async () => {
   ]);
   const lineFieldMetadata = await buildDeliveryLineUiMetadata(udfMetadata.rows || []);
 
-  const uomGroupMap = {};
-  uomGroupsRaw.forEach(row => {
-    if (!uomGroupMap[row.AbsEntry]) {
-      uomGroupMap[row.AbsEntry] = {
-        AbsEntry: row.AbsEntry,
-        Name: row.Name,
-        uomCodes: [],
-        conversions: {} // UomCode -> { baseQty, altQty, factor }
-      };
-    }
-    if (row.UomCode) {
-      uomGroupMap[row.AbsEntry].uomCodes.push(row.UomCode);
-      // Store conversion factor: factor = AltQty / BaseQty
-      // Example: 1 BOX = 12 PCS means BaseQty=1, AltQty=12, factor=12
-      const baseQty = parseFloat(row.BaseQty || 1);
-      const altQty = parseFloat(row.AltQty || 1);
-      const factor = baseQty > 0 ? altQty / baseQty : 1;
-      uomGroupMap[row.AbsEntry].conversions[row.UomCode] = {
-        baseQty,
-        altQty,
-        factor
-      };
-    }
-  });
-  const uom_groups = Object.values(uomGroupMap);
+  const uom_groups = uomGroupsRaw;
 
   const decimalSettings = decimalRows.length > 0 ? {
     QtyDec: decimalRows[0].QtyDec || 2,
@@ -2898,7 +2883,8 @@ const getItemsForModal = (whsCode = '') => {
     CAST(${hasWarehouse ? 'ISNULL(W.OnHand, 0) - ISNULL(W.IsCommited, 0)' : 'T0.OnHand - T0.IsCommited'} AS DECIMAL(19,2)) AS Available,
     T0.SalUnitMsr AS SalesUnit,
     T0.InvntryUom AS InventoryUOM,
-    T0.SUoMEntry AS UoMGroupEntry,
+    T0.UgpEntry AS UoMGroupEntry,
+    T0.SUoMEntry AS SalesUomEntry,
     T0.AvgPrice AS ItemCost,
     CHP.ChapterID AS HSNCode,
     T0.CountryOrg AS ItemCountryOrg,
@@ -2930,7 +2916,8 @@ const getUomConversionFactor = async (itemCode, uomCode) => {
     SELECT 
       T0.ItemCode,
       T0.InvntryUom AS InventoryUOM,
-      T0.SUoMEntry AS UoMGroupEntry,
+      T0.UgpEntry AS UoMGroupEntry,
+      T0.SUoMEntry AS SalesUomEntry,
       T0.SalUnitMsr AS SalesUnit,
       T2.BaseQty,
       T2.AltQty,
@@ -2949,7 +2936,8 @@ const getUomConversionFactor = async (itemCode, uomCode) => {
     SELECT 
       T0.ItemCode,
       T0.InvntryUom AS InventoryUOM,
-      T0.SUoMEntry AS UoMGroupEntry,
+      T0.UgpEntry AS UoMGroupEntry,
+      T0.SUoMEntry AS SalesUomEntry,
       T0.SalUnitMsr AS SalesUnit,
       T2.BaseQty,
       T2.AltQty,
@@ -3056,8 +3044,21 @@ const isBlank = (value) => value === undefined || value === null || String(value
 const isManualUomPlaceholder = (value) =>
   String(value || '').trim().toUpperCase() === MANUAL_UOM_PLACEHOLDER;
 
+const isTruthyFlag = (value) => (
+  value === true || value === 1 || ['Y', 'YES', 'TRUE', '1'].includes(String(value ?? '').trim().toUpperCase())
+);
+
+const getDeliveryLineUomValue = (line = {}) => {
+  if (isTruthyFlag(line.uomNameEdited)) {
+    return line.uomName ?? line.UoMName ?? line.UomName ?? line.UnitMsr ?? line.unitMsr ?? line.uomCode;
+  }
+
+  return line.uomEntry ?? line.UoMEntry ?? line.uomCode ?? line.UoMCode ?? line.UomCode
+    ?? line.uomName ?? line.UoMName ?? line.UomName ?? line.UnitMsr ?? line.unitMsr;
+};
+
 const getEffectiveLineUomCode = (line = {}, item = {}) => {
-  const rawUomCode = String(line.uomCode || '').trim();
+  const rawUomCode = String(getDeliveryLineUomValue(line) || '').trim();
   if (!isManualUomPlaceholder(rawUomCode)) {
     return rawUomCode;
   }
@@ -3119,6 +3120,7 @@ const validateLineMasterData = async (lines = []) => {
         T0.SalUnitMsr,
         T0.InvntryUom,
         T0.SUoMEntry,
+        T0.UgpEntry,
         T0.VatGourpSa,
         COALESCE(CHP.ChapterID, T0.SWW, '') AS HSNCode
       FROM OITM T0
@@ -3149,32 +3151,31 @@ const validateLineMasterData = async (lines = []) => {
       errors.push(`Line ${lineNo}: HSN is required for item ${itemCode}`);
     }
 
-    const uomCode = getEffectiveLineUomCode(line, item);
-    if (!uomCode) {
-      errors.push(`Line ${lineNo}: UoM Name is required for item ${itemCode}`);
-    } else {
-      const numericUomFactor = Number(uomCode);
-      const isNumericUomFactor = Number.isFinite(numericUomFactor) && numericUomFactor > 0;
-      const directUomMatches = [item.SalUnitMsr, item.InvntryUom]
-        .map((value) => String(value || '').trim().toUpperCase())
-        .filter(Boolean)
-        .includes(uomCode.toUpperCase());
+    // SAP determines the UoM from the source line for a Copy From document.
+    // The Delivery payload contains only the BaseEntry/BaseType/BaseLine for
+    // those rows, so validating a separate UI UoM value can reject a valid
+    // copied Sales Order before SAP gets a chance to create the delivery.
+    const itemUsesManualUom = Number(item.UgpEntry) <= 0 || Number(item.SUoMEntry) <= 0;
+    if (!isBaseDocumentLine && !itemUsesManualUom) {
+      const uomCode = getEffectiveLineUomCode(line, item);
+      if (!uomCode) {
+        errors.push(`Line ${lineNo}: UoM Name is required for item ${itemCode}`);
+      } else {
+        const numericUomFactor = Number(uomCode);
+        const isNumericUomFactor = Number.isFinite(numericUomFactor) && numericUomFactor > 0;
+        const directUomMatches = [item.SalUnitMsr, item.InvntryUom]
+          .map((value) => String(value || '').trim().toUpperCase())
+          .filter(Boolean)
+          .includes(uomCode.toUpperCase());
 
-      if (!isNumericUomFactor && !directUomMatches) {
-        const uomRows = await safe(db.query(`
-          SELECT TOP 1 UOM.UomCode
-          FROM OITM ITM
-          INNER JOIN UGP1 UGP ON UGP.UgpEntry = ITM.SUoMEntry
-          INNER JOIN OUOM UOM ON UOM.UomEntry = UGP.UomEntry
-          WHERE ITM.ItemCode = @ItemCode
-            AND UPPER(LTRIM(RTRIM(UOM.UomCode))) = @UomCode
-        `, {
-          ItemCode: itemCode,
-          UomCode: uomCode.toUpperCase(),
-        }));
+        if (!isNumericUomFactor && !directUomMatches) {
+          const uomEntry = await resolveDeliveryLineUomEntry(itemCode, uomCode, {
+            allowDefaultFallback: false,
+          });
 
-        if (!uomRows.length) {
-          errors.push(`Line ${lineNo}: UoM ${uomCode} is not valid for item ${itemCode}`);
+          if (uomEntry === null || uomEntry === undefined) {
+            errors.push(`Line ${lineNo}: UoM ${uomCode} is not valid for item ${itemCode}`);
+          }
         }
       }
     }

@@ -1,3 +1,4 @@
+import { mergeSavedFormSettings } from '../utils/formSettingsPreferences';
 import { filterSafePurchaseMatrixColumns } from '../utils/purchaseDocumentFormSettings';
 
 const FORM_SETTINGS_STORAGE_KEY = 'sapb1.purchaseOrder.formSettings.v1';
@@ -10,10 +11,18 @@ const CONFIGURED_MATRIX_COLUMNS = [
   { key: 'itemNo', label: 'Item No.', minWidth: 160 },
   { key: 'itemDescription', label: 'Item Description', minWidth: 240 },
   { key: 'quantity', label: 'Quantity', minWidth: 90 },
+  { key: 'uomCode', label: 'UoM Code', minWidth: 105 },
   { key: 'uomName', label: 'UoM Name', minWidth: 120 },
   { key: 'hsnCode', label: 'HSN', minWidth: 145 },
   { key: 'unitPrice', label: 'Unit Price', minWidth: 110 },
   { key: 'taxCode', label: 'Tax Code', minWidth: 115 },
+  { key: 'countryOfOrigin', label: 'Country/Region of Origin', minWidth: 185 },
+  { key: 'distRule', label: 'Distr. Rule', minWidth: 105 },
+  { key: 'loc', label: 'Loc.', minWidth: 90 },
+  { key: 'sac', label: 'SAC', minWidth: 105 },
+  { key: 'blanketAgreementNo', label: 'Blanket Agreement No.', minWidth: 170 },
+  { key: 'costSheet', label: 'Cost-Sheet', minWidth: 130 },
+  { key: 'containerType', label: 'Container Type', minWidth: 145 },
   { key: 'forRate', label: 'FOR-Price', minWidth: 110 },
   { key: 'total', label: 'Total', minWidth: 110 },
   { key: 'packingType', label: 'Packing-Type', minWidth: 140 },
@@ -109,8 +118,11 @@ const createUdfState = (definitions = [], values = {}) =>
   }, {});
 
 const buildVisibilitySettings = (definitions = []) =>
-  asDefinitionArray(definitions).reduce((acc, field) => {
+  asDefinitionArray(definitions).reduce((acc, field, index) => {
     acc[field.key] = {
+      order: Number(field.order ?? field.columnOrder ?? index + 1),
+      minWidth: field.minWidth,
+      sapControlled: Boolean(field.sapControlled),
       visible: field.visible !== false,
       active: field.active !== false,
     };
@@ -127,15 +139,6 @@ const createDefaultFormSettings = (
   rowUdfs: buildVisibilitySettings(rowUdfs),
 });
 
-const mergeNestedSettings = (defaults, saved = {}) =>
-  Object.keys(defaults).reduce((acc, groupKey) => {
-    acc[groupKey] = {
-      ...defaults[groupKey],
-      ...(saved[groupKey] || {}),
-    };
-    return acc;
-  }, {});
-
 const readSavedFormSettings = (
   headerUdfs = HEADER_UDF_DEFINITIONS,
   rowUdfs = ROW_UDF_DEFINITIONS,
@@ -149,7 +152,7 @@ const readSavedFormSettings = (
   try {
     const raw = localStorage.getItem(effectiveStorageKey);
     if (!raw) return defaults;
-    return mergeNestedSettings(defaults, JSON.parse(raw));
+    return mergeSavedFormSettings(defaults, JSON.parse(raw));
   } catch (error) {
     return defaults;
   }

@@ -92,7 +92,7 @@ const resolveDatabaseScope = async (database) => {
   return {
     databaseName: normalizedDatabaseName,
     dialect,
-    cacheKey: `${dialect}:${connectionIdentity}${normalizedDatabaseName.toUpperCase()}`,
+    cacheKey: `${dialect}:${connectionIdentity}${dialect === 'hana' ? normalizedDatabaseName : normalizedDatabaseName.toUpperCase()}`,
   };
 };
 
@@ -165,6 +165,25 @@ const createTableFieldMetadataReader = ({ database, cache = new Map() } = {}) =>
 };
 
 const LIKE_ESCAPE_CHARACTER = '!';
+// Preserve physical casing: HANA quoted names and company UDFs are case-sensitive.
+const findPhysicalColumnName = (columns, name) => Array.from(columns || []).find(
+  (column) => String(column).toUpperCase() === String(name || '').toUpperCase(),
+);
+
+const selectPhysicalOptionalColumn = (columns, tableAlias, name, alias = name, fallback = 'NULL') => {
+  const physicalName = findPhysicalColumnName(columns, name);
+  const expression = physicalName
+    ? `${tableAlias ? `${tableAlias}.` : ''}[${physicalName.replace(/]/g, ']]')}]`
+    : fallback;
+  return `${expression} AS [${String(alias).replace(/]/g, ']]')}]`;
+};
+
+const createPhysicalColumnSetReader = (database) => {
+  const readDetails = createTableColumnDetailsReader({ database });
+  return async (tableName) => new Set(
+    (await readDetails(tableName)).map((column) => column.columnName),
+  );
+};
 
 const escapeLikeValue = (value) => String(value || '').replace(
   /[!%_[\]]/g,
@@ -174,6 +193,9 @@ const escapeLikeValue = (value) => String(value || '').replace(
 const LIKE_ESCAPE_SQL = `ESCAPE '${LIKE_ESCAPE_CHARACTER}'`;
 
 module.exports = {
+  createPhysicalColumnSetReader,
+  findPhysicalColumnName,
+  selectPhysicalOptionalColumn,
   HANA_TABLE_COLUMNS_SQL,
   LIKE_ESCAPE_CHARACTER,
   LIKE_ESCAPE_SQL,

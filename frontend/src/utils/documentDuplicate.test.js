@@ -54,4 +54,22 @@ describe('document duplication', () => {
       baseLine: null,
     });
   });
+
+  test('preserves a manual UoM as an editable measure-unit name, not SAP entry -1', () => {
+    const duplicated = buildDuplicateLines([{
+      itemNo: 'ITEM-1',
+      quantity: '4',
+      uomEntry: -1,
+      uomCode: 'KGS',
+      uomName: 'KGS',
+    }], () => ({ itemNo: '', quantity: '', uomEntry: null, uomCode: '', uomName: '' }), []);
+
+    expect(duplicated[0]).toMatchObject({
+      itemNo: 'ITEM-1',
+      uomEntry: null,
+      uomCode: 'KGS',
+      uomName: 'KGS',
+      uomNameEdited: true,
+    });
+  });
 });

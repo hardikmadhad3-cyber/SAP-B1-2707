@@ -1,11 +1,14 @@
 import React from 'react';
+import { isBaseDocumentLine } from '../../../utils/documentUom';
 import TaxCodeLookup from '../../../components/TaxCodeLookup';
 
-import { GRPO_LINE_UDF_FIELD_MAP } from '../../../config/grpoForm';
+import { BASE_MATRIX_COLUMNS, GRPO_LINE_UDF_FIELD_MAP } from '../../../config/grpoForm';
 import { getLineTotalsForDisplay } from '../../../utils/lineTotals';
 import { useSapItemCodeTab } from '../../../utils/sapTabNavigation';
 import { normalizeUdfLookupKey } from '../grpoLineUdfMapping';
 import { getOrderedVisibleMatrixColumns } from '../../../utils/formSettingsColumns';
+import { getReadableDocumentLineColumnWidth } from '../../../utils/documentLineColumnWidth';
+import useDocumentTableClipboard from '../../../components/sales-document/useDocumentTableClipboard';
 
 const normalizeFieldIdentity = (field = {}) =>
   [
@@ -51,18 +54,16 @@ const NUMERIC_FIELDS = new Set([
 
 const INDEX_COL_WIDTH = 42;
 const ACTION_COL_WIDTH = 48;
-const COLUMN_MIN_WIDTHS = {
-  itemNo: 180,
-  itemDescription: 260,
-  hsnCode: 145,
-  uomName: 130,
-  uomCode: 120,
-  taxCode: 135,
-};
+const BASE_MATRIX_COLUMN_BY_KEY = new Map(BASE_MATRIX_COLUMNS.map((column) => [column.key, column]));
 
 const asArray = (value) => (Array.isArray(value) ? value : [value]).filter(Boolean);
-const getColumnWidth = (column = {}) =>
-  Math.max(Number(column.minWidth || column.width || 125), COLUMN_MIN_WIDTHS[column.key] || 0);
+const getColumnWidth = (column = {}) => getReadableDocumentLineColumnWidth(
+  column,
+  {
+    ...(BASE_MATRIX_COLUMN_BY_KEY.get(column.rendererKey || column.valueKey || column.key) || {}),
+    ...(column.field || {}),
+  },
+);
 
 const getUdfFieldForColumn = (column, rowUdfFieldMap, rowUdfTokenMap) => {
   const udfKeys = asArray(column.udfKey || GRPO_LINE_UDF_FIELD_MAP[column.key]);
@@ -125,7 +126,7 @@ const normalizeSapPairDropdownOption = (field, option) => {
   };
 };
 
-export default function ContentsTab({
+function EditableContentsTab({
   lines,
   onLineChange,
   onNumBlur,
@@ -144,6 +145,9 @@ export default function ContentsTab({
   visibleRowUdfs,
   onRowUdfChange,
   formSettings,
+  canPasteTable = false,
+  onPasteTable,
+  onClipboardFeedback,
 }) {
   const sapItemTab = useSapItemCodeTab({ lineItemOptions, onLineChange, onOpenItemModal });
   const rowUdfFieldMap = React.useMemo(
@@ -167,15 +171,33 @@ export default function ContentsTab({
         : getUdfFieldForColumn(column, rowUdfFieldMap, rowUdfTokenMap);
       return isLiveUdfColumn(column) ? { ...column, field } : column;
     })
-    .filter((column) => (
-      !isLiveUdfColumn(column)
-      || (
-        Boolean(column.field)
-        && (formSettings.matrixColumns?.[column.key] || formSettings.rowUdfs?.[column.field.key] || {}).visible !== false
-        && column.visible !== false
-      )
-    ));
+    // A stale layout UDF must never render unless the current company schema
+    // supplied the matching row-UDF definition. Visibility itself is decided
+    // only by the resolved Form Settings below: the imported SAP layout flag on
+    // the column is the default those settings override, so re-checking it here
+    // hid columns a company Form Settings layout had explicitly published.
+    .filter((column) => !isLiveUdfColumn(column) || Boolean(column.field));
   const displayColumns = getOrderedVisibleMatrixColumns(liveColumns, formSettings);
+  const clipboardColumns = React.useMemo(() => displayColumns.map((column) => {
+    const field = column.field || getUdfFieldForColumn(column, rowUdfFieldMap, rowUdfTokenMap);
+    const setting = formSettings.matrixColumns?.[column.key]
+      || (field?.key ? formSettings.rowUdfs?.[field.key] : null)
+      || {};
+    return {
+      key: column.valueKey || column.rendererKey || column.key,
+      label: column.label || column.key,
+      isUdf: isLiveUdfColumn(column),
+      readOnly: Boolean(column.readOnly || field?.readOnly || setting.active === false),
+    };
+  }), [displayColumns, formSettings, rowUdfFieldMap, rowUdfTokenMap]);
+  const { tableClipboardProps, tableClipboardUi } = useDocumentTableClipboard({
+    columns: clipboardColumns,
+    rows: lines,
+    columnOffset: 1,
+    canPaste: canPasteTable,
+    onPaste: onPasteTable,
+    onFeedback: onClipboardFeedback,
+  });
   const tableMinWidth = INDEX_COL_WIDTH + ACTION_COL_WIDTH + displayColumns.reduce(
     (total, col) => total + getColumnWidth(col),
     0
@@ -312,14 +334,14 @@ export default function ContentsTab({
   };
 
   return (
-    <div className="so-tab-panel" style={{ overflow: 'visible', minWidth: 0, maxWidth: 'none' }}>
+    <>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
         <div className="so-section-title">Item Matrix</div>
         <button type="button" className="so-btn so-btn--primary" onClick={onAddLine}>+ Add Line</button>
       </div>
       <div className="so-grid-wrap so-grid-wrap--contents">
         <div className="so-grid-wrap__scroller so-grid-wrap__scroller--contents">
-        <table className="so-grid so-grid--contents" style={{ width: 'max-content', minWidth: tableMinWidth, tableLayout: 'auto' }}>
+        <table {...tableClipboardProps} className="so-grid so-grid--contents" style={{ width: 'max-content', minWidth: tableMinWidth, tableLayout: 'auto' }}>
           <colgroup>
             <col style={{ width: INDEX_COL_WIDTH }} />
             {displayColumns.map((col) => (
@@ -440,7 +462,8 @@ export default function ContentsTab({
                       <select
                         className="so-grid__input"
                         style={{ width: '100%', textAlign: 'left', border: valErrors.lines[index]?.uomCode ? '1px solid #c00' : undefined }}
-                        name="uomCode" value={line.uomCode || ''} disabled={!isActive}
+                        name="uomCode" value={line.uomCode || ''}
+                        disabled={!isActive || isBaseDocumentLine(line) || Number(line.uomEntry) < 0 || String(line.uomCode || '').toUpperCase() === 'MANUAL'}
                         onChange={e => onLineChange(index, e)}
                       >
                         <option value="">Select</option>
@@ -459,7 +482,7 @@ export default function ContentsTab({
                         className="so-grid__input"
                         name="uomName"
                         value={line.uomNameEdited ? (line.uomName ?? '') : (line.uomName || line.uomCode || '')}
-                        disabled={!isActive}
+                        disabled={!isActive || isBaseDocumentLine(line) || !(Number(line.uomEntry) < 0 || String(line.uomCode || '').toUpperCase() === 'MANUAL')}
                         onChange={(e) => onLineChange(index, e)}
                       />
                     </td>
@@ -538,8 +561,13 @@ export default function ContentsTab({
             )})}
           </tbody>
         </table>
+        {tableClipboardUi}
       </div>
       </div>
-    </div>
+    </>
   );
+}
+
+export default function ContentsTab(props) {
+  return <EditableContentsTab {...props} />;
 }

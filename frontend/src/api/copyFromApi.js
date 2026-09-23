@@ -134,7 +134,9 @@ export const unwrapCopyFromDocument = (data) => {
     source.doc_entry ??
     null;
 
-  return { source, document, header, lines: Array.isArray(lines) ? lines : [], docEntry };
+  const expenses = document.freightCharges ?? document.DocumentAdditionalExpenses ?? source.freightCharges ?? source.DocumentAdditionalExpenses;
+  const freightCharges = Array.isArray(expenses) ? expenses : [];
+  return { source, document, header, lines: Array.isArray(lines) ? lines : [], docEntry, freightCharges };
 };
 
 const normalizeBranchValue = (value) => {
@@ -170,6 +172,16 @@ const toOptionalNumber = (value) => {
   if (value === undefined || value === null || String(value).trim() === '') return undefined;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const normalizeParentLineNum = (line = {}) => {
+  const value = toOptionalNumber(firstValue(line.parentLineNum, line.ParentLineNum, line.bomParentLineNum));
+  return value !== undefined && value >= 0 ? value : null;
+};
+
+const isSalesTreeType = (value) => {
+  const normalized = String(value || '').trim().toUpperCase();
+  return normalized === 'S' || normalized === 'ISALESTREE' || normalized === 'SALESTREE';
 };
 
 const resolveRoundingAmount = (source = {}) => firstString(
@@ -217,6 +229,7 @@ export const normaliseDocumentLine = (line, idx, docEntry, baseType, headerBranc
   itemNo:          firstString(line.itemNo, line.glAccount, line.ItemCode, line.AccountCode, line.AcctCode),
   itemDescription: firstString(line.itemDescription, line.ItemDescription, line.Dscription),
   requiredDate:    formatDateForInput(firstValue(line.requiredDate, line.RequiredDate, line.ReqDate, line.udf?.U_Required_Date, line.udf?.U_ReqDate)),
+  noOfPackages:    firstString(line.noOfPackages, line.NoOfPackages, line.PackageQuantity, line.PackQty, line.Packages, line.NumOfPacks),
   quotedDate:      formatDateForInput(firstValue(line.quotedDate, line.QuotedDate, line.ShipDate, line.udf?.U_Quoted_Date, line.udf?.U_QuoteDate)),
   requiredQty:     firstString(line.requiredQty, line.RequiredQty, line.RequiredQuantity, line.udf?.U_Req_Qty, line.udf?.U_ReqQty),
   sellerQuality:   firstString(line.sellerQuality, line.SellerQuality),
@@ -264,6 +277,17 @@ export const normaliseDocumentLine = (line, idx, docEntry, baseType, headerBranc
   brokerageNumber: firstString(line.brokerageNumber, line.BrokerageNumber),
   uomCode:         firstString(line.uomCode, line.UoMCode, line.UomCode, line.UOMCode, line.UomEntry, line.UoMEntry),
   uomName:         firstString(line.uomName, line.unitMsr, line.UoMName, line.UomName, line.UnitMsr, line.MeasureUnit, line.UoMCode, line.UomCode, line.uomCode),
+  uomEntry:        firstString(line.uomEntry, line.UoMEntry, line.UomEntry),
+  uomFactor:       firstString(line.uomFactor, line.UomFactor, line.NumPerMsr, 1),
+  inventoryUOM:    firstString(line.inventoryUOM, line.InventoryUOM, line.InvntryUom),
+  batchManaged:    sapYesNoToBoolean(firstValue(line.batchManaged, line.BatchManaged, line.ManBtchNum, line.ManageBatchNumbers)),
+  serialManaged:   sapYesNoToBoolean(firstValue(line.serialManaged, line.SerialManaged, line.ManSerNum, line.ManageSerialNumbers)),
+  batches:         Array.isArray(line.batches)
+    ? line.batches
+    : (Array.isArray(line.BatchNumbers) ? line.BatchNumbers : []),
+  qtyInventoryUom: firstString(line.qtyInventoryUom, line.QtyInventoryUom),
+  changeQtyInvUomIndependently: firstString(line.changeQtyInvUomIndependently, line.ChangeQtyInvUomIndependently),
+  uomGroup:        firstString(line.uomGroup, line.UoMGroup, line.UgpEntry),
   hsnCode:         firstString(line.hsnCode, line.HSNCode),
   sacCode:         firstString(line.sacCode, line.SACCode, line.SacCode),
   taxCode:         firstString(line.taxCode, line.TaxCode, line.VatGroup),
@@ -308,6 +332,23 @@ export const normaliseDocumentLine = (line, idx, docEntry, baseType, headerBranc
   baseEntry:       docEntry             || null,
   baseType,
   baseLine:        line.LineNum         ?? line.lineNum         ?? idx,
+  treeType:        firstString(line.treeType, line.TreeType),
+  parentLineNum:   normalizeParentLineNum(line),
+  bomType:         firstString(line.bomType, isSalesTreeType(firstString(line.treeType, line.TreeType)) ? 'S' : ''),
+  bomRole:         firstString(
+    line.bomRole,
+    isSalesTreeType(firstString(line.treeType, line.TreeType)) ? 'parent' : '',
+  ),
+  bomTreeCode:     firstString(line.bomTreeCode),
+  bomGroupId:      firstString(line.bomGroupId),
+  bomParentIndex:  toOptionalNumber(line.bomParentIndex) ?? null,
+  bomParentLineNum: normalizeParentLineNum(line),
+  bomBaseQuantity: toOptionalNumber(line.bomBaseQuantity) ?? null,
+  bomComponentQuantity: toOptionalNumber(line.bomComponentQuantity) ?? null,
+  bomChildNum:     toOptionalNumber(firstValue(line.bomChildNum, line.ChildNum)) ?? null,
+  bomVisualOrder:  toOptionalNumber(firstValue(line.bomVisualOrder, line.VisualOrder)) ?? null,
+  bomQuantityManuallyEdited: Boolean(line.bomQuantityManuallyEdited),
+  bomComponentManuallyEdited: Boolean(line.bomComponentManuallyEdited),
   loc:             firstString(line.LocCode, line.LocationCode, line.loc, line.Location),
   branch:          normalizeBranchValue(line.branch || line.Branch || headerBranch),
   commissionAmountPerTon: firstString(line.commissionAmountPerTon, line.CommissionAmountPerTon),
@@ -344,21 +385,39 @@ export const normaliseDocumentHeader = (data) => {
     salesEmployee:    firstString(h.salesEmployee, h.SlpCode),
     purchaser:        firstString(h.purchaser, h.SalesEmployeeName),
     owner:            firstString(h.owner, h.OwnerName),
-    shipToCode:       firstString(h.shipToCode, h.ShipToCode),
-    shipToAddress:    firstString(h.shipTo, h.shipToAddress, h.Address),
-    billToCode:       firstString(h.payToCode, h.billToCode, h.PayToCode),
-    billToAddress:    firstString(h.payTo, h.billToAddress, h.Address2),
-    shippingType:     firstString(h.shippingType, h.TrnspCode),
+  shipToCode:       firstString(h.shipToCode, h.ShipToCode),
+  shipTo:           firstString(h.shipTo, h.shipToAddress, h.Address),
+  shipToAddress:    firstString(h.shipTo, h.shipToAddress, h.Address),
+  shipToAddressComponents: h.shipToAddressComponents ?? null,
+  billToCode:       firstString(h.payToCode, h.billToCode, h.PayToCode),
+  payTo:            firstString(h.payTo, h.billToAddress, h.Address2),
+  billToAddress:    firstString(h.payTo, h.billToAddress, h.Address2),
+  billToAddressComponents: h.billToAddressComponents ?? null,
+  warehouse:        firstString(h.warehouse, h.WhsCode, h.WarehouseCode),
+  contractDate:     formatDateForInput(firstValue(h.contractDate, h.ContractDate)),
+  branchRegNo:      firstString(h.branchRegNo, h.BranchRegNo),
+  transactionType:  firstString(h.transactionType, h.TransactionType),
+  indicator:        firstString(h.indicator, h.Indicator),
+  shippingType:     firstString(h.shippingType, h.TrnspCode),
     confirmed:        h.confirmed ?? sapYesNoToBoolean(h.Confirmed),
     journalRemark:    firstString(h.journalRemark, h.JrnlMemo),
     discount:         firstString(h.discount, h.DiscPrcnt),
     freight:          firstString(h.freight, h.Freight),
     tax:              firstString(h.tax, h.TaxAmount),
     totalPaymentDue:  firstString(h.totalPaymentDue, h.DocTotal),
-    rounding:         resolveRoundingFlag(h),
-    roundingAmount:   resolveRoundingAmount(h),
+  rounding:         resolveRoundingFlag(h),
+  roundingAmount:   resolveRoundingAmount(h),
+  paymentMethod:    firstString(h.paymentMethod, h.PeyMethod),
+  useBillToForTax:  h.useBillToForTax ?? sapYesNoToBoolean(h.UseBillToForTax),
+  ownerCode:        firstString(h.ownerCode, h.OwnerCode),
+  language:         firstString(h.language, h.languageCode, h.LanguageCode),
+  trackingNo:       firstString(h.trackingNo, h.TrackNo),
+  stampNo:          firstString(h.stampNo, h.StampNo),
+  pickPackRemarks:  firstString(h.pickPackRemarks, h.pickAndPackRemarks, h.PickPackRemarks),
+  bpChannelName:    firstString(h.bpChannelName, h.bpChannelCode, h.BpChannelName),
+  bpChannelContact: firstString(h.bpChannelContact, h.BpChannelContact),
     currency:         firstString(h.currency, h.DocCur, 'INR'),
-    remarks:          firstString(h.remarks, h.Comments),
-    otherInstruction: firstString(h.otherInstruction, h.remarks, h.Comments),
+    remarks:          firstString(h.remarks, h.Remarks, h.Comments),
+    otherInstruction: firstString(h.otherInstruction, h.remarks, h.Remarks, h.Comments),
   };
 };

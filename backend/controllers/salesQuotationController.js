@@ -1,10 +1,22 @@
+﻿const { getDocumentSeriesNumberPreview } = require('../services/documentSeriesNumberPreview');
+const { resolveMarketingDocumentSeries } = require('../services/documentSeriesDbUtils');
+const seriesDatabase = require('../services/dbService');
 const salesQuotationService = require('../services/salesQuotationService');
 
+const getErrorDetail = (value) => {
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (!value || typeof value !== 'object') return '';
+  return getErrorDetail(value.value)
+    || getErrorDetail(value.message)
+    || getErrorDetail(value.detail)
+    || getErrorDetail(value.error);
+};
+
 const getErrorPayload = (error, fallbackMessage) => {
-  // Extract detailed SAP error message if available
-  const sapErrorDetail = error.response?.data?.error?.message?.value ||
-    error.response?.data?.error?.message ||
-    error.response?.data;
+  // Only send a renderable message to the browser; object-valued SAP errors
+  // can otherwise make the alert fail while rendering.
+  const sapErrorDetail = getErrorDetail(error.response?.data);
 
   return {
     detail: sapErrorDetail || error.message || fallbackMessage,
@@ -115,7 +127,7 @@ const submitSalesQuotation = async (req, res) => {
     res.json(result);
   } catch (error) {
     console.error('[SalesQuotationController] submitSalesQuotation error:', error.message);
-    res.status(500).json(getErrorPayload(error, 'Failed to submit sales quotation.'));
+    res.status(error.statusCode || 500).json(getErrorPayload(error, 'Failed to submit sales quotation.'));
   }
 };
 
@@ -146,21 +158,20 @@ const updateSalesQuotation = async (req, res) => {
 
 const getDocumentSeries = async (req, res) => {
   try {
-    const data = await salesQuotationService.getDocumentSeries(req.query.date, {
-      branch: req.query.branch,
-    });
+    const data = await resolveMarketingDocumentSeries({ db: seriesDatabase, objectCode: '23', targetDate: req.query.date, branch: req.query.branch || '', docSubType: req.query.docSubType, transactionType: req.query.transactionType });
     res.json(data);
   } catch (error) {
-    res.status(500).json(getErrorPayload(error, 'Failed to load document series.'));
+    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
   }
 };
 
 const getNextNumber = async (req, res) => {
   try {
-    const data = await salesQuotationService.getNextNumber(req.query.series);
-    res.json(data);
+    res.json(await getDocumentSeriesNumberPreview({ db: seriesDatabase, objectCode: '23', seriesId: req.query.series ?? req.params.series,
+      targetDate: req.query.date || req.query.postingDate || req.query.targetDate, branch: req.query.branch || '',
+      docSubType: req.query.docSubType, transactionType: req.query.transactionType }));
   } catch (error) {
-    res.status(500).json(getErrorPayload(error, 'Failed to get next number.'));
+    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
   }
 };
 

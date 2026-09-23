@@ -1,0 +1,868 @@
+===================================================================
+--- a/backend/services/sapService.js
++++ b/backend/services/sapService.js
+@@ -459,9 +459,10 @@
+     if (requestBody) req.write(requestBody);
+     req.end();
+   });
+ 
+-const request = async (config, retryOnAuth = true, retryOnTransientRead = true) => {
++const request = async (config, retryOnAuth = true, retryOnTransientRead = true) => {
++  await require('./documentSeriesWriteValidation').validateMarketingSeriesWrite(config);
+   const serviceLayerConfig = await resolveServiceLayerConfig(config);
+   const companyDb = serviceLayerConfig.companyDb;
+   await ensureSession(companyDb);
+   const sessionState = getSessionState(serviceLayerConfig);
+
+===================================================================
+--- a/backend/services/documentSeriesPolicy.js
++++ b/backend/services/documentSeriesPolicy.js
+@@ -41,9 +41,9 @@
+ 
+ // Item/service (DocType) does not create a separate numbering object.
+ const normalizeDocumentSubType = (value = '--') => {
+   const subType = text(value) || '--';
+-  const aliases = { bod_None: '--', bod_InvoiceExempt: 'IE', bod_DebitMemo: 'DN', bod_Bill: 'IB', bod_ExemptBill: 'EB', bod_PurchaseDebitMemo: 'PD', bod_ExportInvoice: 'IX', bod_GSTTaxInvoice: 'GA', bod_GSTDebitMemo: 'GD', bod_RefundVoucher: 'RU' };
++  const aliases = { bod_None: '--', bod_InvoiceExempt: 'IE', bod_DebitMemo: 'DN', bod_Bill: 'IB', bod_ExemptBill: 'EB', bod_PurchaseDebitMemo: 'DM', bod_ExportInvoice: 'IX', bod_GSTTaxInvoice: 'GA', bod_GSTDebitMemo: 'GD' };
+   if (aliases[subType]) return aliases[subType];
+   if (/^(--|[A-Z]{1,2})$/.test(subType)) return subType;
+   const error = new Error('Unsupported SAP document subtype.');
+   error.statusCode = 400;
+
+===================================================================
+--- a/backend/services/documentSeriesAccess.js
++++ b/backend/services/documentSeriesAccess.js
+@@ -1,6 +1,6 @@
+ 'use strict';
+-const { text, isTrue, dateOnly } = require('./documentSeriesPolicy');
++const { text, isTrue } = require('./documentSeriesPolicy');
+ const { getActiveCompanyConfig } = require('./companyConfigService');
+ const fail = (message) => Object.assign(new Error(message), { statusCode: 422, code: 'SAP_SERIES_USER_CONFIGURATION' });
+ 
+ // SAP system permission identifiers are supplied by the installed SDK's
+
+===================================================================
+--- a/backend/services/sapSeriesPermissions.js
++++ b/backend/services/sapSeriesPermissions.js
+@@ -20,14 +20,14 @@
+   const active = (row) => (!row.StartDate || today >= dateOnly(row.StartDate)) && (!row.DueDate || today <= dateOnly(row.DueDate));
+   const [direct, memberships, groups] = await Promise.all([
+     read('USR3', ['UserLink', 'PermId', 'Permission'], { UserLink: user.USERID }),
+     read('USR7', ['UserId', 'GroupId', ['StartDate'], ['DueDate']], { UserId: user.USERID }, { optional: true }),
+-    read('OUGR', ['GroupId', ['StartDate'], ['DueDate']], {}, { optional: true }),
++    read('OUGR', ['GroupId', ['StartDate'], ['DueDate'], ['GroupType', "'A'"]], {}, { optional: true }),
+   ]);
+   const grants = new Set(direct.filter(row => isFull(row.Permission)).map(row => text(row.PermId)));
+   // SAP combines user and active user-group rights using the most permissive
+   // authorization. An explicit denial on the user does not erase a group grant.
+-  const activeGroups = memberships.filter(active).filter(row => groups.some(group => Number(group.GroupId) === Number(row.GroupId) && active(group)));
++  const activeGroups = memberships.filter(active).filter(row => groups.some(group => Number(group.GroupId) === Number(row.GroupId) && active(group) && (!group.GroupType || ['A', 'L'].includes(text(group.GroupType)))));
+   for (const group of activeGroups) {
+     const permissions = await read('UGR1', ['GroupLink', 'PermId', 'Permission'], { GroupLink: group.GroupId });
+     for (const permission of permissions) if (isFull(permission.Permission)) grants.add(text(permission.PermId));
+   }
+
+===================================================================
+--- a/backend/services/salesDocumentDbCompatibility.js
++++ b/backend/services/salesDocumentDbCompatibility.js
+@@ -91,9 +91,9 @@
+     : '';
+   return {
+     databaseName: normalizedDatabaseName,
+     dialect,
+-    cacheKey: `${dialect}:${connectionIdentity}${normalizedDatabaseName.toUpperCase()}`,
++    cacheKey: `${dialect}:${connectionIdentity}${dialect === 'hana' ? normalizedDatabaseName : normalizedDatabaseName.toUpperCase()}`,
+   };
+ };
+ 
+ const getTableColumnsSql = (dialect) => (
+
+===================================================================
+--- a/frontend/src/modules/purchase-quatation/PurchaseQuatation.jsx
++++ b/frontend/src/modules/purchase-quatation/PurchaseQuatation.jsx
+@@ -629,9 +629,9 @@
+             ],
+             series: [],
+           });
+ 
+-          await loadSeriesOptions('', header.postingDate || today(), header.series || '');
++          setSeriesRevision(value => value + 1);
+         }
+         console.log("FULL REF DATA:", refDataRes.data);
+       } catch (e) {
+         if (!ignore) setPageState(p => ({ ...p, error: getErrMsg(e, 'Failed to load reference data.') }));
+@@ -1094,9 +1094,9 @@
+ 
+     if (name === 'branch') {
+       setHeader((prev) => ({ ...prev, branch: value }));
+       if (!currentDocEntry) {
+-        loadSeriesOptions(value, header.postingDate || today(), '');
++        setSeriesRevision(value => value + 1);
+       }
+       return;
+     }
+     
+@@ -1326,40 +1326,10 @@
+       setHeader(prev => ({ ...prev, series: manual ? '-1' : selected ? String(selected.Series) : '', nextNumber: manual ? '' : String(selected?.NextNumber ?? ''), docNo: '' }));
+       setPageState(prev => ({ ...prev, error: '', success: '' }));
+     };
+ 
+-  const loadSeriesOptions = async (branchValue, targetDate, preferredSeries = '') => {
+-    const seriesRes = await fetchDocumentSeries({
+-      branch: branchValue || undefined,
+-      targetDate: targetDate || undefined,
+-    });
+-    const seriesList = seriesRes.data.series || [];
++  
+ 
+-    setRefData((prev) => ({ ...prev, series: seriesList }));
+-
+-    if (currentDocEntry) {
+-      return seriesList;
+-    }
+-
+-    const keepSeries = preferredSeries || header.series;
+-    if (keepSeries && seriesList.some((series) => String(series.Series) === String(keepSeries))) {
+-      if (String(header.series || '') !== String(keepSeries)) {
+-        setHeader((prev) => ({ ...prev, series: String(keepSeries) }));
+-      }
+-      await handleSeriesChange(keepSeries);
+-      return seriesList;
+-    }
+-
+-    const defaultSeries = getDefaultSeriesForCurrentYear(seriesList);
+-    if (defaultSeries?.Series != null) {
+-      await handleSeriesChange(defaultSeries.Series);
+-    } else {
+-      setHeader((prev) => ({ ...prev, series: '', nextNumber: '' }));
+-    }
+-
+-    return seriesList;
+-  };
+-
+   const handleShipToChange = (addressCode) => {
+     if (!addressCode) {
+       setHeader(p => ({ ...p, shipToCode: addressCode, shipTo: '', placeOfSupply: '' }));
+       return;
+@@ -1735,9 +1705,9 @@
+       setHeaderUdfs(createUdfState(headerUdfDefinitions)); setActiveTab('Contents');
+       setRefData(p => ({ ...p, contacts: [], pay_to_addresses: [] }));
+       setValErrors({ header: {}, lines: {}, form: '' });
+ 
+-      await loadSeriesOptions(prep.branch || '', prep.postingDate || today(), '');
++      setSeriesRevision(value => value + 1);
+ 
+       setPageState(p => ({ ...p, success: `${r.data.message || 'Purchase quotation saved.'}${dn}` }));
+     } catch (e) {
+       setPageState(p => ({ ...p, error: getErrMsg(e, 'Purchase quotation submission failed.') }));
+
+===================================================================
+--- a/backend/controllers/apCreditMemoController.js
++++ b/backend/controllers/apCreditMemoController.js
+@@ -1,4 +1,5 @@
++const { getDocumentSeriesNumberPreview } = require('../services/documentSeriesNumberPreview');
+ const { resolveMarketingDocumentSeries } = require('../services/documentSeriesDbUtils');
+ const seriesDatabase = require('../services/dbService');
+ const apCreditMemoService = require('../services/apCreditMemoService');
+ 
+@@ -113,14 +114,16 @@
+     res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
+   }
+ };
+ 
+-const getNextNumber = async (req, res) => {
+-  try {
+-    res.json(await apCreditMemoService.getNextNumber(req.params.series));
+-  } catch (error) {
+-    res.status(500).json(getErrorPayload(error, 'Failed to get next number.'));
+-  }
++const getNextNumber = async (req, res) => {
++  try {
++    res.json(await getDocumentSeriesNumberPreview({ db: seriesDatabase, objectCode: '19', seriesId: req.query.series ?? req.params.series,
++      targetDate: req.query.date || req.query.postingDate || req.query.targetDate, branch: req.query.branch || '',
++      docSubType: req.query.docSubType, transactionType: req.query.transactionType }));
++  } catch (error) {
++    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
++  }
+ };
+ 
+ const getStateFromWarehouse = async (req, res) => {
+   try {
+
+===================================================================
+--- a/backend/controllers/apInvoiceController.js
++++ b/backend/controllers/apInvoiceController.js
+@@ -1,4 +1,5 @@
++const { getDocumentSeriesNumberPreview } = require('../services/documentSeriesNumberPreview');
+ const { resolveMarketingDocumentSeries } = require('../services/documentSeriesDbUtils');
+ const seriesDatabase = require('../services/dbService');
+ const apInvoiceService = require('../services/apInvoiceService');
+ 
+@@ -121,14 +122,16 @@
+     res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
+   }
+ };
+ 
+-const getNextNumber = async (req, res) => {
+-  try {
+-    res.json(await apInvoiceService.getNextNumber(req.params.series));
+-  } catch (error) {
+-    res.status(500).json(getErrorPayload(error, 'Failed to get next number.'));
+-  }
++const getNextNumber = async (req, res) => {
++  try {
++    res.json(await getDocumentSeriesNumberPreview({ db: seriesDatabase, objectCode: '18', seriesId: req.query.series ?? req.params.series,
++      targetDate: req.query.date || req.query.postingDate || req.query.targetDate, branch: req.query.branch || '',
++      docSubType: req.query.docSubType, transactionType: req.query.transactionType }));
++  } catch (error) {
++    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
++  }
+ };
+ 
+ const getStateFromWarehouse = async (req, res) => {
+   try {
+
+===================================================================
+--- a/backend/controllers/arCreditMemoController.js
++++ b/backend/controllers/arCreditMemoController.js
+@@ -1,4 +1,5 @@
++const { getDocumentSeriesNumberPreview } = require('../services/documentSeriesNumberPreview');
+ const { resolveMarketingDocumentSeries } = require('../services/documentSeriesDbUtils');
+ const seriesDatabase = require('../services/dbService');
+ const arCreditMemoService = require('../services/arCreditMemoService');
+ 
+@@ -132,15 +133,16 @@
+     res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
+   }
+ };
+ 
+-const getNextNumber = async (req, res) => {
+-  try {
+-    const data = await arCreditMemoService.getNextNumber(req.query.series);
+-    res.json(data);
+-  } catch (error) {
+-    res.status(500).json(getErrorPayload(error, 'Failed to get next number.'));
+-  }
++const getNextNumber = async (req, res) => {
++  try {
++    res.json(await getDocumentSeriesNumberPreview({ db: seriesDatabase, objectCode: '14', seriesId: req.query.series ?? req.params.series,
++      targetDate: req.query.date || req.query.postingDate || req.query.targetDate, branch: req.query.branch || '',
++      docSubType: req.query.docSubType, transactionType: req.query.transactionType }));
++  } catch (error) {
++    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
++  }
+ };
+ 
+ const getStateFromAddress = async (req, res) => {
+   try {
+
+===================================================================
+--- a/backend/controllers/arInvoiceController.js
++++ b/backend/controllers/arInvoiceController.js
+@@ -1,4 +1,5 @@
++const { getDocumentSeriesNumberPreview } = require('../services/documentSeriesNumberPreview');
+ const { resolveMarketingDocumentSeries } = require('../services/documentSeriesDbUtils');
+ const seriesDatabase = require('../services/dbService');
+ const arInvoiceService = require('../services/arInvoiceService');
+ 
+@@ -123,14 +124,16 @@
+     res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
+   }
+ };
+ 
+-const getNextNumber = async (req, res) => {
+-  try {
+-    res.json(await arInvoiceService.getNextNumber(req.query.series));
+-  } catch (error) {
+-    res.status(500).json(getErrorPayload(error, 'Failed to get next number.'));
+-  }
++const getNextNumber = async (req, res) => {
++  try {
++    res.json(await getDocumentSeriesNumberPreview({ db: seriesDatabase, objectCode: '13', seriesId: req.query.series ?? req.params.series,
++      targetDate: req.query.date || req.query.postingDate || req.query.targetDate, branch: req.query.branch || '',
++      docSubType: req.query.docSubType, transactionType: req.query.transactionType }));
++  } catch (error) {
++    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
++  }
+ };
+ 
+ const getStateFromAddress = async (req, res) => {
+   try {
+
+===================================================================
+--- a/backend/controllers/dcDeliveryController.js
++++ b/backend/controllers/dcDeliveryController.js
+@@ -1,4 +1,5 @@
++const { getDocumentSeriesNumberPreview } = require('../services/documentSeriesNumberPreview');
+ const { resolveMarketingDocumentSeries } = require('../services/documentSeriesDbUtils');
+ const seriesDatabase = require('../services/dbService');
+ const deliveryService = require('../services/dcDeliveryService');
+ 
+@@ -126,15 +127,16 @@
+     res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
+   }
+ };
+ 
+-const getNextNumber = async (req, res) => {
+-  try {
+-    const data = await deliveryService.getNextNumber(req.params.series);
+-    res.json(data);
+-  } catch (error) {
+-    res.status(500).json(getErrorPayload(error, 'Failed to get next number.'));
+-  }
++const getNextNumber = async (req, res) => {
++  try {
++    res.json(await getDocumentSeriesNumberPreview({ db: seriesDatabase, objectCode: '15', seriesId: req.query.series ?? req.params.series,
++      targetDate: req.query.date || req.query.postingDate || req.query.targetDate, branch: req.query.branch || '',
++      docSubType: req.query.docSubType, transactionType: req.query.transactionType }));
++  } catch (error) {
++    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
++  }
+ };
+ 
+ const getStateFromWarehouse = async (req, res) => {
+   try {
+
+===================================================================
+--- a/backend/controllers/dcSalesOrderController.js
++++ b/backend/controllers/dcSalesOrderController.js
+@@ -1,4 +1,5 @@
++const { getDocumentSeriesNumberPreview } = require('../services/documentSeriesNumberPreview');
+ const { resolveMarketingDocumentSeries } = require('../services/documentSeriesDbUtils');
+ const seriesDatabase = require('../services/dbService');
+ const salesOrderService = require('../services/dcSalesOrderService');
+ const documentPrintLayoutService = require('../services/documentPrintLayoutService');
+@@ -145,15 +146,16 @@
+     res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
+   }
+ };
+ 
+-const getNextNumber = async (req, res) => {
+-  try {
+-    const data = await salesOrderService.getNextNumber(req.query.series);
+-    res.json(data);
+-  } catch (error) {
+-    res.status(500).json(getErrorPayload(error, 'Failed to get next number.'));
+-  }
++const getNextNumber = async (req, res) => {
++  try {
++    res.json(await getDocumentSeriesNumberPreview({ db: seriesDatabase, objectCode: '17', seriesId: req.query.series ?? req.params.series,
++      targetDate: req.query.date || req.query.postingDate || req.query.targetDate, branch: req.query.branch || '',
++      docSubType: req.query.docSubType, transactionType: req.query.transactionType }));
++  } catch (error) {
++    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
++  }
+ };
+ 
+ const getStateFromAddress = async (req, res) => {
+   try {
+
+===================================================================
+--- a/backend/controllers/deliveryController.js
++++ b/backend/controllers/deliveryController.js
+@@ -1,4 +1,5 @@
++const { getDocumentSeriesNumberPreview } = require('../services/documentSeriesNumberPreview');
+ const { resolveMarketingDocumentSeries } = require('../services/documentSeriesDbUtils');
+ const seriesDatabase = require('../services/dbService');
+ const deliveryService = require('../services/deliveryService');
+ 
+@@ -126,18 +127,16 @@
+     res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
+   }
+ };
+ 
+-const getNextNumber = async (req, res) => {
+-  try {
+-    const data = await deliveryService.getNextNumber(req.params.series, {
+-      targetDate: req.query.date || req.query.postingDate || null,
+-      branch: req.query.branch || '',
+-    });
+-    res.json(data);
+-  } catch (error) {
+-    res.status(500).json(getErrorPayload(error, 'Failed to get next number.'));
+-  }
++const getNextNumber = async (req, res) => {
++  try {
++    res.json(await getDocumentSeriesNumberPreview({ db: seriesDatabase, objectCode: '15', seriesId: req.query.series ?? req.params.series,
++      targetDate: req.query.date || req.query.postingDate || req.query.targetDate, branch: req.query.branch || '',
++      docSubType: req.query.docSubType, transactionType: req.query.transactionType }));
++  } catch (error) {
++    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
++  }
+ };
+ 
+ const getStateFromWarehouse = async (req, res) => {
+   try {
+
+===================================================================
+--- a/backend/controllers/grpoController.js
++++ b/backend/controllers/grpoController.js
+@@ -1,4 +1,5 @@
++const { getDocumentSeriesNumberPreview } = require('../services/documentSeriesNumberPreview');
+ const { resolveMarketingDocumentSeries } = require('../services/documentSeriesDbUtils');
+ const seriesDatabase = require('../services/dbService');
+ const grpoService = require('../services/grpoService');
+ 
+@@ -114,15 +115,16 @@
+     res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
+   }
+ };
+ 
+-const getNextNumber = async (req, res) => {
+-  try {
+-    const data = await grpoService.getNextNumber(req.params.series);
+-    res.json(data);
+-  } catch (error) {
+-    res.status(500).json(getErrorPayload(error, 'Failed to get next number.'));
+-  }
++const getNextNumber = async (req, res) => {
++  try {
++    res.json(await getDocumentSeriesNumberPreview({ db: seriesDatabase, objectCode: '20', seriesId: req.query.series ?? req.params.series,
++      targetDate: req.query.date || req.query.postingDate || req.query.targetDate, branch: req.query.branch || '',
++      docSubType: req.query.docSubType, transactionType: req.query.transactionType }));
++  } catch (error) {
++    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
++  }
+ };
+ 
+ const getStateFromWarehouse = async (req, res) => {
+   try {
+
+===================================================================
+--- a/backend/controllers/ncDeliveryController.js
++++ b/backend/controllers/ncDeliveryController.js
+@@ -1,4 +1,5 @@
++const { getDocumentSeriesNumberPreview } = require('../services/documentSeriesNumberPreview');
+ const { resolveMarketingDocumentSeries } = require('../services/documentSeriesDbUtils');
+ const seriesDatabase = require('../services/dbService');
+ const deliveryService = require('../services/ncDeliveryService');
+ 
+@@ -126,15 +127,16 @@
+     res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
+   }
+ };
+ 
+-const getNextNumber = async (req, res) => {
+-  try {
+-    const data = await deliveryService.getNextNumber(req.params.series);
+-    res.json(data);
+-  } catch (error) {
+-    res.status(500).json(getErrorPayload(error, 'Failed to get next number.'));
+-  }
++const getNextNumber = async (req, res) => {
++  try {
++    res.json(await getDocumentSeriesNumberPreview({ db: seriesDatabase, objectCode: '15', seriesId: req.query.series ?? req.params.series,
++      targetDate: req.query.date || req.query.postingDate || req.query.targetDate, branch: req.query.branch || '',
++      docSubType: req.query.docSubType, transactionType: req.query.transactionType }));
++  } catch (error) {
++    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
++  }
+ };
+ 
+ const getStateFromWarehouse = async (req, res) => {
+   try {
+
+===================================================================
+--- a/backend/controllers/ncSalesOrderController.js
++++ b/backend/controllers/ncSalesOrderController.js
+@@ -1,4 +1,5 @@
++const { getDocumentSeriesNumberPreview } = require('../services/documentSeriesNumberPreview');
+ const { resolveMarketingDocumentSeries } = require('../services/documentSeriesDbUtils');
+ const seriesDatabase = require('../services/dbService');
+ const salesOrderService = require('../services/ncSalesOrderService');
+ const documentPrintLayoutService = require('../services/documentPrintLayoutService');
+@@ -145,15 +146,16 @@
+     res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
+   }
+ };
+ 
+-const getNextNumber = async (req, res) => {
+-  try {
+-    const data = await salesOrderService.getNextNumber(req.query.series);
+-    res.json(data);
+-  } catch (error) {
+-    res.status(500).json(getErrorPayload(error, 'Failed to get next number.'));
+-  }
++const getNextNumber = async (req, res) => {
++  try {
++    res.json(await getDocumentSeriesNumberPreview({ db: seriesDatabase, objectCode: '17', seriesId: req.query.series ?? req.params.series,
++      targetDate: req.query.date || req.query.postingDate || req.query.targetDate, branch: req.query.branch || '',
++      docSubType: req.query.docSubType, transactionType: req.query.transactionType }));
++  } catch (error) {
++    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
++  }
+ };
+ 
+ const getStateFromAddress = async (req, res) => {
+   try {
+
+===================================================================
+--- a/backend/controllers/purchaseOrderController.js
++++ b/backend/controllers/purchaseOrderController.js
+@@ -1,4 +1,5 @@
++const { getDocumentSeriesNumberPreview } = require('../services/documentSeriesNumberPreview');
+ const { resolveMarketingDocumentSeries } = require('../services/documentSeriesDbUtils');
+ const seriesDatabase = require('../services/dbService');
+ const purchaseOrderService = require('../services/purchaseOrderService');
+ 
+@@ -114,15 +115,16 @@
+     res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
+   }
+ };
+ 
+-const getNextNumber = async (req, res) => {
+-  try {
+-    const data = await purchaseOrderService.getNextNumber(req.params.series);
+-    res.json(data);
+-  } catch (error) {
+-    res.status(500).json(getErrorPayload(error, 'Failed to get next number.'));
+-  }
++const getNextNumber = async (req, res) => {
++  try {
++    res.json(await getDocumentSeriesNumberPreview({ db: seriesDatabase, objectCode: '22', seriesId: req.query.series ?? req.params.series,
++      targetDate: req.query.date || req.query.postingDate || req.query.targetDate, branch: req.query.branch || '',
++      docSubType: req.query.docSubType, transactionType: req.query.transactionType }));
++  } catch (error) {
++    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
++  }
+ };
+ 
+ const getStateFromAddress = async (req, res) => {
+   try {
+
+===================================================================
+--- a/backend/controllers/purchaseQuotationController.js
++++ b/backend/controllers/purchaseQuotationController.js
+@@ -1,4 +1,5 @@
++const { getDocumentSeriesNumberPreview } = require('../services/documentSeriesNumberPreview');
+ const { resolveMarketingDocumentSeries } = require('../services/documentSeriesDbUtils');
+ const seriesDatabase = require('../services/dbService');
+ const purchaseQuotationService = require('../services/purchaseQuotationService');
+ 
+@@ -114,15 +115,16 @@
+     res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
+   }
+ };
+ 
+-const getNextNumber = async (req, res) => {
+-  try {
+-    const data = await purchaseQuotationService.getNextNumber(req.params.series);
+-    res.json(data);
+-  } catch (error) {
+-    res.status(500).json(getErrorPayload(error, 'Failed to get next number.'));
+-  }
++const getNextNumber = async (req, res) => {
++  try {
++    res.json(await getDocumentSeriesNumberPreview({ db: seriesDatabase, objectCode: '540000006', seriesId: req.query.series ?? req.params.series,
++      targetDate: req.query.date || req.query.postingDate || req.query.targetDate, branch: req.query.branch || '',
++      docSubType: req.query.docSubType, transactionType: req.query.transactionType }));
++  } catch (error) {
++    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
++  }
+ };
+ 
+ const getStateFromAddress = async (req, res) => {
+   try {
+
+===================================================================
+--- a/backend/controllers/purchaseRequestController.js
++++ b/backend/controllers/purchaseRequestController.js
+@@ -1,4 +1,5 @@
++const { getDocumentSeriesNumberPreview } = require('../services/documentSeriesNumberPreview');
+ const { resolveMarketingDocumentSeries } = require('../services/documentSeriesDbUtils');
+ const seriesDatabase = require('../services/dbService');
+ const purchaseRequestService = require('../services/purchaseRequestService');
+ 
+@@ -101,16 +102,16 @@
+     res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
+   }
+ };
+ 
+-const getNextNumber = async (req, res) => {
+-  try {
+-    const data = await purchaseRequestService.getNextNumber(req.params.series);
+-    res.json(data);
+-  } catch (error) {
+-    console.error(error.response?.data || error.message);
+-    res.status(500).json(getErrorPayload(error, 'Failed to get next number.'));
+-  }
++const getNextNumber = async (req, res) => {
++  try {
++    res.json(await getDocumentSeriesNumberPreview({ db: seriesDatabase, objectCode: '1470000113', seriesId: req.query.series ?? req.params.series,
++      targetDate: req.query.date || req.query.postingDate || req.query.targetDate, branch: req.query.branch || '',
++      docSubType: req.query.docSubType, transactionType: req.query.transactionType }));
++  } catch (error) {
++    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
++  }
+ };
+ 
+ const getStateFromAddress = async (req, res) => {
+   try {
+
+===================================================================
+--- a/backend/controllers/salesOrderController.js
++++ b/backend/controllers/salesOrderController.js
+@@ -1,4 +1,5 @@
++const { getDocumentSeriesNumberPreview } = require('../services/documentSeriesNumberPreview');
+ const { resolveMarketingDocumentSeries } = require('../services/documentSeriesDbUtils');
+ const seriesDatabase = require('../services/dbService');
+ const salesOrderService = require('../services/salesOrderService');
+ 
+@@ -166,15 +167,16 @@
+     res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
+   }
+ };
+ 
+-const getNextNumber = async (req, res) => {
+-  try {
+-    const data = await salesOrderService.getNextNumber(req.query.series);
+-    res.json(data);
+-  } catch (error) {
+-    res.status(500).json(getErrorPayload(error, 'Failed to get next number.'));
+-  }
++const getNextNumber = async (req, res) => {
++  try {
++    res.json(await getDocumentSeriesNumberPreview({ db: seriesDatabase, objectCode: '17', seriesId: req.query.series ?? req.params.series,
++      targetDate: req.query.date || req.query.postingDate || req.query.targetDate, branch: req.query.branch || '',
++      docSubType: req.query.docSubType, transactionType: req.query.transactionType }));
++  } catch (error) {
++    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
++  }
+ };
+ 
+ const getStateFromAddress = async (req, res) => {
+   try {
+
+===================================================================
+--- a/backend/controllers/salesQuotationController.js
++++ b/backend/controllers/salesQuotationController.js
+@@ -1,4 +1,5 @@
++const { getDocumentSeriesNumberPreview } = require('../services/documentSeriesNumberPreview');
+ const { resolveMarketingDocumentSeries } = require('../services/documentSeriesDbUtils');
+ const seriesDatabase = require('../services/dbService');
+ const salesQuotationService = require('../services/salesQuotationService');
+ 
+@@ -154,15 +155,16 @@
+     res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
+   }
+ };
+ 
+-const getNextNumber = async (req, res) => {
+-  try {
+-    const data = await salesQuotationService.getNextNumber(req.query.series);
+-    res.json(data);
+-  } catch (error) {
+-    res.status(500).json(getErrorPayload(error, 'Failed to get next number.'));
+-  }
++const getNextNumber = async (req, res) => {
++  try {
++    res.json(await getDocumentSeriesNumberPreview({ db: seriesDatabase, objectCode: '23', seriesId: req.query.series ?? req.params.series,
++      targetDate: req.query.date || req.query.postingDate || req.query.targetDate, branch: req.query.branch || '',
++      docSubType: req.query.docSubType, transactionType: req.query.transactionType }));
++  } catch (error) {
++    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
++  }
+ };
+ 
+ const getStateFromAddress = async (req, res) => {
+   try {
+
+===================================================================
+--- a/backend/controllers/serviceApCreditMemoController.js
++++ b/backend/controllers/serviceApCreditMemoController.js
+@@ -1,4 +1,5 @@
++const { getDocumentSeriesNumberPreview } = require('../services/documentSeriesNumberPreview');
+ const { resolveMarketingDocumentSeries } = require('../services/documentSeriesDbUtils');
+ const seriesDatabase = require('../services/dbService');
+ const serviceApCreditMemoService = require('../services/serviceApCreditMemoService');
+ 
+@@ -77,14 +78,16 @@
+     res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
+   }
+ };
+ 
+-const getNextNumber = async (req, res) => {
+-  try {
+-    res.json(await serviceApCreditMemoService.getNextNumber(req.query.series));
+-  } catch (error) {
+-    res.status(500).json(getErrorPayload(error, 'Failed to load next number.'));
+-  }
++const getNextNumber = async (req, res) => {
++  try {
++    res.json(await getDocumentSeriesNumberPreview({ db: seriesDatabase, objectCode: '19', seriesId: req.query.series ?? req.params.series,
++      targetDate: req.query.date || req.query.postingDate || req.query.targetDate, branch: req.query.branch || '',
++      docSubType: req.query.docSubType, transactionType: req.query.transactionType }));
++  } catch (error) {
++    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
++  }
+ };
+ 
+ const getOpenServiceAPInvoices = async (req, res) => {
+   try {
+
+===================================================================
+--- a/backend/controllers/serviceApInvoiceController.js
++++ b/backend/controllers/serviceApInvoiceController.js
+@@ -1,4 +1,5 @@
++const { getDocumentSeriesNumberPreview } = require('../services/documentSeriesNumberPreview');
+ const { resolveMarketingDocumentSeries } = require('../services/documentSeriesDbUtils');
+ const seriesDatabase = require('../services/dbService');
+ const serviceApInvoiceService = require('../services/serviceApInvoiceService');
+ 
+@@ -77,14 +78,16 @@
+     res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
+   }
+ };
+ 
+-const getNextNumber = async (req, res) => {
+-  try {
+-    res.json(await serviceApInvoiceService.getNextNumber(req.query.series));
+-  } catch (error) {
+-    res.status(500).json(getErrorPayload(error, 'Failed to load next number.'));
+-  }
++const getNextNumber = async (req, res) => {
++  try {
++    res.json(await getDocumentSeriesNumberPreview({ db: seriesDatabase, objectCode: '18', seriesId: req.query.series ?? req.params.series,
++      targetDate: req.query.date || req.query.postingDate || req.query.targetDate, branch: req.query.branch || '',
++      docSubType: req.query.docSubType, transactionType: req.query.transactionType }));
++  } catch (error) {
++    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
++  }
+ };
+ 
+ const getOpenServicePurchaseQuotations = async (req, res) => {
+   try {
+
+===================================================================
+--- a/backend/controllers/serviceArCreditMemoController.js
++++ b/backend/controllers/serviceArCreditMemoController.js
+@@ -1,4 +1,5 @@
++const { getDocumentSeriesNumberPreview } = require('../services/documentSeriesNumberPreview');
+ const { resolveMarketingDocumentSeries } = require('../services/documentSeriesDbUtils');
+ const seriesDatabase = require('../services/dbService');
+ const serviceArCreditMemoService = require('../services/serviceArCreditMemoService');
+ 
+@@ -77,14 +78,16 @@
+     res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
+   }
+ };
+ 
+-const getNextNumber = async (req, res) => {
+-  try {
+-    res.json(await serviceArCreditMemoService.getNextNumber(req.query.series));
+-  } catch (error) {
+-    res.status(500).json(getErrorPayload(error, 'Failed to load next number.'));
+-  }
++const getNextNumber = async (req, res) => {
++  try {
++    res.json(await getDocumentSeriesNumberPreview({ db: seriesDatabase, objectCode: '14', seriesId: req.query.series ?? req.params.series,
++      targetDate: req.query.date || req.query.postingDate || req.query.targetDate, branch: req.query.branch || '',
++      docSubType: req.query.docSubType, transactionType: req.query.transactionType }));
++  } catch (error) {
++    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
++  }
+ };
+ 
+ const getOpenServiceARInvoices = async (req, res) => {
+   try {
+
+===================================================================
+--- a/backend/controllers/serviceArInvoiceController.js
++++ b/backend/controllers/serviceArInvoiceController.js
+@@ -1,4 +1,5 @@
++const { getDocumentSeriesNumberPreview } = require('../services/documentSeriesNumberPreview');
+ const { resolveMarketingDocumentSeries } = require('../services/documentSeriesDbUtils');
+ const seriesDatabase = require('../services/dbService');
+ const serviceArInvoiceService = require('../services/serviceArInvoiceService');
+ 
+@@ -78,14 +79,16 @@
+     res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
+   }
+ };
+ 
+-const getNextNumber = async (req, res) => {
+-  try {
+-    res.json(await serviceArInvoiceService.getNextNumber(req.query.series));
+-  } catch (error) {
+-    res.status(500).json(getErrorPayload(error, 'Failed to load next number.'));
+-  }
++const getNextNumber = async (req, res) => {
++  try {
++    res.json(await getDocumentSeriesNumberPreview({ db: seriesDatabase, objectCode: '13', seriesId: req.query.series ?? req.params.series,
++      targetDate: req.query.date || req.query.postingDate || req.query.targetDate, branch: req.query.branch || '',
++      docSubType: req.query.docSubType, transactionType: req.query.transactionType }));
++  } catch (error) {
++    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
++  }
+ };
+ 
+ const getOpenServiceSalesQuotations = async (req, res) => {
+   try {
+
+===================================================================
+--- a/backend/controllers/sodaDeliveryController.js
++++ b/backend/controllers/sodaDeliveryController.js
+@@ -1,4 +1,5 @@
++const { getDocumentSeriesNumberPreview } = require('../services/documentSeriesNumberPreview');
+ const { resolveMarketingDocumentSeries } = require('../services/documentSeriesDbUtils');
+ const seriesDatabase = require('../services/dbService');
+ const deliveryService = require('../services/sodaDeliveryService');
+ 
+@@ -126,15 +127,16 @@
+     res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
+   }
+ };
+ 
+-const getNextNumber = async (req, res) => {
+-  try {
+-    const data = await deliveryService.getNextNumber(req.params.series);
+-    res.json(data);
+-  } catch (error) {
+-    res.status(500).json(getErrorPayload(error, 'Failed to get next number.'));
+-  }
++const getNextNumber = async (req, res) => {
++  try {
++    res.json(await getDocumentSeriesNumberPreview({ db: seriesDatabase, objectCode: '15', seriesId: req.query.series ?? req.params.series,
++      targetDate: req.query.date || req.query.postingDate || req.query.targetDate, branch: req.query.branch || '',
++      docSubType: req.query.docSubType, transactionType: req.query.transactionType }));
++  } catch (error) {
++    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
++  }
+ };
+ 
+ const getStateFromWarehouse = async (req, res) => {
+   try {
+
+===================================================================
+--- a/backend/controllers/sodaSalesOrderController.js
++++ b/backend/controllers/sodaSalesOrderController.js
+@@ -1,4 +1,5 @@
++const { getDocumentSeriesNumberPreview } = require('../services/documentSeriesNumberPreview');
+ const { resolveMarketingDocumentSeries } = require('../services/documentSeriesDbUtils');
+ const seriesDatabase = require('../services/dbService');
+ const salesOrderService = require('../services/sodaSalesOrderService');
+ const documentPrintLayoutService = require('../services/documentPrintLayoutService');
+@@ -145,15 +146,16 @@
+     res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
+   }
+ };
+ 
+-const getNextNumber = async (req, res) => {
+-  try {
+-    const data = await salesOrderService.getNextNumber(req.query.series);
+-    res.json(data);
+-  } catch (error) {
+-    res.status(500).json(getErrorPayload(error, 'Failed to get next number.'));
+-  }
++const getNextNumber = async (req, res) => {
++  try {
++    res.json(await getDocumentSeriesNumberPreview({ db: seriesDatabase, objectCode: '17', seriesId: req.query.series ?? req.params.series,
++      targetDate: req.query.date || req.query.postingDate || req.query.targetDate, branch: req.query.branch || '',
++      docSubType: req.query.docSubType, transactionType: req.query.transactionType }));
++  } catch (error) {
++    res.status(error.statusCode || 500).json({ message: error.message, error: error.message, code: error.code || 'SAP_DOCUMENT_SERIES' });
++  }
+ };
+ 
+ const getStateFromAddress = async (req, res) => {
+   try {

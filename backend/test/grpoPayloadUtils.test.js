@@ -12,7 +12,9 @@ test('preserves edited destination values on a PO-based GRPO line', () => {
     stdDiscount: '2.25',
     taxCode: 'GST18',
     whse: 'WH-02',
-    uomCode: 'KG',
+    uomEntry: 7,
+    uomCode: 'Kgs',
+    uomName: 'KGS',
     commPercent: '1.5',
     baseEntry: '101',
     baseType: '22',
@@ -31,13 +33,31 @@ test('preserves edited destination values on a PO-based GRPO line', () => {
     DiscountPercent: 2.25,
     TaxCode: 'GST18',
     WarehouseCode: 'WH-02',
-    UoMCode: 'KG',
+    UoMEntry: 7,
     CommissionPercent: 1.5,
     BaseEntry: 101,
     BaseType: 22,
     BaseLine: 0,
     U_PackingType: 'Bag',
   });
+});
+
+test('uses the SAP UoM entry even when code and display name have different casing', () => {
+  const documentLine = buildGRPODocumentLine({
+    itemNo: 'RM-KGS',
+    quantity: 1,
+    unitPrice: 25,
+    uomEntry: 7,
+    uomCode: 'Kgs',
+    uomName: 'KGS',
+    baseEntry: 501,
+    baseType: 22,
+    baseLine: 0,
+  });
+
+  assert.equal(documentLine.UoMEntry, 7);
+  assert.equal(documentLine.UoMCode, undefined);
+  assert.equal(documentLine.MeasureUnit, undefined);
 });
 
 test('overrides copied discount and commission when they are changed to zero', () => {
@@ -83,7 +103,8 @@ test('serializes edited UoM Name on manual GRPO lines', () => {
     uomName: 'Mtr.',
   });
 
-  assert.equal(documentLine.UoMCode, 'Mtr.');
+  assert.equal(documentLine.MeasureUnit, 'Mtr.');
+  assert.equal(documentLine.UoMCode, undefined);
 });
 test('does not restore UoMCode after GRPO UoM Name is cleared', () => {
   const documentLine = buildGRPODocumentLine({
@@ -95,5 +116,20 @@ test('does not restore UoMCode after GRPO UoM Name is cleared', () => {
     uomNameEdited: true,
   });
 
+  assert.equal(documentLine.UoMCode, undefined);
+  assert.equal(documentLine.MeasureUnit, undefined);
+});
+
+test('uses MeasureUnit rather than the SAP manual marker on duplicated GRPO lines', () => {
+  const documentLine = buildGRPODocumentLine({
+    itemNo: 'RM-006',
+    quantity: 2,
+    unitPrice: 50,
+    uomEntry: -1,
+    uomCode: 'Manual',
+    uomName: 'KGS',
+  });
+
+  assert.equal(documentLine.MeasureUnit, 'KGS');
   assert.equal(documentLine.UoMCode, undefined);
 });

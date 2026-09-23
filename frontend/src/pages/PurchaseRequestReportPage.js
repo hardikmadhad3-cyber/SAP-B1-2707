@@ -93,6 +93,7 @@ function PurchaseRequestReportPage() {
     isOpen: true,
     defaultTop: 22,
     resetOnClose: true,
+    bounds: "parent",
     taskId: "prr-criteria",
     taskPath: "/reports/purchasing/purchase-request-report",
     taskTitle: "Purchase Request Report - Selection Criteria",
@@ -102,6 +103,7 @@ function PurchaseRequestReportPage() {
     isOpen: Boolean(reportResult),
     defaultTop: 22,
     resetOnClose: true,
+    bounds: "parent",
     taskId: "prr-report",
     taskPath: "/reports/purchasing/purchase-request-report",
     taskTitle: "Purchase Request Report",
@@ -378,6 +380,7 @@ function PurchaseRequestReportPage() {
           <div className="prr-accent" />
 
           {!criteriaWindow.isMinimized && (
+            <>
             <div className="prr-body">
               {pageState.error ? <div className="prr-error">{pageState.error}</div> : null}
               {pageState.loadingLookups ? <div className="prr-loading">Loading report criteria...</div> : null}
@@ -751,27 +754,27 @@ function PurchaseRequestReportPage() {
                     <span>Display Purchase Requests from MRP Only</span>
                   </label>
                 </div>
-
-                <div className="prr-actions">
-                  <button
-                    type="button"
-                    className="prr-button"
-                    onClick={handleRunReport}
-                    disabled={pageState.loadingLookups || pageState.loadingReport}
-                  >
-                    {pageState.loadingReport ? "Running..." : "OK"}
-                  </button>
-                  <button
-                    type="button"
-                    className="prr-button"
-                    onClick={handleReset}
-                    disabled={pageState.loadingReport}
-                  >
-                    Cancel
-                  </button>
-                </div>
               </div>
             </div>
+            <div className="prr-actions">
+              <button
+                type="button"
+                className="prr-button"
+                onClick={handleRunReport}
+                disabled={pageState.loadingLookups || pageState.loadingReport}
+              >
+                {pageState.loadingReport ? "Running..." : "OK"}
+              </button>
+              <button
+                type="button"
+                className="prr-button"
+                onClick={handleReset}
+                disabled={pageState.loadingReport}
+              >
+                Cancel
+              </button>
+            </div>
+            </>
           )}
         </div>
       ) : null}

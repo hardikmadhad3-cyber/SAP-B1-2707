@@ -7,6 +7,8 @@ const NAVIGATION_SELECTOR = [
   '.so-tab',
   '[role="tab"]',
   '[data-allow-closed-navigation="true"]',
+  // Display preferences do not edit the SAP document, even on closed records.
+  '[data-document-display-preferences="true"]',
 ].join(',');
 
 const READONLY_INPUT_TYPES = new Set([

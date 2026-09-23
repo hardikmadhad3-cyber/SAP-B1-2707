@@ -109,7 +109,14 @@ const createNewSalesOrderContextService = ({ authDb = authDbService } = {}) => {
     }
 
     const username = normalizeText(user?.Username || auth.username);
-    const userCode = normalizeText(company.SapUsername) || username;
+    // Must match the precedence sapDocumentLayoutService writes layouts under
+    // (UserCompanies.SapUserCode, then the company SAP account, then the web
+    // user). When these two disagreed the imported layout was written under one
+    // code and looked up under another, so the page silently fell back to a
+    // different field set.
+    const userCode = normalizeText(company.AssignedSapUserCode)
+      || normalizeText(company.SapUsername)
+      || username;
     if (!userCode) {
       throw createHttpError(503, 'The selected company has no authenticated SAP user mapping.', 'SAP_USER_NOT_CONFIGURED');
     }

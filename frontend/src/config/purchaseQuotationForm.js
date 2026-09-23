@@ -18,6 +18,7 @@ const CONFIGURED_MATRIX_COLUMNS = [
   { key: 'totalLC', label: 'Total (LC)', visible: true, minWidth: 115 },
   { key: 'distRule', label: 'Distr. Rule', visible: true, minWidth: 105 },
   { key: 'uomCode', label: 'UoM Code', visible: true, minWidth: 105 },
+  { key: 'uomName', label: 'UoM Name', visible: true, minWidth: 120 },
   { key: 'countryOfOrigin', label: 'Country/Region of Origin', visible: true, minWidth: 185 },
   { key: 'loc', label: 'Loc.', visible: true, minWidth: 115 },
   { key: 'blanketAgreementNo', label: 'Blanket Agreement No.', visible: true, minWidth: 170 },

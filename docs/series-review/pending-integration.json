@@ -1,0 +1,110 @@
+[
+  {
+    "file": "backend/services/sapService.js",
+    "sha256": "5ae1d51cd771b0e8d30462dd908cd6445b95cf946f79a13f94f60a55c7ce94ff"
+  },
+  {
+    "file": "backend/services/documentSeriesPolicy.js",
+    "sha256": "9539757a08f687eb5f9992027790106eb3064a40cdbedede6084db14bd2eda68"
+  },
+  {
+    "file": "backend/services/documentSeriesAccess.js",
+    "sha256": "274b7302900cf3f9beec1fe08e637ecbe76c2ee775e4d0005f08333c2b7b5c9d"
+  },
+  {
+    "file": "backend/services/sapSeriesPermissions.js",
+    "sha256": "fcae5c8ecd071f9fb8ffc1f3bc83f4e807b6a7b0d8d8653eace7c323a5a0056a"
+  },
+  {
+    "file": "backend/services/salesDocumentDbCompatibility.js",
+    "sha256": "28caf18b8a6bca22fcb248cc5bfa4f35b66ccd32610a5517ef773ced34d249cd"
+  },
+  {
+    "file": "frontend/src/modules/purchase-quatation/PurchaseQuatation.jsx",
+    "sha256": "cb16aa8d05c4626c091a861ddf47a874182b9376fa1a6963d48f9886520f10f2"
+  },
+  {
+    "file": "backend/controllers/apCreditMemoController.js",
+    "sha256": "52bdf5ae71eac660176a687c6c1082426ad63612d049ace427c78fc9aad1c2a9"
+  },
+  {
+    "file": "backend/controllers/apInvoiceController.js",
+    "sha256": "ab03aabb542c4364f0365d3b36d9ed81e77f15b11b1e0fafe82b965a94d0a88a"
+  },
+  {
+    "file": "backend/controllers/arCreditMemoController.js",
+    "sha256": "ccdcd6652063831800d6f9119fde56571e57781c5d9938566616e4cccbc2db1b"
+  },
+  {
+    "file": "backend/controllers/arInvoiceController.js",
+    "sha256": "cbe5a8fd857c6e08e46f77d3ec6755dc420cfdd8c2fbae2f84136340c3a47d37"
+  },
+  {
+    "file": "backend/controllers/dcDeliveryController.js",
+    "sha256": "3934645e2a50855874e69c7e2814aae810169968491480f78f11b987ad251125"
+  },
+  {
+    "file": "backend/controllers/dcSalesOrderController.js",
+    "sha256": "f2c3e2f23ed391c37ef927d4be4b21ad829b3751418b9e19f8a5d20c39b6caf9"
+  },
+  {
+    "file": "backend/controllers/deliveryController.js",
+    "sha256": "7ec46e0926b610ab089380374e1a91883b5019faaf9d69d4c92ca81573cf962e"
+  },
+  {
+    "file": "backend/controllers/grpoController.js",
+    "sha256": "3a16e40f8290074180da58a30cabb2df5e1d3c0a7ec5ca8b2bdfbbeb29e921e8"
+  },
+  {
+    "file": "backend/controllers/ncDeliveryController.js",
+    "sha256": "8ec58dcf6295211318723a3ceb8710e3fc754ab002d67cafbc9a42bbcd3e9a46"
+  },
+  {
+    "file": "backend/controllers/ncSalesOrderController.js",
+    "sha256": "8d330bc299c533c32c14f3a55e8f3a437e888cb4778789f2407082c057bf3af6"
+  },
+  {
+    "file": "backend/controllers/purchaseOrderController.js",
+    "sha256": "7585b672f24b4bf6d237f4f0cab5885a84c12728f16cf2406f25020ac5d7d9dc"
+  },
+  {
+    "file": "backend/controllers/purchaseQuotationController.js",
+    "sha256": "26497644479e832864fe8f25962d97d9e0371c084af2290779ff1532901af322"
+  },
+  {
+    "file": "backend/controllers/purchaseRequestController.js",
+    "sha256": "1e3154bf09d839df2a450c635ff1a8f21945e7ec2183384bbc720c7ff3153fc8"
+  },
+  {
+    "file": "backend/controllers/salesOrderController.js",
+    "sha256": "246a3fb78b0fa3f1909bf00836baa3e108f5a85c22c77c25db1056db333042a2"
+  },
+  {
+    "file": "backend/controllers/salesQuotationController.js",
+    "sha256": "93e5c5f306ffc703cb8485e4724bdcf83f8129a30bd257a50768249de3f5cde3"
+  },
+  {
+    "file": "backend/controllers/serviceApCreditMemoController.js",
+    "sha256": "1815430e544511779156d115d2b95518d58ab1205b0456ebe6832eaa0c834b4e"
+  },
+  {
+    "file": "backend/controllers/serviceApInvoiceController.js",
+    "sha256": "d19fb910cd8de7f874f8879bfa4739e5325fd3f53fd37e3e54960f91c5e385ab"
+  },
+  {
+    "file": "backend/controllers/serviceArCreditMemoController.js",
+    "sha256": "fa17be34f51d75c552098f4838408cf773e2544c3264b7e18891a61b14254762"
+  },
+  {
+    "file": "backend/controllers/serviceArInvoiceController.js",
+    "sha256": "a604cf32837c655a02f2273a051d3a64986a0b54f4b09575fcff04c3eec26827"
+  },
+  {
+    "file": "backend/controllers/sodaDeliveryController.js",
+    "sha256": "4612742cb5b7ae1c95eb09b2ac99075526e56ff86101ded143664ef324113ea4"
+  },
+  {
+    "file": "backend/controllers/sodaSalesOrderController.js",
+    "sha256": "93969c5ef955d18703a4fa5b9c3c5a4f77b97e2b2e57c45efccef73442492092"
+  }
+]

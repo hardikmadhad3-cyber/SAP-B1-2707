@@ -1,7 +1,9 @@
 import apiClient from './client';
 
-export const fetchProductionOrderReferenceData = () =>
-  apiClient.get('/production-order/reference-data').then((r) => r.data);
+export const fetchProductionOrderReferenceData = (params = {}) =>
+  apiClient.get('/production-order/reference-data', { params }).then((r) => r.data);
+export const fetchProductionOrderSeries = (date, branch = '') =>
+  apiClient.get('/production-order/series', { params: { date, branch } }).then((r) => r.data);
 
 export const fetchProductionOrders = (params = {}) =>
   apiClient.get('/production-order/list', { params }).then((r) => r.data);
